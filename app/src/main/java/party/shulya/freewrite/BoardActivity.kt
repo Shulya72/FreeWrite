@@ -655,6 +655,10 @@ class BoardActivity : Activity(), BoardView.Host {
 
     override fun onDragStart() { pushUndo() }
     override fun onDragEnd() { changed() }
+    override fun onDragCancel() {
+        if (undoStack.isNotEmpty()) undoStack.removeLast()
+        view.invalidate()
+    }
     override fun onImageLongPress(index: Int) { confirmDeleteImage(index) }
 
     override fun onSelectionChanged() {

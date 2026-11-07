@@ -59,6 +59,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onDragStart()
         /** После жеста — сохранить. */
         fun onDragEnd()
+        /** Жест отменён (это была ладонь): всё вернули на место — забыть запомненное для «Отменить». */
+        fun onDragCancel()
         fun onImageLongPress(index: Int)
         fun onSelectionChanged()
         fun onCameraChanged()
@@ -73,7 +75,57 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL }
     class Hit(val kind: Kind, val index: Int)
 
-    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER }
+    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM }
+
+    // ---- Защита от ладони ----
+    // Пока перо над экраном (и ещё немного после), касания пальцем — это ладонь: их не слушаем.
+    // Если ладонь легла раньше и успела что-то сдвинуть, а следом появилось перо, — сдвиг отменяется.
+    private var lastPenTime = -100_000L
+    private var fingerDownTime = -100_000L
+    private val downCam = FloatArray(3)
+
+    private fun notePen() { lastPenTime = SystemClock.uptimeMillis() }
+
+    private fun penNear() = SystemClock.uptimeMillis() - lastPenTime < PEN_GRACE_MS
+
+    /** Касание шире ~17 мм — это ладонь (если планшет сообщает размер касания). */
+    private fun palmSized(ev: MotionEvent, idx: Int) = ev.getTouchMajor(idx) > Ui.dpf(context, 110f)
+
+    /**
+     * Перо пришло, пока палец ещё на экране, — палец был ладонью. Перенос предметов отменяется
+     * всегда (пальцем и пером одновременно предметы не двигают), сдвиг доски — если ладонь легла недавно.
+     */
+    private fun revertFingerIfRecent() {
+        val recent = SystemClock.uptimeMillis() - fingerDownTime < PALM_REVERT_MS
+        when (mode) {
+            Mode.PAN, Mode.PINCH -> if (recent) {
+                b.camX = downCam[0]; b.camY = downCam[1]; b.camZ = downCam[2]
+                host.onCameraChanged()
+            }
+            Mode.MOVE_SEL, Mode.RESIZE, Mode.PINCH_SEL -> revertEdit()
+            Mode.LEADER -> {
+                // Конец указателя — на прежнее место.
+                val c = leaderCallout
+                if (c != null && leaderIndex * 2 + 1 < c.leaders.size) {
+                    c.leaders[leaderIndex * 2] = leaderStart.x
+                    c.leaders[leaderIndex * 2 + 1] = leaderStart.y
+                }
+                if (editStarted) host.onDragCancel()
+                leaderCallout = null
+            }
+            else -> Unit
+        }
+        editStarted = false
+        removeCallbacks(longPress)
+        invalidate()
+    }
+
+    /** Вернуть выделенное в исходное положение (отмена жеста). */
+    private fun revertEdit() {
+        if (origs.isNotEmpty()) applyTransform(0f, 0f, 1f, 0f, 0f)
+        if (editStarted) host.onDragCancel()
+        editStarted = false
+    }
 
     private var mode = Mode.NONE
     private var activePointer = MotionEvent.INVALID_POINTER_ID
@@ -135,6 +187,13 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         if (Build.VERSION.SDK_INT >= 24) {
             pointerIcon = android.view.PointerIcon.getSystemIcon(context, android.view.PointerIcon.TYPE_NULL)
         }
+    }
+
+    companion object {
+        /** Сколько после пера (касания или наведения) пальцы считаются ладонью. */
+        const val PEN_GRACE_MS = 700L
+        /** Если перо пришло так скоро после касания пальцем, сдвиг доски пальцем отменяется. */
+        const val PALM_REVERT_MS = 700L
     }
 
     /** Загрузчик картинок (уровни, фон, память) — задаёт экран доски. */
@@ -540,15 +599,18 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(ev: MotionEvent): Boolean {
+        for (i in 0 until ev.pointerCount) if (isPen(ev.getToolType(i))) { notePen(); break }
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> begin(ev, 0)
             MotionEvent.ACTION_POINTER_DOWN -> {
                 val idx = ev.actionIndex
                 val tool = ev.getToolType(idx)
-                if (isPen(tool) && (mode == Mode.PAN || mode == Mode.PINCH || mode == Mode.NONE || (mode == Mode.MOVE_SEL && !activeIsPen))) {
-                    if (mode == Mode.MOVE_SEL && editStarted) host.onDragEnd()
-                    editStarted = false
+                val fingerMode = !activeIsPen && (mode == Mode.MOVE_SEL || mode == Mode.RESIZE || mode == Mode.PINCH_SEL || mode == Mode.LEADER)
+                if (isPen(tool) && (mode == Mode.PAN || mode == Mode.PINCH || mode == Mode.NONE || mode == Mode.PALM || fingerMode)) {
+                    revertFingerIfRecent()
                     begin(ev, idx) // ладонь или пальцы лежали — работает перо
+                } else if (!penLike(tool) && (penNear() || palmSized(ev, idx) || mode == Mode.PALM)) {
+                    // второй палец при пере рядом — тоже ладонь
                 } else if (!penLike(tool) && !activeIsPen && mode == Mode.MOVE_SEL) {
                     startSelPinch(ev) // два пальца на выделенном — меняем его размер
                 } else if (!penLike(tool) && !activeIsPen && (mode == Mode.PAN || mode == Mode.LASSO)) {
@@ -580,7 +642,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 removeCallbacks(longPress)
             }
             MotionEvent.ACTION_CANCEL -> {
-                if (editStarted) host.onDragEnd()
+                // Система отменила жест (например, распознала ладонь) — сдвинутое возвращаем на место.
+                if (mode == Mode.MOVE_SEL || mode == Mode.RESIZE || mode == Mode.PINCH_SEL) revertEdit()
+                else if (editStarted) host.onDragEnd()
                 editStarted = false
                 live = null
                 lasso.clear()
@@ -607,6 +671,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         val y = wy(downY)
         val t = host.tool()
         val pen = penLike(tool)
+        if (!pen) {
+            fingerDownTime = downTime
+            downCam[0] = b.camX; downCam[1] = b.camY; downCam[2] = b.camZ
+            if (penNear() || palmSized(ev, idx)) {
+                mode = Mode.PALM // перо рядом или касание широкое — это ладонь
+                return
+            }
+        }
 
         if (t == BoardActivity.Tool.PIPETTE) {
             mode = Mode.PIPETTE
@@ -623,6 +695,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                     parent?.requestDisallowInterceptTouchEvent(true)
                     leaderCallout = sc
                     leaderIndex = i
+                    leaderStart.set(sc.leaders[i * 2], sc.leaders[i * 2 + 1])
                     mode = Mode.LEADER
                     return
                 }
@@ -670,6 +743,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         parent?.requestDisallowInterceptTouchEvent(true)
         requestUnbufferedDispatch(ev)
+        // Начали писать, рисовать или обводить пером — выделение снимаем, чтобы ладонь его не утащила.
+        if (selection.isNotEmpty()) clearSelection()
         if (t == BoardActivity.Tool.CALLOUT && tool != MotionEvent.TOOL_TYPE_ERASER) {
             val ci = calloutAt(x, y)
             calloutFrom = if (ci >= 0) b.callouts[ci] else null
@@ -702,6 +777,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private val calloutDown = PointF()
     private val calloutNow = PointF()
     private var leaderCallout: BoardCallout? = null
+    private val leaderStart = PointF()
     private var leaderIndex = -1
 
     private fun pressure(ev: MotionEvent, idx: Int, h: Int): Float {
@@ -874,6 +950,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         editStarted = false
         mode = Mode.NONE
         sceneValid = false
+        origs.clear() // исходные положения нужны только во время жеста
         invalidate()
     }
 
@@ -987,6 +1064,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     }
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
+        if (isPen(event.getToolType(0))) {
+            notePen()
+            // Ладонь уже лежит и что-то двигает, а перо подошло — это была ладонь.
+            if (!activeIsPen && mode != Mode.NONE && mode != Mode.PALM) {
+                revertFingerIfRecent()
+                mode = Mode.PALM
+            }
+        }
         if (!isPen(event.getToolType(0)) || host.tool() == BoardActivity.Tool.SELECT) return super.onHoverEvent(event)
         hover = if (event.actionMasked == MotionEvent.ACTION_HOVER_EXIT) null else PointF(event.x, event.y)
         invalidate()

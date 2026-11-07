@@ -543,6 +543,12 @@ class NoteActivity : Activity(), NoteInkView.Host {
             return r
         }
 
+        override fun onImageEditCancel(v: NoteImageView) {
+            val needRender = editEnded()
+            if (undoStack.isNotEmpty()) undoStack.removeLast()
+            if (needRender) renderBlocks()
+        }
+
         override fun onImageResized(v: NoteImageView) {
             changed(render = editEnded())
             ink.invalidate()

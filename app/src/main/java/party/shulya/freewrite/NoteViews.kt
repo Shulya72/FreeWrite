@@ -117,7 +117,23 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
 
     class StrokeStyle(val kind: String, val color: Int, val width: Float)
 
-    private enum class Mode { NONE, FORWARD, INK, ERASE, PIPETTE }
+    private enum class Mode { NONE, FORWARD, INK, ERASE, PIPETTE, PALM }
+
+    // Защита от ладони: пока перо над экраном (и ещё 0,7 с после), касание пальцем — это ладонь,
+    // листу его не передаём (не листает, не двигает картинку). Ладонь легла чуть раньше пера —
+    // её жест отменяется, когда перо подошло.
+    private var lastPenTime = -100_000L
+    private var fingerDownTime = -100_000L
+
+    private fun penNear() = SystemClock.uptimeMillis() - lastPenTime < 700L
+
+    private fun palmSized(ev: MotionEvent, idx: Int) = ev.getTouchMajor(idx) > Ui.dpf(context, 110f)
+
+    private fun cancelForward(ev: MotionEvent) {
+        val cancel = MotionEvent.obtain(ev).apply { action = MotionEvent.ACTION_CANCEL }
+        host.forwardToSheet(cancel)
+        cancel.recycle()
+    }
 
     private var mode = Mode.NONE
     private var activePointer = MotionEvent.INVALID_POINTER_ID
@@ -162,27 +178,29 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(ev: MotionEvent): Boolean {
         if (host.pipetteMode() || mode == Mode.PIPETTE) return pipetteTouch(ev)
+        for (i in 0 until ev.pointerCount) if (isPen(ev.getToolType(i))) { lastPenTime = SystemClock.uptimeMillis(); break }
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val tool = ev.getToolType(0)
                 if (inks(tool)) {
                     startInk(ev, 0)
+                } else if (!isPen(tool) && (penNear() || palmSized(ev, 0))) {
+                    mode = Mode.PALM // перо рядом или касание широкое — ладонь
                 } else {
                     mode = Mode.FORWARD
+                    fingerDownTime = SystemClock.uptimeMillis()
                     host.forwardToSheet(ev)
                 }
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 val idx = ev.actionIndex
-                if ((mode == Mode.FORWARD || mode == Mode.NONE) && isPen(ev.getToolType(idx)) && !host.passThrough()) {
+                if ((mode == Mode.FORWARD || mode == Mode.NONE || mode == Mode.PALM) && isPen(ev.getToolType(idx)) && !host.passThrough()) {
                     // Ладонь легла раньше пера (или осталась лежать после прошлого штриха):
                     // отменяем жест ладони, пишем пером.
-                    if (mode == Mode.FORWARD) {
-                        val cancel = MotionEvent.obtain(ev).apply { action = MotionEvent.ACTION_CANCEL }
-                        host.forwardToSheet(cancel)
-                        cancel.recycle()
-                    }
+                    if (mode == Mode.FORWARD) cancelForward(ev)
                     startInk(ev, idx)
+                } else if (mode == Mode.FORWARD && !isPen(ev.getToolType(idx)) && (penNear() || palmSized(ev, idx))) {
+                    // ещё одно касание при пере рядом — ладонь
                 } else if (mode == Mode.FORWARD) {
                     host.forwardToSheet(ev)
                 }
@@ -190,7 +208,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
             MotionEvent.ACTION_MOVE -> when (mode) {
                 Mode.FORWARD -> host.forwardToSheet(ev)
                 Mode.INK, Mode.ERASE -> moveInk(ev)
-                Mode.NONE, Mode.PIPETTE -> Unit
+                Mode.NONE, Mode.PIPETTE, Mode.PALM -> Unit
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
                 if (mode == Mode.FORWARD) {
@@ -240,6 +258,14 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
             hover = if (event.actionMasked == MotionEvent.ACTION_HOVER_EXIT) null else PointF(event.x, event.y)
             invalidate()
             return true
+        }
+        if (isPen(event.getToolType(0))) {
+            lastPenTime = SystemClock.uptimeMillis()
+            // Ладонь только что легла и листает/тянет, а перо подошло — отменяем её жест.
+            if (mode == Mode.FORWARD && lastPenTime - fingerDownTime < 700L) {
+                cancelForward(event)
+                mode = Mode.PALM
+            }
         }
         if (!isPen(event.getToolType(0)) || host.passThrough()) return super.onHoverEvent(event)
         hover = if (event.actionMasked == MotionEvent.ACTION_HOVER_EXIT) null else PointF(event.x, event.y)
@@ -403,6 +429,8 @@ class NoteImageView(
         fun onImageResized(v: NoteImageView)
         /** Отпустили после перетаскивания: translationY — на сколько сдвинута по вертикали. */
         fun onImageDropped(v: NoteImageView)
+        /** Жест отменён (ладонь): картинка вернулась как была — забыть запомненное для «Отменить». */
+        fun onImageEditCancel(v: NoteImageView)
     }
 
     private enum class Mode { NONE, TAP, RESIZE, MOVE }
@@ -428,6 +456,8 @@ class NoteImageView(
     private var downRawY = 0f
     private var startW = 0f
     private var startLeft = 0f
+    private var startWf = 0f
+    private var startXa = 0f
     private var cornerRight = true
     private var cornerBottom = true
     private var edited = false
@@ -497,6 +527,8 @@ class NoteImageView(
                 edited = false
                 startW = rect.width()
                 startLeft = rect.left
+                startWf = block.wf
+                startXa = block.xa
                 if (host.isImageSelected(block)) {
                     var corner = false
                     for (x in floatArrayOf(rect.left, rect.right)) for (y in floatArrayOf(rect.top, rect.bottom)) {
@@ -556,6 +588,15 @@ class NoteImageView(
                 when {
                     wasTap -> host.onImageTap(this)
                     m == Mode.MOVE && !edited && ev.actionMasked == MotionEvent.ACTION_UP -> host.onImageTap(this)
+                    // Жест отменили (это была ладонь, пришло перо) — вернуть картинку как было.
+                    (m == Mode.RESIZE || m == Mode.MOVE) && edited && ev.actionMasked == MotionEvent.ACTION_CANCEL -> {
+                        block.wf = startWf
+                        block.xa = startXa
+                        translationY = 0f
+                        requestLayout()
+                        invalidate()
+                        host.onImageEditCancel(this)
+                    }
                     m == Mode.RESIZE && edited -> host.onImageResized(this)
                     m == Mode.MOVE && edited -> host.onImageDropped(this)
                 }

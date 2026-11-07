@@ -80,6 +80,7 @@ class ScreensSmokeTest {
         drawStroke(ink, MotionEvent.TOOL_TYPE_STYLUS, 0.55f, 0.62f)
 
         // 2. Палец по галочке второй задачи: «не сдано» → «сдано».
+        afterPen()
         val check = findAll(root) { it.contentDescription == "Не сдано" }.first()
         val c = IntArray(2); val o = IntArray(2)
         check.getLocationInWindow(c); ink.getLocationInWindow(o)
@@ -239,7 +240,8 @@ class ScreensSmokeTest {
         assertEquals(4, board().stickers.size)
         assertEquals("s0", board().stickers.last().sid)
 
-        // Пальцем по метке — следующий статус («В работе»).
+        // Пальцем по метке — следующий статус («В работе»). (Пауза: сразу после пера палец считается ладонью.)
+        afterPen()
         val s = board().stickers.last()
         val sx = (s.x + view.stickerW(s) / 2 - board().camX) * board().camZ
         val sy = (s.y + s.h / 2 - board().camY) * board().camZ
@@ -771,6 +773,7 @@ class ScreensSmokeTest {
         assertEquals(1, c.leaderCount)
 
         // Касание строки статуса пальцем — следующий статус по списку.
+        afterPen()
         fun tapStatus() {
             val r = view.calloutRect(c, android.graphics.RectF())
             tap(view, MotionEvent.TOOL_TYPE_FINGER, sx(r.centerX()), sy(r.top + r.height() * 0.75f))
@@ -791,6 +794,109 @@ class ScreensSmokeTest {
         assertEquals(1, saved.fills.size)
         assertEquals("Сняли опалубку", saved.status(saved.callouts[0].sid).name)
         assertEquals(2, saved.callouts[0].leaderCount)
+    }
+
+    // ------------------------------------------------------------------ 0.8.1: защита от ладони
+
+    /** Пауза после пера: через 0,7 с пальцы снова работают. */
+    private fun afterPen() = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1000))
+
+    private fun hoverPen(view: View, x: Float, y: Float) {
+        val t = SystemClock.uptimeMillis()
+        val props = arrayOf(MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_STYLUS })
+        val coords = arrayOf(MotionEvent.PointerCoords().apply { this.x = x; this.y = y })
+        val e = MotionEvent.obtain(t, t, MotionEvent.ACTION_HOVER_MOVE, 1, props, coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_STYLUS, 0)
+        view.dispatchGenericMotionEvent(e)
+        idle()
+    }
+
+    /** Событие с двумя касаниями: палец (id 0) и перо (id 1). */
+    private fun twoPointer(down: Long, time: Long, action: Int, fx: Float, fy: Float, px: Float, py: Float): MotionEvent {
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_STYLUS },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply { x = fx; y = fy; pressure = 0.5f; size = 0.1f },
+            MotionEvent.PointerCoords().apply { x = px; y = py; pressure = 0.4f },
+        )
+        return MotionEvent.obtain(down, time, action, 2, props, coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun board_palmDoesNotMoveImage() {
+        val b0 = sampleBoard()
+        val controller = Robolectric.buildActivity(
+            BoardActivity::class.java,
+            Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b0.id),
+        ).setup()
+        val activity = controller.get()
+        val root = activity.window.decorView
+        idle()
+        val view = find(root, BoardView::class.java)
+        view.fitAll()
+        idle()
+        val board = { activity.board() }
+        fun sx(x: Float) = (x - board().camX) * board().camZ
+        fun sy(y: Float) = (y - board().camY) * board().camZ
+        val m = board().images[0]
+        val cx = sx(m.x + m.w / 2); val cy = sy(m.y + m.h / 2)
+        tap(view, MotionEvent.TOOL_TYPE_FINGER, cx, cy)
+        assertTrue("картинка выделена", view.selection.singleOrNull() === m)
+        val x0 = m.x; val camX0 = board().camX
+
+        // 1. Перо над экраном — ладонь по выделенной картинке её не двигает (и доску тоже).
+        hoverPen(view, cx + 200f, cy + 300f)
+        drag(view, MotionEvent.TOOL_TYPE_FINGER, cx, cy, cx - 150f, cy + 80f)
+        assertEquals("картинка на месте", x0, m.x, 0.01f)
+        assertEquals("доска на месте", camX0, board().camX, 0.01f)
+        assertTrue("выделение не сбито ладонью", view.selection.singleOrNull() === m)
+
+        // 2. Ладонь легла раньше пера и потащила картинку, следом коснулось перо — картинка возвращается.
+        afterPen()
+        val down = SystemClock.uptimeMillis()
+        view.dispatchTouchEvent(event(down, down, MotionEvent.ACTION_DOWN, cx, cy, MotionEvent.TOOL_TYPE_FINGER))
+        for (i in 1..6) view.dispatchTouchEvent(event(down, down + i * 10L, MotionEvent.ACTION_MOVE, cx - i * 15f, cy, MotionEvent.TOOL_TYPE_FINGER))
+        assertTrue("ладонь успела сдвинуть: ${m.x}", m.x < x0 - 10f)
+        val pd = MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        view.dispatchTouchEvent(twoPointer(down, down + 80, pd, cx - 90f, cy, cx + 300f, cy + 400f))
+        assertEquals("перо пришло — картинка вернулась", x0, m.x, 0.01f)
+        for (i in 1..8) view.dispatchTouchEvent(twoPointer(down, down + 80 + i * 8L, MotionEvent.ACTION_MOVE, cx - 90f, cy, cx + 300f + i * 10f, cy + 400f))
+        val pu = MotionEvent.ACTION_POINTER_UP or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        view.dispatchTouchEvent(twoPointer(down, down + 200, pu, cx - 90f, cy, cx + 380f, cy + 400f))
+        view.dispatchTouchEvent(event(down, down + 210, MotionEvent.ACTION_UP, cx - 90f, cy, MotionEvent.TOOL_TYPE_FINGER))
+        idle()
+        assertEquals("картинка так и стоит на месте", x0, m.x, 0.01f)
+
+        // 3. Пером провели штрих — выделение снято, ладони нечего тащить.
+        assertEquals(0, view.selection.size)
+        controller.pause()
+        assertEquals(x0, BoardStore(ctx).load(b0.id)!!.images[0].x, 0.01f)
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun note_palmIgnoredNearPen() {
+        val n = sampleNote()
+        val controller = openNote(n)
+        val activity = controller.get()
+        idle()
+        val root = activity.window.decorView
+        val ink = find(root, NoteInkView::class.java)
+        val check = findAll(root) { it.contentDescription == "Не сдано" }.first()
+        val c = IntArray(2); val o = IntArray(2)
+        check.getLocationInWindow(c); ink.getLocationInWindow(o)
+        val x = (c[0] - o[0] + check.width / 2).toFloat()
+        val y = (c[1] - o[1] + check.height / 2).toFloat()
+        // Перо рядом — касание по галочке не считается.
+        hoverPen(ink, x + 300f, y + 200f)
+        tap(ink, MotionEvent.TOOL_TYPE_FINGER, x, y)
+        assertEquals("ладонь при пере рядом — задача не отмечена", 1, noteOf(activity).tasksDone)
+        // Перо убрали — палец снова работает.
+        afterPen()
+        tap(ink, MotionEvent.TOOL_TYPE_FINGER, x, y)
+        assertEquals(2, noteOf(activity).tasksDone)
     }
 
     /** Фото для записи — нарисовано прямо в тесте. */
