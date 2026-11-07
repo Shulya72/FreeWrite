@@ -112,6 +112,46 @@ class ShapeRecognizerTest {
         assertEquals(ShapeRecognizer.Kind.DOUBLE_ARROW, s?.kind)
     }
 
+    /** Кривая с наконечником: точки линии (x, y подряд) + усики у конца по касательной. */
+    private fun withHead(body: FloatArray, barb: Float, oneStroke: Boolean): List<FloatArray> {
+        val n = body.size / 2
+        val tx = body[n * 2 - 2]; val ty = body[n * 2 - 1]
+        val px = body[n * 2 - 12]; val py = body[n * 2 - 11]
+        val l = hypot(tx - px, ty - py)
+        val dx = (tx - px) / l; val dy = (ty - py) / l
+        fun rot(a: Double): FloatArray {
+            val c = cos(a).toFloat(); val s = sin(a).toFloat()
+            val bx = -dx; val by = -dy
+            return floatArrayOf(tx + barb * (bx * c - by * s), ty + barb * (bx * s + by * c))
+        }
+        val l1 = rot(Math.toRadians(32.0)); val r1 = rot(Math.toRadians(-30.0))
+        return if (oneStroke) {
+            listOf(body + poly(tx, ty, l1[0], l1[1], tx, ty, r1[0], r1[1]).copyOfRange(2, poly(tx, ty, l1[0], l1[1], tx, ty, r1[0], r1[1]).size))
+        } else {
+            listOf(body, poly(l1[0], l1[1], tx + 2, ty + 1, r1[0], r1[1]))
+        }
+    }
+
+    @Test
+    fun arrow_curved() {
+        // Дуга четверть круга со стрелкой одним штрихом.
+        val arcBody = wobble(arc(300f, 400f, 260f, 260f, PI, PI / 2), 2f)
+        val a = rec(*withHead(arcBody, 55f, true).toTypedArray())!!
+        assertEquals(ShapeRecognizer.Kind.ARROW, a.kind)
+        // Древко осталось дугой: середина далеко от прямой «начало — кончик».
+        val mid = a.pts.size / 4 * 2
+        val x0 = a.pts[0]; val y0 = a.pts[1]
+        val dev = abs((560f - x0) * (a.pts[mid + 1] - y0) - (140f - y0) * (a.pts[mid] - x0)) / hypot(560f - x0, 140f - y0)
+        assertTrue("дуга, а не прямая (отклонение $dev)", dev > 40f)
+        // Волна со стрелкой.
+        val wave = FloatArray(160) { k -> val i = k / 2; if (k % 2 == 0) 100f + i * 6f else (300 + 50 * sin(i / 80.0 * 2 * PI)).toFloat() }
+        assertEquals(ShapeRecognizer.Kind.ARROW, kind(*withHead(wobble(wave, 1.5f, 3), 45f, true).toTypedArray()))
+        // Дуга, потом наконечник отдельным штрихом.
+        assertEquals(ShapeRecognizer.Kind.ARROW, kind(*withHead(wobble(arc(300f, 300f, 220f, 150f, 0.0, PI * 0.9), 2f, 5), 50f, false).toTypedArray()))
+        // Просто дуга без наконечника — не фигура.
+        assertNull(kind(wobble(arc(300f, 400f, 260f, 260f, PI, PI / 2), 2f)))
+    }
+
     @Test
     fun rectangle_withOvershoot() {
         // Начали с середины верхней стороны, обошли и чуть заехали дальше начала.

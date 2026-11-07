@@ -454,8 +454,8 @@ class ScreensSmokeTest {
 
         // Палец по картинке — выбрана.
         tap(view, MotionEvent.TOOL_TYPE_FINGER, sx(m.x + m.w / 2), sy(m.y + m.h / 2))
-        assertEquals(0, view.selected)
-        assertEquals(View.VISIBLE, root.findViewWithTag<View>("image_bar").visibility)
+        assertTrue("картинка выделена", view.selection.size == 1 && view.selection[0] === board().images[0])
+        assertEquals(View.VISIBLE, root.findViewWithTag<View>("selection_bar").visibility)
 
         // Правый нижний уголок наружу — больше, пропорции те же, левый верхний угол на месте.
         val (x0, y0, w0, h0) = listOf(m.x, m.y, m.w, m.h)
@@ -488,6 +488,201 @@ class ScreensSmokeTest {
         val saved = BoardStore(ctx).load(b0.id)!!
         assertEquals(w0 / h0, saved.images[0].w / saved.images[0].h, 0.01f)
         assertEquals(n0 + 1, saved.strokes.size)
+    }
+
+    // ------------------------------------------------------------------ 0.6: название, цвета, выделение
+
+    private fun field(o: Any, name: String): Any? =
+        o.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(o)
+
+    private fun near(expected: Int, actual: Int, tol: Int = 18): Boolean =
+        Math.abs(android.graphics.Color.red(expected) - android.graphics.Color.red(actual)) <= tol &&
+            Math.abs(android.graphics.Color.green(expected) - android.graphics.Color.green(actual)) <= tol &&
+            Math.abs(android.graphics.Color.blue(expected) - android.graphics.Color.blue(actual)) <= tol
+
+    private fun latestDialogRoot(): View = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun home_newNoteAndBoardAskTitle() {
+        val home = Robolectric.buildActivity(HomeActivity::class.java).setup().get()
+        idle()
+        fun card(title: String): View {
+            var v: View = findAll(home.window.decorView) { it is android.widget.TextView && it.text.toString() == title }.first()
+            while (!v.isClickable) v = v.parent as View
+            return v
+        }
+        card("Новая запись").performClick()
+        idle()
+        val dlg = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+        val input = dlg.window!!.decorView.findViewWithTag<android.widget.EditText>("title_input")
+        assertTrue("предложено название: ${input.text}", input.text.toString().startsWith("Запись "))
+        screenshot(dlg.window!!.decorView.rootView, "new-note-title.png")
+        input.setText("Планёрка 8:30")
+        dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+        idle()
+        val id = shadowOf(home).nextStartedActivity.getStringExtra(NoteActivity.EXTRA_ID)!!
+        assertEquals("Планёрка 8:30", NoteStore(ctx).load(id)!!.title)
+
+        // Доска: оставили предложенное название.
+        card("Новая доска").performClick()
+        idle()
+        org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+        idle()
+        val bid = shadowOf(home).nextStartedActivity.getStringExtra(BoardActivity.EXTRA_ID)!!
+        assertTrue(BoardStore(ctx).load(bid)!!.title.startsWith("Доска "))
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun note_paletteAndPipette() {
+        photo("pip-photo.jpg")
+        val n = Note.create("Цвета")
+        n.blocks.clear()
+        n.blocks += Block.Para("Строка")
+        n.blocks += Block.Image("pip-photo.jpg", 640, 440)
+        n.blocks += Block.Para("")
+        n.caret = 0
+        NoteStore(ctx).save(n)
+        val controller = openNote(n)
+        val activity = controller.get()
+        idle()
+        val root = activity.window.decorView
+        val ink = find(root, NoteInkView::class.java)
+
+        // Палитра: 24 цвета; оранжевый — ручка рисует им, он первый в последних цветах.
+        root.findViewWithTag<View>("tool_palette").performClick()
+        idle()
+        val swatches = findAll(latestDialogRoot()) { it.tag == "palette_color" }
+        assertEquals(24, swatches.size)
+        screenshot(latestDialogRoot().rootView, "palette.png")
+        swatches[6].performClick()
+        idle()
+        drawStroke(ink, MotionEvent.TOOL_TYPE_STYLUS, 0.55f, 0.8f)
+        assertEquals(ColorKit.PALETTE[6], noteOf(activity).drawings.last().color)
+        assertEquals(ColorKit.PALETTE[6], ColorKit.recent(ctx)[0])
+
+        // Пипетка: касание неба на фото — цвет неба.
+        root.findViewWithTag<View>("tool_palette").performClick()
+        idle()
+        latestDialogRoot().findViewWithTag<View>("palette_pipette").performClick()
+        idle()
+        val img = find(root, NoteImageView::class.java)
+        val a = IntArray(2); val o = IntArray(2)
+        img.getLocationInWindow(a); ink.getLocationInWindow(o)
+        val r = img.imageRect()
+        tap(ink, MotionEvent.TOOL_TYPE_FINGER, a[0] - o[0] + r.centerX(), a[1] - o[1] + r.top + r.height() * 0.15f)
+        val picked = field(activity, "penColor") as Int
+        assertTrue("цвет неба: ${Integer.toHexString(picked)}", near(android.graphics.Color.rgb(157, 185, 214), picked))
+        assertEquals("после пипетки — снова ручка", "PEN", field(activity, "tool").toString())
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun board_selectEditCopyLassoPipette() {
+        val b0 = sampleBoard()
+        val controller = Robolectric.buildActivity(
+            BoardActivity::class.java,
+            Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b0.id),
+        ).setup()
+        val activity = controller.get()
+        val root = activity.window.decorView
+        idle()
+        val view = find(root, BoardView::class.java)
+        view.fitAll()
+        idle()
+        val board = { activity.board() }
+        fun sx(x: Float) = (x - board().camX) * board().camZ
+        fun sy(y: Float) = (y - board().camY) * board().camZ
+        val z = { board().camZ }
+
+        // Палец по надписи — выделена, на панели «Изменить».
+        val t = board().texts.first { it.text == "Фундамент" }
+        tap(view, MotionEvent.TOOL_TYPE_FINGER, sx(t.x + 20f), sy(t.y - t.size / 3f))
+        assertTrue("надпись выделена", view.selection.size == 1 && view.selection[0] === t)
+        assertTrue(root.findViewWithTag<View>("sel_edit") != null)
+
+        // Уголок — крупнее.
+        val size0 = t.size
+        val bb = view.selectionBounds()!!
+        val pad = 4f * 2f / z()
+        drag(view, MotionEvent.TOOL_TYPE_FINGER, sx(bb.right + pad), sy(bb.bottom + pad), sx(bb.right + pad) + 160f, sy(bb.bottom + pad) + 40f)
+        assertTrue("надпись крупнее: ${t.size} > $size0", t.size > size0 * 1.2f)
+
+        // Копия: новая надпись, выделена копия.
+        val texts0 = board().texts.size
+        root.findViewWithTag<View>("sel_copy").performClick()
+        idle()
+        assertEquals(texts0 + 1, board().texts.size)
+        assertTrue(view.selection[0] === board().texts.last())
+
+        // Изменить текст копии.
+        root.findViewWithTag<View>("sel_edit").performClick()
+        idle()
+        val edit = findAll(latestDialogRoot()) { it is android.widget.EditText }.first() as android.widget.EditText
+        edit.setText("Фундамент — схема есть")
+        org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+        idle()
+        assertEquals("Фундамент — схема есть", board().texts.last().text)
+
+        // Цвет копии — красный из палитры.
+        root.findViewWithTag<View>("sel_color").performClick()
+        idle()
+        findAll(latestDialogRoot()) { it.tag == "palette_color" }[4].performClick()
+        idle()
+        assertEquals(ColorKit.PALETTE[4], board().texts.last().color)
+        controller.pause()
+        assertTrue("сохранено", BoardStore(ctx).load(b0.id)!!.texts.any { it.text == "Фундамент — схема есть" && it.color == ColorKit.PALETTE[4] })
+        controller.resume()
+        idle()
+
+        // «Готово», потом «Выделить»: обвести пером три метки.
+        root.findViewWithTag<View>("sel_done").performClick()
+        idle()
+        assertEquals(0, view.selection.size)
+        root.findViewWithTag<View>("board_tool_select").performClick()
+        val st = board().stickers
+        val l = st.minOf { it.x } - 20f; val r = st.maxOf { it.x + it.w } + 20f
+        val tp = st.minOf { it.y } - 20f; val bt = st.maxOf { it.y + it.h } + 20f
+        drawPath(view, MotionEvent.TOOL_TYPE_STYLUS, poly(sx(l), sy(tp), sx(r), sy(tp), sx(r), sy(bt), sx(l), sy(bt), sx(l), sy(tp)))
+        assertTrue("все метки в выделении: ${view.selection.size}", st.all { s -> view.selection.any { it === s } })
+        screenshot(root, "board-selection.png")
+        val selected = view.selection.size
+        val total0 = board().texts.size + board().stickers.size + board().strokes.size + board().images.size
+        root.findViewWithTag<View>("sel_delete").performClick()
+        idle()
+        assertEquals(0, board().stickers.size)
+        assertEquals("удалено ровно выделенное", total0 - selected,
+            board().texts.size + board().stickers.size + board().strokes.size + board().images.size)
+
+        // Пипетка: цвет неба с фото.
+        root.findViewWithTag<View>("board_tool_palette").performClick()
+        idle()
+        latestDialogRoot().findViewWithTag<View>("palette_pipette").performClick()
+        idle()
+        val m = board().images[0]
+        tap(view, MotionEvent.TOOL_TYPE_STYLUS, sx(m.x + m.w / 2f), sy(m.y + m.h * 0.15f))
+        val picked = field(activity, "penColor") as Int
+        assertTrue("цвет неба: ${Integer.toHexString(picked)}", near(android.graphics.Color.rgb(157, 185, 214), picked))
+
+        controller.pause()
+        val saved = BoardStore(ctx).load(b0.id)!!
+        assertEquals(0, saved.stickers.size)
+        assertEquals(board().texts.size, saved.texts.size)
+    }
+
+    @Test
+    fun shapes_curvedArrowOnBoard() {
+        // Кривая стрелка через инструмент «Фигуры» — один рисунок с плавным древком.
+        val pts = ArrayList<Float>()
+        for (i in 0..60) {
+            val a = Math.PI + Math.PI / 2 * i / 60
+            pts += (400 + 250 * Math.cos(a)).toFloat(); pts += (500 + 250 * Math.sin(a)).toFloat()
+        }
+        // Кончик (400, 250), направление вправо; усики назад-вверх и назад-вниз.
+        val head = listOf(355f, 225f, 400f, 250f, 355f, 278f)
+        val shape = ShapeRecognizer.recognize(listOf(pts.toFloatArray(), head.toFloatArray()), 40f, 6f)
+        assertEquals(ShapeRecognizer.Kind.ARROW, shape?.kind)
     }
 
     /** Фото для записи — нарисовано прямо в тесте. */

@@ -17,7 +17,9 @@ import kotlin.math.sqrt
  * - замкнутый штрих: сравниваем, на что он больше похож — на овал или на многоугольник
  *   (3 угла — треугольник, 4 прямых угла — прямоугольник/квадрат, углы на серединах сторон — ромб);
  * - стрелку можно рисовать в 1–3 штриха (древко + наконечник), прямоугольник — в 2–4 штриха,
- *   если концы штрихов сходятся.
+ *   если концы штрихов сходятся;
+ * - древко стрелки может быть дугой или волной: оно сглаживается, а наконечник ставится ровно
+ *   по направлению линии у конца.
  *
  * Вход — штрихи (x, y подряд). Выход — ровная ломаная (x, y подряд) с частыми точками,
  * чтобы ластик цеплял фигуру в любом месте, или null, если это не фигура.
@@ -55,7 +57,7 @@ object ShapeRecognizer {
         val raw = if (paths.size == 1) {
             single(paths[0])
         } else {
-            arrow(paths) ?: chain(paths)?.let { closed(it) }
+            arrow(paths) ?: curvedArrowMulti(paths) ?: chain(paths)?.let { closed(it) }
         } ?: return null
         return Shape(raw.kind, densify(raw.pts, max(step, 0.5f), raw.kind))
     }
@@ -174,7 +176,7 @@ object ShapeRecognizer {
 
     // ------------------------------------------------------------------ один штрих
 
-    private fun single(p: List<V>): Raw? = closed(p) ?: line(p) ?: arrow(listOf(p))
+    private fun single(p: List<V>): Raw? = closed(p) ?: line(p) ?: arrow(listOf(p)) ?: curvedArrowSingle(p)
 
     /** Прямая линия. Почти горизонтальная/вертикальная — выравнивается. */
     private fun line(p: List<V>): Raw? {
@@ -505,6 +507,166 @@ object ShapeRecognizer {
                 Raw(Kind.ARROW, listOf(b0, a0, l, a0, r))
             }
         }
+    }
+
+    // ------------------------------------------------------------------ кривые стрелки
+
+    /** Единичное направление у конца линии (наружу): от точки на расстоянии back вдоль линии — к концу. */
+    private fun endDir(p: List<V>, atEnd: Boolean, back: Float): V {
+        val n = p.size
+        val tip = if (atEnd) p[n - 1] else p[0]
+        var acc = 0f
+        var prev = tip
+        var q = tip
+        val order = if (atEnd) (n - 2 downTo 0) else (1 until n)
+        for (i in order) {
+            val c = p[i]
+            acc += dist(prev, c)
+            prev = c
+            q = c
+            if (acc >= back) break
+        }
+        val dx = tip.x - q.x; val dy = tip.y - q.y
+        val l = hypot(dx, dy)
+        return if (l <= 1e-4f) V(1f, 0f) else V(dx / l, dy / l)
+    }
+
+    /** Самый резкий поворот линии, в градусах (0 — прямо, 180 — назад); p — с равным шагом. */
+    private fun maxTurn(p: List<V>, k: Int): Float {
+        var m = 0f
+        for (i in k until p.size - k) {
+            val t = 180f - angleAt(p[i - k], p[i], p[i + k])
+            if (t > m) m = t
+        }
+        return m
+    }
+
+    private class Head(val ok: Boolean, val len: Float)
+
+    /**
+     * Наконечник у конца tip (dir — направление линии наружу). Вершины verts: у самого кончика —
+     * пропускаем, остальные должны быть усиками (назад вдоль линии, до 60°), по обе стороны.
+     * null — в рисунке есть что-то лишнее (это не стрелка).
+     */
+    private fun headAt(tip: V, dir: V, verts: List<V>, bodyLen: Float): Head? {
+        val far = verts.maxOfOrNull { dist(it, tip) } ?: return Head(false, 0f)
+        if (far > 0.5f * bodyLen) return null
+        if (far < 0.03f * bodyLen) return Head(false, 0f)
+        var left = 0
+        var right = 0
+        val lens = ArrayList<Float>()
+        for (w in verts) {
+            val d = dist(w, tip)
+            if (d < 0.35f * far) continue
+            if (angleBetween(w.x - tip.x, w.y - tip.y, -dir.x, -dir.y) > 60f) return null
+            val cross = dir.x * (w.y - tip.y) - dir.y * (w.x - tip.x)
+            if (cross >= 0) left++ else right++
+            lens += d
+        }
+        return Head(left > 0 && right > 0, if (lens.isEmpty()) 0f else lens.average().toFloat())
+    }
+
+    /** Кривая стрелка одним штрихом: плавная линия, резкий разворот у конца и усики. */
+    private fun curvedArrowSingle(p0: List<V>): Raw? {
+        val total = length(p0)
+        if (total <= 0f) return null
+        val n = 200
+        val p = resample(p0, n)
+        val stepLen = total / (n - 1)
+        val k = max(2, (0.03f * total / stepLen).toInt())
+        // Кончик — первый резкий разворот во второй части пути.
+        var tip = -1
+        for (i in (n * 0.4f).toInt() until n - k) {
+            if (180f - angleAt(p[i - k], p[i], p[i + k]) >= 105f) { tip = i; break }
+        }
+        if (tip < 0) return null
+        var best = 0f
+        for (i in tip until min(n - k, tip + k + 1)) {
+            val t = 180f - angleAt(p[i - k], p[i], p[i + k])
+            if (t > best) { best = t; tip = i }
+        }
+        val body = p.subList(0, tip + 1)
+        val bodyLen = stepLen * tip
+        if (bodyLen < 0.55f * total || body.size < 2 * k + 2) return null
+        if (maxTurn(body, k) >= 100f) return null // древко плавное, без изломов
+        val rest = p.subList(tip, n)
+        val restVerts = simplify(rest, 0, rest.size - 1, 0.03f * bodyLen).map { rest[it] }
+        val dir = endDir(body, true, 0.12f * bodyLen)
+        val head = headAt(p[tip], dir, restVerts, bodyLen) ?: return null
+        if (!head.ok) return null
+        return curved(body, bodyLen, head.len, null)
+    }
+
+    /** Кривая стрелка из 2–3 штрихов: плавное древко + наконечник(и) отдельными штрихами. */
+    private fun curvedArrowMulti(paths: List<List<V>>): Raw? {
+        if (paths.size > 3) return null
+        val bi = paths.indices.maxByOrNull { length(paths[it]) } ?: return null
+        val bodyLen = length(paths[bi])
+        if (bodyLen <= 0f) return null
+        val body = resample(paths[bi], 200)
+        val k = max(2, (0.03f * 199).toInt())
+        if (maxTurn(body, k) >= 100f) return null
+        val endVerts = ArrayList<V>()
+        val startVerts = ArrayList<V>()
+        for ((i, o) in paths.withIndex()) {
+            if (i == bi) continue
+            if (diag(o) > 0.6f * bodyLen) return null
+            val dEnd = o.minOf { dist(it, body.last()) }
+            val dStart = o.minOf { dist(it, body.first()) }
+            if (min(dEnd, dStart) > 0.25f * bodyLen) return null
+            val vs = simplify(o, 0, o.size - 1, 0.05f * max(diag(o), 1f)).map { o[it] }
+            if (dEnd <= dStart) endVerts += vs else startVerts += vs
+        }
+        val back = 0.12f * bodyLen
+        val hEnd = if (endVerts.isEmpty()) null else (headAt(body.last(), endDir(body, true, back), endVerts, bodyLen) ?: return null)
+        val hStart = if (startVerts.isEmpty()) null else (headAt(body.first(), endDir(body, false, back), startVerts, bodyLen) ?: return null)
+        val endOk = hEnd?.ok == true
+        val startOk = hStart?.ok == true
+        if (!endOk && !startOk) return null
+        return curved(body, bodyLen, if (endOk) hEnd!!.len else null, if (startOk) hStart!!.len else null)
+    }
+
+    /** Сгладить древко и поставить ровные наконечники по направлению линии у концов. */
+    private fun curved(body: List<V>, bodyLen: Float, headEnd: Float?, headStart: Float?): Raw {
+        var s = resample(body, 120)
+        repeat(2) { s = smooth(s, 4) }
+        val back = 0.12f * bodyLen
+        fun barbs(tip: V, dir: V, len: Float): Pair<V, V> {
+            val h = len.coerceIn(0.05f * bodyLen, 0.3f * bodyLen)
+            val r = Math.toRadians(28.0)
+            val cr = cos(r).toFloat(); val sr = sin(r).toFloat()
+            val bx = -dir.x; val by = -dir.y // назад вдоль линии
+            return V(tip.x + h * (bx * cr - by * sr), tip.y + h * (bx * sr + by * cr)) to
+                V(tip.x + h * (bx * cr + by * sr), tip.y + h * (-bx * sr + by * cr))
+        }
+        val out = ArrayList<V>()
+        if (headStart != null) {
+            val (l, r) = barbs(s.first(), endDir(s, false, back), headStart)
+            out += l; out += s.first(); out += r
+        }
+        out += s
+        if (headEnd != null) {
+            val (l, r) = barbs(s.last(), endDir(s, true, back), headEnd)
+            out += l; out += s.last(); out += r
+        }
+        return Raw(Kind.ARROW, out)
+    }
+
+    /** Скользящее среднее (концы на месте) — убирает дрожь руки. */
+    private fun smooth(p: List<V>, r: Int): List<V> {
+        if (p.size < 3) return p
+        val out = ArrayList<V>(p.size)
+        out += p.first()
+        for (i in 1 until p.size - 1) {
+            val a = max(0, i - r)
+            val b = min(p.size - 1, i + r)
+            var x = 0f; var y = 0f
+            for (j in a..b) { x += p[j].x; y += p[j].y }
+            val c = (b - a + 1).toFloat()
+            out += V(x / c, y / c)
+        }
+        out += p.last()
+        return out
     }
 
     // ------------------------------------------------------------------ фигура из нескольких штрихов

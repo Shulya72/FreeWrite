@@ -24,7 +24,9 @@ sealed class Block {
 }
 
 /** Рисунок ручкой или маркером: точки в координатах листа (x, y, нажим). */
-class Drawing(val kind: String, val color: Int, val width: Float, val pts: FloatArray)
+class Drawing(val kind: String, var color: Int, var width: Float, val pts: FloatArray) {
+    fun copy(): Drawing = Drawing(kind, color, width, pts.copyOf())
+}
 
 /** Одна запись ежедневника. */
 class Note(

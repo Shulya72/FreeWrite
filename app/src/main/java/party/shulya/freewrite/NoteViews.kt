@@ -101,6 +101,10 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         /** Передать касание пальца листу. */
         fun forwardToSheet(ev: MotionEvent)
         fun passThrough(): Boolean
+        /** Включена пипетка: касание (пером или пальцем) берёт цвет. */
+        fun pipetteMode(): Boolean
+        fun pipetteColor(x: Float, y: Float): Int?
+        fun onPipettePick(x: Float, y: Float)
         fun fingerWrites(): Boolean
         fun isEraser(): Boolean
         fun strokeStyle(): StrokeStyle
@@ -113,7 +117,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
 
     class StrokeStyle(val kind: String, val color: Int, val width: Float)
 
-    private enum class Mode { NONE, FORWARD, INK, ERASE }
+    private enum class Mode { NONE, FORWARD, INK, ERASE, PIPETTE }
 
     private var mode = Mode.NONE
     private var activePointer = MotionEvent.INVALID_POINTER_ID
@@ -157,6 +161,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(ev: MotionEvent): Boolean {
+        if (host.pipetteMode() || mode == Mode.PIPETTE) return pipetteTouch(ev)
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val tool = ev.getToolType(0)
@@ -185,7 +190,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
             MotionEvent.ACTION_MOVE -> when (mode) {
                 Mode.FORWARD -> host.forwardToSheet(ev)
                 Mode.INK, Mode.ERASE -> moveInk(ev)
-                Mode.NONE -> Unit
+                Mode.NONE, Mode.PIPETTE -> Unit
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
                 if (mode == Mode.FORWARD) {
@@ -206,7 +211,36 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         return true
     }
 
+    /** Пипетка: под пальцем/пером кружок с цветом, при отпускании цвет берётся. */
+    private fun pipetteTouch(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                mode = Mode.PIPETTE
+                parent?.requestDisallowInterceptTouchEvent(true)
+                hover = PointF(ev.x, ev.y)
+                invalidate()
+            }
+            MotionEvent.ACTION_UP -> {
+                mode = Mode.NONE
+                hover = null
+                host.onPipettePick(ev.x, ev.y)
+                invalidate()
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                mode = Mode.NONE
+                hover = null
+                invalidate()
+            }
+        }
+        return true
+    }
+
     override fun onHoverEvent(event: MotionEvent): Boolean {
+        if (host.pipetteMode()) {
+            hover = if (event.actionMasked == MotionEvent.ACTION_HOVER_EXIT) null else PointF(event.x, event.y)
+            invalidate()
+            return true
+        }
         if (!isPen(event.getToolType(0)) || host.passThrough()) return super.onHoverEvent(event)
         hover = if (event.actionMasked == MotionEvent.ACTION_HOVER_EXIT) null else PointF(event.x, event.y)
         invalidate()
@@ -301,7 +335,9 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         }
         canvas.restore()
         hover?.let {
-            if (host.isEraser()) {
+            if (host.pipetteMode() || mode == Mode.PIPETTE) {
+                drawPipetteRing(canvas, it.x, it.y, host.pipetteColor(it.x, it.y))
+            } else if (host.isEraser()) {
                 canvas.drawCircle(it.x, it.y, Ui.dpf(context, 14f), hoverRing)
             } else {
                 hoverDot.color = host.strokeStyle().color
@@ -313,6 +349,8 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
     }
 
     private val painter = InkPainter()
+
+    private fun drawPipetteRing(canvas: Canvas, x: Float, y: Float, color: Int?) = pipetteRing(context, canvas, x, y, color)
 
     private fun drawStroke(canvas: Canvas, s: InkStroke, style: StrokeStyle, alpha: Int) = painter.stroke(canvas, s, style, alpha)
 
@@ -548,4 +586,28 @@ class NoteImageView(
         /** Запас по краям вида картинки (dp) — для уголков у края листа. */
         const val EDGE_DP = 14f
     }
+}
+
+private val pipettePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+/**
+ * Кружок пипетки: сверху над точкой (чтобы палец не закрывал), залит цветом под точкой,
+ * в центре — крестик-прицел.
+ */
+fun pipetteRing(context: Context, canvas: Canvas, x: Float, y: Float, color: Int?) {
+    val r = Ui.dpf(context, 22f)
+    val cy = y - Ui.dpf(context, 46f)
+    pipettePaint.style = Paint.Style.FILL
+    pipettePaint.color = color ?: Color.TRANSPARENT
+    canvas.drawCircle(x, cy, r, pipettePaint)
+    pipettePaint.style = Paint.Style.STROKE
+    pipettePaint.strokeWidth = Ui.dpf(context, 3f)
+    pipettePaint.color = Color.WHITE
+    canvas.drawCircle(x, cy, r, pipettePaint)
+    pipettePaint.strokeWidth = Ui.dpf(context, 1f)
+    pipettePaint.color = Ui.INK2
+    canvas.drawCircle(x, cy, r + Ui.dpf(context, 1.5f), pipettePaint)
+    val c = Ui.dpf(context, 6f)
+    canvas.drawLine(x - c, y, x + c, y, pipettePaint)
+    canvas.drawLine(x, y - c, x, y + c, pipettePaint)
 }

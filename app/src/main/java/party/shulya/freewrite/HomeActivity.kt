@@ -184,9 +184,41 @@ class HomeActivity : Activity() {
     }
 
     private fun newBoard() {
-        val b = Board.create("Доска")
-        boards.save(b)
-        openBoard(b.id)
+        askTitle("Новая доска", "Доска " + Ui.shortDate(System.currentTimeMillis())) { title ->
+            val b = Board.create(title)
+            boards.save(b)
+            openBoard(b.id)
+        }
+    }
+
+    /**
+     * Спросить название нового документа. Предложенное название выделено целиком —
+     * можно сразу писать своё. Пустое поле — остаётся предложенное.
+     */
+    private fun askTitle(heading: String, suggested: String, create: (String) -> Unit) {
+        val edit = EditText(this).apply {
+            setText(suggested)
+            setSelectAllOnFocus(true) // предложенное выделено — можно сразу писать своё
+            selectAll()
+            isSingleLine = true
+            tag = "title_input"
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        }
+        val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(heading)
+            .setMessage("Название")
+            .setView(box)
+            .setPositiveButton("Создать") { _, _ -> create(edit.text.toString().trim().ifEmpty { suggested }) }
+            .setNegativeButton("Отмена", null)
+            .create()
+        edit.setOnEditorActionListener { _, _, _ ->
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.performClick()
+            true
+        }
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        dialog.show()
+        edit.requestFocus()
     }
 
     private fun boardMenu(b: Board) {
@@ -245,9 +277,11 @@ class HomeActivity : Activity() {
     }
 
     private fun newNote() {
-        val n = Note.create("Совещание")
-        store.save(n)
-        open(n.id)
+        askTitle("Новая запись", "Запись " + Ui.shortDate(System.currentTimeMillis())) { title ->
+            val n = Note.create(title)
+            store.save(n)
+            open(n.id)
+        }
     }
 
     private fun noteMenu(n: Note) {

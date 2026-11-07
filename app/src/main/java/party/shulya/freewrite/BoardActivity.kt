@@ -26,12 +26,13 @@ import kotlin.math.roundToInt
 /**
  * Экран «Доска»: бесконечное поле. Пером — писать (надпись становится текстом на том же месте),
  * рисовать, стирать, ставить метки статуса. Пальцем — двигать и масштабировать, касание метки
- * переключает статус, долгое нажатие на картинку — удалить. «Рука» — двигать предметы.
- * Касание картинки пальцем — выбрать: уголки меняют размер, сама картинка двигается.
+ * переключает статус, долгое нажатие на картинку — удалить.
+ * Касание пальцем по надписи, штриху, стрелке или картинке — выделить; «Выделить» — обвести лассо.
+ * Выделенное: тянуть — двигать, уголки и два пальца — размер; панель «Изменить / Копия / Цвет / Удалить».
  */
 class BoardActivity : Activity(), BoardView.Host {
 
-    enum class Tool { WRITE, PEN, MARKER, SHAPE, ERASER, HAND, STATUS }
+    enum class Tool { WRITE, PEN, MARKER, SHAPE, ERASER, SELECT, STATUS, PIPETTE }
 
     private lateinit var store: BoardStore
     private lateinit var noteStore: NoteStore
@@ -48,9 +49,12 @@ class BoardActivity : Activity(), BoardView.Host {
     private lateinit var banner: LinearLayout
     private lateinit var bannerText: TextView
     private lateinit var bannerButton: TextView
-    private lateinit var imageBar: LinearLayout
+    private lateinit var selBar: LinearLayout
     private val toolButtons = HashMap<Tool, Ui.ToolButton>()
-    private val colorViews = ArrayList<Pair<Int, View>>()
+    private val quickColors = ArrayList<View>()
+    private var toolBeforePipette = Tool.PEN
+    private var pipetteForSelection = false
+    private var pipetteSnap: ColorKit.Snapshot? = null
 
     private var tool = Tool.PEN
     private var penColor = Ui.INK
@@ -149,22 +153,22 @@ class BoardActivity : Activity(), BoardView.Host {
         addTool(row, Tool.MARKER, R.drawable.ic_marker, "Маркер")
         addTool(row, Tool.SHAPE, R.drawable.ic_shapes, "Фигуры")
         addTool(row, Tool.ERASER, R.drawable.ic_eraser, "Ластик")
-        addTool(row, Tool.HAND, R.drawable.ic_hand, "Рука")
+        addTool(row, Tool.SELECT, R.drawable.ic_lasso, "Выделить")
         addTool(row, Tool.STATUS, R.drawable.ic_status, "Статус")
-        for (c in listOf(Ui.INK, Ui.PEN_BLUE, Ui.PEN_RED)) {
+        // Три последних цвета и «Цвет» — палитра из 24 цветов и пипетка.
+        for (i in 0 until 3) {
             val v = View(this).apply {
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(c)
-                }
                 contentDescription = "Цвет"
-                setOnClickListener {
-                    penColor = c
-                    if (!colorTool(tool)) setTool(Tool.PEN) else refreshColors()
-                }
+                tag = "board_quick_color_$i"
+                setOnClickListener { setColor(ColorKit.recent(this@BoardActivity)[i], remember = false) }
             }
             row.addView(v, LinearLayout.LayoutParams(dp(24f), dp(24f)).apply { setMargins(dp(5f), 0, dp(5f), 0) })
-            colorViews += c to v
+            quickColors += v
         }
+        row.addView(Ui.ToolButton(this, R.drawable.ic_palette, "Цвет").apply {
+            tag = "board_tool_palette"
+            setOnClickListener { ColorKit.showPalette(this@BoardActivity, penColor, { setColor(it) }, { startPipette(forSelection = false) }) }
+        })
         row.addView(Ui.separator(this))
         row.addView(Ui.ToolButton(this, R.drawable.ic_image, "Картинка").apply { setOnClickListener { pickImage() } })
         row.addView(Ui.ToolButton(this, R.drawable.ic_undo, "Отменить").apply { setOnClickListener { undo() } })
@@ -214,16 +218,12 @@ class BoardActivity : Activity(), BoardView.Host {
         area.addView(hintView, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(18f)
         })
-        // Панель выбранной картинки.
-        imageBar = Ui.floatingBar(
-            this, "Уголок — размер, картинку — двигать",
-            Ui.pill(this, "Удалить", Ui.BAD, Ui.BAD_SOFT).apply { setOnClickListener { confirmDeleteImage(view.selected) } },
-            Ui.pill(this, "Готово", Color.WHITE, Ui.ACCENT).apply { setOnClickListener { view.select(-1) } },
-        ).apply {
-            tag = "image_bar"
+        // Панель выделенного (содержимое меняется по тому, что выделено).
+        selBar = LinearLayout(this).apply {
+            tag = "selection_bar"
             visibility = View.GONE
         }
-        area.addView(imageBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+        area.addView(selBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = dp(10f)
         })
         root.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
@@ -244,18 +244,38 @@ class BoardActivity : Activity(), BoardView.Host {
         refreshColors()
         if (t != Tool.SHAPE) shapeTool.reset()
         if (t == Tool.STATUS) hint("Коснитесь пером: метка «Не сдано». Пальцем по метке — следующий статус")
-        if (t == Tool.HAND) hint("Перетаскивайте метки, надписи и картинки")
+        if (t == Tool.SELECT) hint("Обведите, что выделить. Касание — один объект. Доску двигать — двумя пальцами", 3500)
         if (t == Tool.SHAPE) hint("Нарисуйте линию, стрелку, квадрат, круг или треугольник — станет ровной фигурой", 3500)
     }
 
     private fun colorTool(t: Tool) = t == Tool.PEN || t == Tool.MARKER || t == Tool.SHAPE
 
     private fun refreshColors() {
-        for ((c, v) in colorViews) {
+        val rec = ColorKit.recent(this)
+        for ((i, v) in quickColors.withIndex()) {
+            val c = rec[i]
             val sel = c == penColor && colorTool(tool)
+            v.background = ColorKit.swatch(this, c, false)
             v.scaleX = if (sel) 1.25f else 1f; v.scaleY = v.scaleX
             v.alpha = if (colorTool(tool)) 1f else 0.55f
         }
+    }
+
+    /** Выбран цвет: ручка/маркер/фигуры рисуют им. remember — поставить первым среди последних. */
+    private fun setColor(c: Int, remember: Boolean = true) {
+        penColor = c
+        if (remember) ColorKit.remember(this, c)
+        if (!colorTool(tool)) setTool(Tool.PEN) else refreshColors()
+    }
+
+    private fun startPipette(forSelection: Boolean) {
+        current?.let { commit(it) }
+        pipetteForSelection = forSelection
+        // Для рисования вернёмся к ручке/маркеру/фигурам — чтобы новый цвет сразу было видно.
+        if (tool != Tool.PIPETTE) toolBeforePipette = if (forSelection || colorTool(tool)) tool else Tool.PEN
+        pipetteSnap = null
+        setTool(Tool.PIPETTE)
+        hint("Пипетка: коснитесь пером или пальцем того, чей цвет взять", 3500)
     }
 
     private fun hint(text: String, ms: Long = 2600) {
@@ -320,7 +340,7 @@ class BoardActivity : Activity(), BoardView.Host {
         board = Board.fromJson(JSONObject(json))
         board.camX = cam.first; board.camY = cam.second; board.camZ = cam.third
         titleView.text = board.title
-        view.select(-1)
+        view.clearSelection()
         changed()
     }
 
@@ -346,6 +366,8 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     private fun changed() {
+        view.pruneSelection()
+        pipetteSnap = null
         view.invalidate()
         handler.removeCallbacks(saveRunnable)
         handler.postDelayed(saveRunnable, 500)
@@ -394,7 +416,7 @@ class BoardActivity : Activity(), BoardView.Host {
                 pushUndo()
                 board.images += BoardImage(block.file, cx - w / 2f, cy - h / 2f, w, h, block.width, block.height)
                 changed()
-                view.select(board.images.lastIndex)
+                view.select(listOf(board.images.last()))
             }
         }
     }
@@ -406,7 +428,6 @@ class BoardActivity : Activity(), BoardView.Host {
                 if (i in board.images.indices) {
                     pushUndo()
                     board.images.removeAt(i)
-                    view.select(-1)
                     changed()
                 }
             }
@@ -519,10 +540,152 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onImageLongPress(index: Int) { confirmDeleteImage(index) }
 
     override fun onSelectionChanged() {
-        if (::imageBar.isInitialized) imageBar.visibility = if (view.selected >= 0) View.VISIBLE else View.GONE
+        if (::selBar.isInitialized) buildSelectionBar()
+    }
+
+    // ---------------------------------------------------------------- выделенное: панель и действия
+
+    private fun buildSelectionBar() {
+        val sel = view.selection
+        selBar.removeAllViews()
+        if (sel.isEmpty()) {
+            selBar.visibility = View.GONE
+            return
+        }
+        val label = when {
+            sel.size > 1 -> "Выделено: ${sel.size}"
+            sel[0] is BoardText -> "Надпись"
+            sel[0] is BoardImage -> "Картинка"
+            sel[0] is BoardSticker -> "Метка"
+            else -> "Рисунок"
+        }
+        val buttons = ArrayList<TextView>()
+        if (sel.size == 1 && sel[0] is BoardText) {
+            buttons += Ui.pill(this, "Изменить", Ui.INK, Ui.DESK).apply { tag = "sel_edit"; setOnClickListener { editText(sel[0] as BoardText) } }
+        }
+        buttons += Ui.pill(this, "Копия", Ui.INK, Ui.DESK).apply { tag = "sel_copy"; setOnClickListener { duplicateSelection() } }
+        if (sel.any { it is BoardText || it is Drawing }) {
+            buttons += Ui.pill(this, "Цвет", Ui.INK, Ui.DESK).apply { tag = "sel_color"; setOnClickListener { recolorSelection() } }
+        }
+        buttons += Ui.pill(this, "Удалить", Ui.BAD, Ui.BAD_SOFT).apply { tag = "sel_delete"; setOnClickListener { deleteSelection() } }
+        buttons += Ui.pill(this, "Готово", Color.WHITE, Ui.ACCENT).apply { tag = "sel_done"; setOnClickListener { view.clearSelection() } }
+        val bar = Ui.floatingBar(this, label, *buttons.toTypedArray())
+        selBar.addView(bar)
+        selBar.visibility = View.VISIBLE
+    }
+
+    private fun editText(t: BoardText) {
+        val edit = EditText(this).apply { setText(t.text); setSelection(t.text.length) }
+        val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
+        AlertDialog.Builder(this)
+            .setTitle("Надпись")
+            .setView(box)
+            .setPositiveButton("Готово") { _, _ ->
+                val s = edit.text.toString().trim()
+                if (s.isNotEmpty() && s != t.text) {
+                    pushUndo()
+                    t.text = s
+                    changed()
+                }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    /** Копия выделенного — чуть правее и ниже; выделяется копия. Текст надписей — ещё и в буфер обмена. */
+    private fun duplicateSelection() {
+        val sel = view.selection.toList()
+        if (sel.isEmpty()) return
+        pushUndo()
+        val off = dp(24f) / board.camZ
+        val copies = ArrayList<Any>()
+        for (o in sel) {
+            when (o) {
+                is BoardText -> BoardText(o.x + off, o.y + off, o.size, o.text, o.color).also { board.texts += it; copies += it }
+                is BoardImage -> BoardImage(o.file, o.x + off, o.y + off, o.w, o.h, o.pxW, o.pxH).also { board.images += it; copies += it }
+                is BoardSticker -> BoardSticker(o.x + off, o.y + off, o.status, o.scale).also { board.stickers += it; copies += it }
+                is Drawing -> o.copy().also { d ->
+                    var i = 0
+                    while (i + 1 < d.pts.size) { d.pts[i] += off; d.pts[i + 1] += off; i += 3 }
+                    board.strokes += d
+                    copies += d
+                }
+            }
+        }
+        val texts = sel.filterIsInstance<BoardText>().joinToString("\n") { it.text }
+        if (texts.isNotEmpty()) {
+            getSystemService(android.content.ClipboardManager::class.java)
+                ?.setPrimaryClip(android.content.ClipData.newPlainText("FreeWrite", texts))
+        }
+        view.select(copies)
+        changed()
+        hint(if (texts.isNotEmpty()) "Копия создана, текст скопирован" else "Копия создана")
+    }
+
+    private fun recolorSelection() {
+        ColorKit.showPalette(this, penColor, { c -> applyColorToSelection(c) }, { startPipette(forSelection = true) })
+    }
+
+    private fun applyColorToSelection(c: Int) {
+        val sel = view.selection
+        if (sel.isEmpty()) return
+        pushUndo()
+        for (o in sel) when (o) {
+            is BoardText -> o.color = c
+            is Drawing -> o.color = c
+        }
+        penColor = c
+        ColorKit.remember(this, c)
+        refreshColors()
+        changed()
+    }
+
+    private fun deleteSelection() {
+        val sel = view.selection.toList()
+        if (sel.isEmpty()) return
+        pushUndo()
+        board.texts.removeAll { t -> sel.any { it === t } }
+        board.images.removeAll { m -> sel.any { it === m } }
+        board.stickers.removeAll { s -> sel.any { it === s } }
+        board.strokes.removeAll { d -> sel.any { it === d } }
+        view.clearSelection()
+        changed()
+    }
+
+    // ---------------------------------------------------------------- пипетка
+
+    /** Цвет под точкой экрана: штрих или надпись рядом — их цвет, метка — её цвет, иначе пиксель (фото, фон). */
+    override fun pipetteColor(sx: Float, sy: Float): Int? {
+        val x = view.wx(sx)
+        val y = view.wy(sy)
+        ColorKit.drawingNear(board.strokes, x, y, Ui.dpf(this, 10f) / board.camZ)?.let { return it.color }
+        val h = view.hitAt(x, y)
+        when (h?.kind) {
+            BoardView.Kind.TEXT -> return board.texts[h.index].color
+            BoardView.Kind.STICKER -> return BoardView.STATUS[board.stickers[h.index].status.coerceIn(0, 2)].second
+            else -> Unit
+        }
+        val snap = pipetteSnap ?: view.plainSnapshot()?.also { pipetteSnap = it }
+        return snap?.colorAt(sx, sy)
+    }
+
+    override fun onPipettePick(sx: Float, sy: Float) {
+        val c = pipetteColor(sx, sy) ?: return
+        pipetteSnap = null
+        setTool(toolBeforePipette)
+        if (pipetteForSelection && view.selection.isNotEmpty()) {
+            applyColorToSelection(c)
+        } else {
+            penColor = c
+            ColorKit.remember(this, c)
+            refreshColors()
+        }
+        pipetteForSelection = false
+        hint("Цвет взят")
     }
 
     override fun onCameraChanged() {
+        pipetteSnap = null
         updateZoom()
         handler.removeCallbacks(saveRunnable)
         handler.postDelayed(saveRunnable, 800)

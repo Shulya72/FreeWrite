@@ -162,6 +162,9 @@ object Ui {
 
     fun time(time: Long): String = SimpleDateFormat("HH:mm", ru).format(Date(time))
 
+    /** «7 ноября». */
+    fun shortDate(time: Long): String = SimpleDateFormat("d MMMM", ru).format(Date(time))
+
     fun longDate(time: Long): String = SimpleDateFormat("EEEE, d MMMM", ru).format(Date(time))
         .replaceFirstChar { it.uppercase() }
 

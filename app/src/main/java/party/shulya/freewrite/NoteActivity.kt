@@ -44,7 +44,7 @@ import kotlin.math.min
  */
 class NoteActivity : Activity(), NoteInkView.Host {
 
-    enum class Tool { WRITE, PEN, MARKER, SHAPE, ERASER, HAND }
+    enum class Tool { WRITE, PEN, MARKER, SHAPE, ERASER, HAND, PIPETTE }
 
     private lateinit var store: NoteStore
     private lateinit var note: Note
@@ -67,7 +67,9 @@ class NoteActivity : Activity(), NoteInkView.Host {
     private lateinit var bannerButton: TextView
     private lateinit var titleView: TextView
     private val toolButtons = HashMap<Tool, Ui.ToolButton>()
-    private val colorViews = ArrayList<Pair<Int, View>>()
+    private val quickColors = ArrayList<View>()
+    private var toolBeforePipette = Tool.PEN
+    private var pipetteSnap: ColorKit.Snapshot? = null
 
     private var tool = Tool.WRITE
     private var penColor = Ui.INK
@@ -205,22 +207,20 @@ class NoteActivity : Activity(), NoteInkView.Host {
         addTool(row, Tool.SHAPE, R.drawable.ic_shapes, "Фигуры")
         addTool(row, Tool.ERASER, R.drawable.ic_eraser, "Ластик")
         addTool(row, Tool.HAND, R.drawable.ic_hand, "Указка")
-        for (c in listOf(Ui.INK, Ui.PEN_BLUE, Ui.PEN_RED)) {
+        // Три последних цвета и «Цвет» — палитра из 24 цветов и пипетка.
+        for (i in 0 until 3) {
             val v = View(this).apply {
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    shape = android.graphics.drawable.GradientDrawable.OVAL
-                    setColor(c)
-                }
-                setOnClickListener {
-                    penColor = c
-                    if (tool == Tool.WRITE || tool == Tool.ERASER || tool == Tool.HAND) setTool(Tool.PEN)
-                    refreshColors()
-                }
                 contentDescription = "Цвет"
+                tag = "quick_color_$i"
+                setOnClickListener { setColor(ColorKit.recent(this@NoteActivity)[i], remember = false) }
             }
             row.addView(v, LinearLayout.LayoutParams(dp(24f), dp(24f)).apply { setMargins(dp(5f), 0, dp(5f), 0) })
-            colorViews += c to v
+            quickColors += v
         }
+        row.addView(Ui.ToolButton(this, R.drawable.ic_palette, "Цвет").apply {
+            tag = "tool_palette"
+            setOnClickListener { ColorKit.showPalette(this@NoteActivity, penColor, { setColor(it) }, { startPipette() }) }
+        })
         row.addView(Ui.separator(this))
         row.addView(Ui.ToolButton(this, R.drawable.ic_image, "Картинка").apply { setOnClickListener { pickImage() } })
         row.addView(Ui.ToolButton(this, R.drawable.ic_undo, "Отменить").apply { setOnClickListener { undo() } })
@@ -272,7 +272,10 @@ class NoteActivity : Activity(), NoteInkView.Host {
         }
         pad.addView(sheet, FrameLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { gravity = Gravity.CENTER_HORIZONTAL })
         scroll.addView(pad, FrameLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        scroll.setOnScrollChangeListener { _, _, _, _, _ -> ink.invalidate() }
+        scroll.setOnScrollChangeListener { _, _, _, _, _ ->
+            pipetteSnap = null
+            ink.invalidate()
+        }
         area.addView(scroll, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
         ink = NoteInkView(this, this)
         area.addView(ink, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
@@ -355,9 +358,27 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     private fun colorTool(t: Tool) = t == Tool.PEN || t == Tool.MARKER || t == Tool.SHAPE
 
+    /** Выбран цвет: ручка/маркер/фигуры рисуют им. remember — поставить первым среди последних. */
+    private fun setColor(c: Int, remember: Boolean = true) {
+        penColor = c
+        if (remember) ColorKit.remember(this, c)
+        if (!colorTool(tool)) setTool(Tool.PEN) else refreshColors()
+    }
+
+    private fun startPipette() {
+        current?.let { commit(it) }
+        toolBeforePipette = if (colorTool(tool)) tool else Tool.PEN
+        pipetteSnap = null
+        setTool(Tool.PIPETTE)
+        hint("Пипетка: коснитесь пером или пальцем того, чей цвет взять", 3500)
+    }
+
     private fun refreshColors() {
-        for ((c, v) in colorViews) {
+        val rec = ColorKit.recent(this)
+        for ((i, v) in quickColors.withIndex()) {
+            val c = rec[i]
             val selected = c == penColor && colorTool(tool)
+            v.background = ColorKit.swatch(this, c, false)
             v.scaleX = if (selected) 1.25f else 1f
             v.scaleY = v.scaleX
             v.alpha = if (selected || colorTool(tool)) 1f else 0.55f
@@ -1009,6 +1030,24 @@ class NoteActivity : Activity(), NoteInkView.Host {
     }
 
     override fun passThrough(): Boolean = tool == Tool.HAND
+    override fun pipetteMode(): Boolean = tool == Tool.PIPETTE
+
+    /** Цвет под точкой слоя пера: рисунок рядом — его цвет, иначе пиксель листа (текст, картинка). */
+    override fun pipetteColor(x: Float, y: Float): Int? {
+        val o = contentOffset()
+        ColorKit.drawingNear(note.drawings, x - o.x, y - o.y, Ui.dpf(this, 10f))?.let { return it.color }
+        val snap = pipetteSnap ?: ColorKit.snapshot(scroll)?.also { pipetteSnap = it }
+        return snap?.colorAt(x, y)
+    }
+
+    override fun onPipettePick(x: Float, y: Float) {
+        val c = pipetteColor(x, y) ?: return
+        pipetteSnap = null
+        penColor = c
+        ColorKit.remember(this, c)
+        setTool(toolBeforePipette)
+        hint("Цвет взят")
+    }
     override fun fingerWrites(): Boolean = fingerWrites
     override fun isEraser(): Boolean = tool == Tool.ERASER
 
