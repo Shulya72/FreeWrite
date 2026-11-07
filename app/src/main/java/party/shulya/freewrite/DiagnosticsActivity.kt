@@ -648,6 +648,46 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
         logText = label("", 11f, color = MUTED).apply { typeface = Typeface.MONOSPACE }
         repCard.addView(logText)
 
+        // 6. Скорость доски
+        val speedCard = card(panel, "6. Скорость доски")
+        speedCard.addView(
+            label(
+                "Тестовая доска: 500 чертежей, 5 000 штрихов, 1 000 надписей, метки, заливки и выноски. " +
+                    "Создаётся около минуты и занимает примерно 60 МБ; потом её можно удалить в Ежедневнике. " +
+                    "На доске внизу слева — сколько миллисекунд рисуется кадр (подержать — скрыть).",
+                12f, color = MUTED,
+            ),
+        )
+        val speedState = label("", 12f, color = MUTED)
+        val speedButton = smallButton("Создать тестовую доску") {}
+        speedButton.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setMessage("Создать тестовую доску «${TestBoard.TITLE}»? Это займёт около минуты.")
+                .setPositiveButton("Создать") { _, _ ->
+                    speedButton.isEnabled = false
+                    Thread {
+                        val result = runCatching {
+                            TestBoard.generate(this) { msg -> handler.post { speedState.text = msg } }
+                        }
+                        handler.post {
+                            speedButton.isEnabled = true
+                            result.onSuccess { b ->
+                                speedState.text = "Готово: «${b.title}»"
+                                startActivity(
+                                    Intent(this, BoardActivity::class.java)
+                                        .putExtra(BoardActivity.EXTRA_ID, b.id)
+                                        .putExtra(BoardActivity.EXTRA_SHOW_SPEED, true),
+                                )
+                            }.onFailure { speedState.text = "Не получилось: ${it.javaClass.simpleName} ${it.message.orEmpty()}" }
+                        }
+                    }.start()
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+        }
+        speedCard.addView(buttonRow(speedButton))
+        speedCard.addView(speedState)
+
         // Поле для письма
         canvasColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL

@@ -158,7 +158,7 @@ class HomeActivity : Activity() {
         }
     }
 
-    private fun boardRow(b: Board): View {
+    private fun boardRow(b: BoardMeta): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -170,13 +170,13 @@ class HomeActivity : Activity() {
         row.addView(Ui.mono(this, Ui.time(b.created), 13f, Ui.INK2), LinearLayout.LayoutParams(dp(58f), Ui.WRAP))
         val what = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         what.addView(Ui.text(this, b.title, 16f, Ui.INK, bold = true).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END })
-        val items = b.strokes.size + b.texts.size + b.images.size + b.stickers.size + b.fills.size + b.callouts.size
+        val items = b.items
         what.addView(Ui.text(this, if (items == 0) "доска · пустая" else "доска · предметов: $items", 13f, Ui.MUTED))
         row.addView(what, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         // Счётчики по статусам доски (до трёх самых частых).
-        val counts = b.statuses.map { it to b.countStatus(it.id) }.filter { it.second > 0 }.sortedByDescending { it.second }
-        for ((st, n) in counts.take(3)) {
-            row.addView(Ui.chip(this, "$n ${st.name.lowercase()}", Board.statusFg(st.color), Board.statusBg(st.color)), chipParams())
+        val counts = b.counts.filter { it.third > 0 }.sortedByDescending { it.third }
+        for ((name, color, n) in counts.take(3)) {
+            row.addView(Ui.chip(this, "$n ${name.lowercase()}", Board.statusFg(color), Board.statusBg(color)), chipParams())
         }
         return row
     }
@@ -223,7 +223,7 @@ class HomeActivity : Activity() {
         edit.requestFocus()
     }
 
-    private fun boardMenu(b: Board) {
+    private fun boardMenu(b: BoardMeta) {
         AlertDialog.Builder(this)
             .setTitle(b.title)
             .setItems(arrayOf("Переименовать", "Удалить")) { _, which ->
@@ -235,14 +235,14 @@ class HomeActivity : Activity() {
                         .setView(box)
                         .setPositiveButton("Готово") { _, _ ->
                             val t = edit.text.toString().trim()
-                            if (t.isNotEmpty()) { b.title = t; boards.save(b); renderList() }
+                            if (t.isNotEmpty()) { boards.rename(b.id, t); renderList() }
                         }
                         .setNegativeButton("Отмена", null)
                         .show()
                 } else {
                     AlertDialog.Builder(this)
                         .setMessage("Удалить доску «${b.title}»? Вернуть её будет нельзя.")
-                        .setPositiveButton("Удалить") { _, _ -> boards.delete(b); renderList() }
+                        .setPositiveButton("Удалить") { _, _ -> boards.delete(b.id); renderList() }
                         .setNegativeButton("Отмена", null)
                         .show()
                 }

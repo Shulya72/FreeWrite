@@ -26,6 +26,99 @@ sealed class Block {
 /** Рисунок ручкой или маркером: точки в координатах листа (x, y, нажим). */
 class Drawing(val kind: String, var color: Int, var width: Float, val pts: FloatArray) {
     fun copy(): Drawing = Drawing(kind, color, width, pts.copyOf())
+
+    // ---- для быстрой доски: рамка, готовый контур и JSON считаются один раз ----
+
+    /** Номер изменения точек. Кто двигает точки — вызывает [changed]: сбрасываются рамка и контур. */
+    var version = 0
+        private set
+    private var bbVersion = -1
+    private val bb = android.graphics.RectF()
+
+    /** Готовый контур (строит InkPainter); null — построить заново. */
+    var path: android.graphics.Path? = null
+
+    /** Нажим везде одинаковый (ровные фигуры) — рисуется одним контуром, без пересчёта толщины. */
+    val uniform: Boolean by lazy {
+        var u = true
+        var i = 5
+        while (i < pts.size && u) { if (pts[i] != pts[2]) u = false; i += 3 }
+        u
+    }
+
+    fun changed() {
+        version++
+        path = null
+    }
+
+    /** Рамка рисунка с запасом на толщину линии. */
+    fun bounds(): android.graphics.RectF {
+        if (bbVersion != version) {
+            var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
+            var i = 0
+            while (i + 1 < pts.size) {
+                val x = pts[i]; val y = pts[i + 1]
+                if (x < l) l = x; if (x > r) r = x; if (y < t) t = y; if (y > b) b = y
+                i += 3
+            }
+            val w = width
+            if (l <= r) bb.set(l - w, t - w, r + w, b + w) else bb.setEmpty()
+            bbVersion = version
+        }
+        return bb
+    }
+
+    private var jsonSum = 0L
+    private var jsonCache: String? = null
+
+    /**
+     * Запись рисунка в JSON доски. Готовая строка переиспользуется, пока рисунок не менялся
+     * (проверка по контрольной сумме всех чисел — без риска сохранить старое).
+     */
+    fun json(): String {
+        var h = 1125899906842597L
+        h = 31 * h + color
+        h = 31 * h + width.toRawBits()
+        h = 31 * h + kind.hashCode()
+        for (v in pts) h = 31 * h + v.toRawBits()
+        jsonCache?.let { if (h == jsonSum) return it }
+        val sb = StringBuilder(pts.size * 6 + 64)
+        sb.append("{\"kind\":").append(JSONObject.quote(kind)).append(",\"color\":").append(color)
+        sb.append(",\"w\":").append(width.toDouble()).append(",\"pts\":")
+        JsonNum.array(sb, pts)
+        sb.append('}')
+        val j = sb.toString()
+        jsonCache = j
+        jsonSum = h
+        return j
+    }
+}
+
+/** Быстрая запись чисел в JSON (округление до 0,1 — как раньше). */
+object JsonNum {
+    fun num(sb: StringBuilder, v: Float) {
+        var r = (v * 10f).roundToInt()
+        if (r < 0) { sb.append('-'); r = -r }
+        sb.append(r / 10).append('.').append(r % 10)
+    }
+
+    fun array(sb: StringBuilder, a: FloatArray) {
+        sb.append('[')
+        for (i in a.indices) {
+            if (i > 0) sb.append(',')
+            num(sb, a[i])
+        }
+        sb.append(']')
+    }
+
+    fun array(sb: StringBuilder, a: List<Float>) {
+        sb.append('[')
+        for (i in a.indices) {
+            if (i > 0) sb.append(',')
+            num(sb, a[i])
+        }
+        sb.append(']')
+    }
 }
 
 /** Одна запись ежедневника. */

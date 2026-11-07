@@ -59,9 +59,17 @@ class BoardActivity : Activity(), BoardView.Host {
     private var tool = Tool.PEN
     private var penColor = Ui.INK
     private var fingerWrites = false
-    private val bitmaps = HashMap<String, Bitmap?>()
-    private val undoStack = ArrayDeque<String>()
-    private val redoStack = ArrayDeque<String>()
+    private lateinit var images: BoardImages
+    private val saver = Executors.newSingleThreadExecutor()
+    private val undoStack = ArrayDeque<BoardSnapshot>()
+    private val redoStack = ArrayDeque<BoardSnapshot>()
+    private var showFrameMs = false
+    private val frameTicker = object : Runnable {
+        override fun run() {
+            updateZoom()
+            if (showFrameMs) handler.postDelayed(this, 500)
+        }
+    }
     private var pauseMs = 1000L
     private val shapeTool = ShapeTool()
 
@@ -106,11 +114,15 @@ class BoardActivity : Activity(), BoardView.Host {
         updateBanner()
         updateZoom()
         if (board.isEmpty && board.camX == 0f && board.camY == 0f) view.post { view.fitAll() }
+        if (intent.getBooleanExtra(EXTRA_SHOW_SPEED, false)) {
+            showFrameMs = true
+            view.post { view.fitAll(); handler.post(frameTicker) }
+        }
     }
 
     override fun onPause() {
         current?.let { commit(it) }
-        saveNow()
+        saveNow(sync = true)
         super.onPause()
     }
 
@@ -118,6 +130,8 @@ class BoardActivity : Activity(), BoardView.Host {
         handler.removeCallbacksAndMessages(null)
         engine.close()
         io.shutdown()
+        saver.shutdown() // уже начатые сохранения дописываются
+        images.close()
         super.onDestroy()
     }
 
@@ -209,10 +223,20 @@ class BoardActivity : Activity(), BoardView.Host {
 
         val area = FrameLayout(this)
         view = BoardView(this, this)
+        images = BoardImages(this) { view.invalidate() }
+        view.images = images
         area.addView(view, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
         zoomLabel = Ui.mono(this, "100%", 12f, Ui.INK2).apply {
             background = Ui.rounded(this@BoardActivity, Ui.PAPER, Ui.RULE, 8f)
             setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
+            tag = "zoom_label"
+            // Подержать — показать скорость: мс на кадр и сколько объектов нарисовано.
+            setOnLongClickListener {
+                showFrameMs = !showFrameMs
+                handler.removeCallbacks(frameTicker)
+                if (showFrameMs) handler.post(frameTicker) else updateZoom()
+                true
+            }
         }
         area.addView(zoomLabel, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.BOTTOM or Gravity.START; setMargins(dp(14f), 0, 0, dp(14f))
@@ -294,7 +318,11 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     private fun updateZoom() {
-        if (::zoomLabel.isInitialized) zoomLabel.text = "${(board.camZ * 100).roundToInt()}%"
+        if (!::zoomLabel.isInitialized) return
+        val z = "${(board.camZ * 100).roundToInt()}%"
+        zoomLabel.text = if (showFrameMs && ::view.isInitialized) {
+            "$z · ${"%.1f".format(view.frameMs)} мс/кадр · ${view.drawnCount} из ${view.totalCount}"
+        } else z
     }
 
     private fun updateBanner() {
@@ -337,16 +365,18 @@ class BoardActivity : Activity(), BoardView.Host {
 
     // ---------------------------------------------------------------- отмена и сохранение
 
+    /**
+     * Запомнить доску для «Отменить». Снимок — строки объектов; у неизменённых рисунков строки
+     * общие с прошлыми снимками, поэтому 60 шагов отмены не занимают 60 копий большой доски.
+     */
     private fun pushUndo() {
-        undoStack.addLast(board.toJson(withCamera = false).toString())
+        undoStack.addLast(board.snapshot())
         while (undoStack.size > 60) undoStack.removeFirst()
         redoStack.clear()
     }
 
-    private fun restore(json: String) {
-        val cam = Triple(board.camX, board.camY, board.camZ)
-        board = Board.fromJson(JSONObject(json))
-        board.camX = cam.first; board.camY = cam.second; board.camZ = cam.third
+    private fun restore(snap: BoardSnapshot) {
+        board = board.restored(snap)
         titleView.text = board.title
         view.clearSelection()
         changed()
@@ -363,13 +393,13 @@ class BoardActivity : Activity(), BoardView.Host {
             return
         }
         if (committing.isNotEmpty() || undoStack.isEmpty()) return
-        redoStack.addLast(board.toJson(withCamera = false).toString())
+        redoStack.addLast(board.snapshot())
         restore(undoStack.removeLast())
     }
 
     private fun redo() {
         if (redoStack.isEmpty() || committing.isNotEmpty() || current != null) return
-        undoStack.addLast(board.toJson(withCamera = false).toString())
+        undoStack.addLast(board.snapshot())
         restore(redoStack.removeLast())
     }
 
@@ -381,13 +411,25 @@ class BoardActivity : Activity(), BoardView.Host {
         handler.postDelayed(saveRunnable, 500)
     }
 
-    private fun saveNow() {
+    /**
+     * Сохранить доску. Строка готовится здесь (быстро: рисунки берутся готовыми строками),
+     * запись в файл — в фоне, чтобы не было рывка. sync — записать сразу (при уходе с экрана).
+     */
+    private fun saveNow(sync: Boolean = false) {
         handler.removeCallbacks(saveRunnable)
-        try {
-            store.save(board)
-        } catch (t: Throwable) {
-            Toast.makeText(this, "Не удалось сохранить: ${t.message}", Toast.LENGTH_LONG).show()
+        board.updated = System.currentTimeMillis()
+        val seq = BoardStore.nextSeq()
+        val id = board.id
+        val json = board.toJsonString()
+        val meta = board.metaJson()
+        val write = Runnable {
+            try {
+                store.write(id, seq, json, meta)
+            } catch (t: Throwable) {
+                handler.post { Toast.makeText(this, "Не удалось сохранить: ${t.message}", Toast.LENGTH_LONG).show() }
+            }
         }
+        if (sync) write.run() else try { saver.execute(write) } catch (_: Throwable) { write.run() }
     }
 
     // ---------------------------------------------------------------- картинки
@@ -415,19 +457,19 @@ class BoardActivity : Activity(), BoardView.Host {
         if (uris.isEmpty()) return
         hint(if (uris.size == 1) "Добавляю картинку…" else "Добавляю картинки: ${uris.size}…", 1500)
         io.execute {
-            val blocks = uris.mapNotNull { u -> try { noteStore.importImage(this, u) } catch (t: Throwable) { null } }
+            val blocks = uris.mapNotNull { u -> try { BoardImages.import(this, u) } catch (t: Throwable) { null } }
             handler.post { placeImages(blocks, uris.size) }
         }
     }
 
     /** Разложить новые картинки рядами (до 4 в ряд) в середине экрана и выделить их. */
-    private fun placeImages(blocks: List<Block.Image>, asked: Int) {
+    private fun placeImages(blocks: List<Triple<String, Int, Int>>, asked: Int) {
         if (blocks.isEmpty()) { hint("Не удалось открыть картинку"); return }
         val z = board.camZ
         val maxW = dp(if (blocks.size == 1) 460f else 320f) / z
         val gap = dp(24f) / z
         val cols = when { blocks.size <= 1 -> 1; blocks.size <= 4 -> 2; blocks.size <= 9 -> 3; else -> 4 }
-        val sizes = blocks.map { b -> val k = min(1f, maxW / b.width); b.width * k to b.height * k }
+        val sizes = blocks.map { b -> val k = min(1f, maxW / b.second); b.second * k to b.third * k }
         val rows = sizes.chunked(cols)
         val rowH = rows.map { r -> r.maxOf { it.second } }
         val totalW = rows.maxOf { r -> r.sumOf { it.first.toDouble() }.toFloat() + gap * (r.size - 1) }
@@ -441,7 +483,7 @@ class BoardActivity : Activity(), BoardView.Host {
             var x = left
             for ((w, h) in r) {
                 val b = blocks[idx++]
-                val img = BoardImage(b.file, x, y, w, h, b.width, b.height)
+                val img = BoardImage(b.first, x, y, w, h, b.second, b.third)
                 board.images += img
                 added += img
                 x += w + gap
@@ -709,12 +751,14 @@ class BoardActivity : Activity(), BoardView.Host {
                 is Drawing -> o.copy().also { d ->
                     var i = 0
                     while (i + 1 < d.pts.size) { d.pts[i] += off; d.pts[i + 1] += off; i += 3 }
+                    d.changed()
                     board.strokes += d
                     copies += d
                 }
                 is BoardFill -> o.copy().also { f ->
                     var i = 0
                     while (i + 1 < f.pts.size) { f.pts[i] += off; f.pts[i + 1] += off; i += 2 }
+                    f.changed()
                     board.fills += f
                     copies += f
                 }
@@ -1065,10 +1109,6 @@ class BoardActivity : Activity(), BoardView.Host {
         return NoteInkView.bounds(g.strokes) to text
     }
 
-    override fun bitmap(img: BoardImage): Bitmap? = bitmaps.getOrPut(img.file) {
-        noteStore.loadImage(Block.Image(img.file, img.pxW, img.pxH), 1600)
-    }
-
     // ---------------------------------------------------------------- распознавание
 
     private fun isFar(g: Group, x: Float, y: Float): Boolean {
@@ -1143,6 +1183,8 @@ class BoardActivity : Activity(), BoardView.Host {
 
     companion object {
         const val EXTRA_ID = "board_id"
+        /** Сразу показывать скорость отрисовки (тестовая доска). */
+        const val EXTRA_SHOW_SPEED = "show_speed"
         private const val REQ_IMAGE = 42
     }
 }

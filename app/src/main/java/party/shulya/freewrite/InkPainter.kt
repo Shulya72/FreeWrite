@@ -47,8 +47,12 @@ class InkPainter {
         }
     }
 
-    /** Сохранённый рисунок (точки x, y, нажим подряд). */
-    fun drawing(canvas: Canvas, d: Drawing, alpha: Int = 255) {
+    /**
+     * Сохранённый рисунок (точки x, y, нажим подряд).
+     * Контур строится один раз и хранится в рисунке. Ручка с разным нажимом рисуется отрезками
+     * разной толщины; fast = true (доска издалека) — одним контуром ровной толщины, это намного быстрее.
+     */
+    fun drawing(canvas: Canvas, d: Drawing, alpha: Int = 255, fast: Boolean = false) {
         val pts = d.pts
         val n = pts.size / 3
         if (n == 0) return
@@ -58,23 +62,35 @@ class InkPainter {
             dot(canvas, pts[0], pts[1], d.width)
             return
         }
-        if (d.kind == "pen") {
+        if (d.kind == "pen" && !fast && !d.uniform) {
             for (i in 1 until n) {
                 paint.strokeWidth = d.width * (0.45f + 1.1f * (pts[i * 3 - 1] + pts[i * 3 + 2]) / 2f)
                 canvas.drawLine(pts[i * 3 - 3], pts[i * 3 - 2], pts[i * 3], pts[i * 3 + 1], paint)
             }
-        } else {
-            paint.strokeWidth = d.width
-            path.reset()
-            path.moveTo(pts[0], pts[1])
-            for (i in 1 until n) {
-                val ax = pts[i * 3 - 3]; val ay = pts[i * 3 - 2]
-                val bx = pts[i * 3]; val by = pts[i * 3 + 1]
-                path.quadTo(ax, ay, (ax + bx) / 2f, (ay + by) / 2f)
-            }
-            path.lineTo(pts[(n - 1) * 3], pts[(n - 1) * 3 + 1])
-            canvas.drawPath(path, paint)
+            return
         }
+        val p = d.path ?: buildPath(d).also { d.path = it }
+        paint.strokeWidth = if (d.kind == "pen" && d.uniform) d.width * (0.45f + 1.1f * pts[2]) else d.width
+        canvas.drawPath(p, paint)
+    }
+
+    private fun buildPath(d: Drawing): Path {
+        val pts = d.pts
+        val n = pts.size / 3
+        val p = Path()
+        p.moveTo(pts[0], pts[1])
+        if (d.kind == "pen" && d.uniform) {
+            // Ровные фигуры — прямые отрезки, углы остаются углами.
+            for (i in 1 until n) p.lineTo(pts[i * 3], pts[i * 3 + 1])
+            return p
+        }
+        for (i in 1 until n) {
+            val ax = pts[i * 3 - 3]; val ay = pts[i * 3 - 2]
+            val bx = pts[i * 3]; val by = pts[i * 3 + 1]
+            p.quadTo(ax, ay, (ax + bx) / 2f, (ay + by) / 2f)
+        }
+        p.lineTo(pts[(n - 1) * 3], pts[(n - 1) * 3 + 1])
+        return p
     }
 
     private fun dot(canvas: Canvas, x: Float, y: Float, width: Float) {

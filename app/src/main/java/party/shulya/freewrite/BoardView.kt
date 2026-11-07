@@ -65,7 +65,6 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun pendingStrokes(): List<InkStroke>
         /** Серое промежуточное слово над недописанной надписью: рамка [l, t, r, b] и текст. */
         fun interim(): Pair<FloatArray, String>?
-        fun bitmap(img: BoardImage): Bitmap?
         /** Цвет под точкой экрана — для пипетки. */
         fun pipetteColor(sx: Float, sy: Float): Int?
         fun onPipettePick(sx: Float, sy: Float)
@@ -138,6 +137,17 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
     }
 
+    /** Загрузчик картинок (уровни, фон, память) — задаёт экран доски. */
+    var images: BoardImages? = null
+
+    /** Сколько мс в среднем занимает кадр и сколько объектов в нём нарисовано (для замеров). */
+    var frameMs = 0f
+        private set
+    var drawnCount = 0
+        private set
+    var totalCount = 0
+        private set
+
     // ---------------------------------------------------------------- камера
 
     private val b get() = host.board()
@@ -185,8 +195,13 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     }
 
     fun textWidth(t: BoardText): Float {
-        textPaint.textSize = t.size
-        return textPaint.measureText(t.text)
+        if (t.wText != t.text || t.wSize != t.size) {
+            textPaint.textSize = t.size
+            t.w = textPaint.measureText(t.text)
+            t.wText = t.text
+            t.wSize = t.size
+        }
+        return t.w
     }
 
     /** Ширина метки — под название её статуса. */
@@ -200,15 +215,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     /** Рамка выноски: две строки — надпись и статус. */
     fun calloutRect(c: BoardCallout, out: RectF): RectF {
-        textPaint.textSize = titleSize(c)
-        val tw = textPaint.measureText(c.title.ifEmpty { " " })
-        textPaint.textSize = statusSize(c)
-        textPaint.isFakeBoldText = true
-        val sw = textPaint.measureText(b.status(c.sid).name)
-        textPaint.isFakeBoldText = false
-        val pad = 12f * c.scale
-        val w = max(150f * c.scale, max(tw, sw) + pad * 2)
-        out.set(c.x, c.y, c.x + w, c.y + rowH(c) * 2)
+        val name = b.status(c.sid).name
+        val key = c.title + '\u0001' + name + '\u0001' + c.scale
+        if (c.wKey != key) {
+            textPaint.textSize = titleSize(c)
+            val tw = textPaint.measureText(c.title.ifEmpty { " " })
+            textPaint.textSize = statusSize(c)
+            textPaint.isFakeBoldText = true
+            val sw = textPaint.measureText(name)
+            textPaint.isFakeBoldText = false
+            val pad = 12f * c.scale
+            c.w = max(150f * c.scale, max(tw, sw) + pad * 2)
+            c.wKey = key
+        }
+        out.set(c.x, c.y, c.x + c.w, c.y + rowH(c) * 2)
         return out
     }
 
@@ -368,25 +388,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             is BoardImage -> out.set(o.x, o.y, o.x + o.w, o.y + o.h)
             is BoardSticker -> out.set(o.x, o.y, o.x + stickerW(o), o.y + o.h)
             is BoardCallout -> calloutRect(o, out)
-            is BoardFill -> {
-                var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var bt = -Float.MAX_VALUE
-                var i = 0
-                while (i + 1 < o.pts.size) {
-                    l = min(l, o.pts[i]); t = min(t, o.pts[i + 1]); r = max(r, o.pts[i]); bt = max(bt, o.pts[i + 1])
-                    i += 2
-                }
-                if (l <= r) out.set(l, t, r, bt) else out.setEmpty()
-            }
-            is Drawing -> {
-                var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var bt = -Float.MAX_VALUE
-                var i = 0
-                while (i + 1 < o.pts.size) {
-                    l = min(l, o.pts[i]); t = min(t, o.pts[i + 1]); r = max(r, o.pts[i]); bt = max(bt, o.pts[i + 1])
-                    i += 3
-                }
-                val w = o.width / 2f
-                if (l <= r) out.set(l - w, t - w, r + w, bt + w) else out.setEmpty()
-            }
+            is BoardFill -> out.set(o.bounds())
+            is Drawing -> out.set(o.bounds())
             else -> out.setEmpty()
         }
         return out
@@ -446,6 +449,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                         i += 3
                     }
                     o.width = or.w * s
+                    o.changed()
                 }
                 is BoardFill -> {
                     var i = 0
@@ -453,6 +457,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                         o.pts[i] = tx(a[i]); o.pts[i + 1] = ty(a[i + 1])
                         i += 2
                     }
+                    o.changed()
                 }
                 is BoardCallout -> {
                     o.x = tx(a[0]); o.y = ty(a[1]); o.scale = a[2] * s
@@ -683,6 +688,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             return
         }
         mode = Mode.INK
+        sceneValid = false // картинка доски снимется заново в первом кадре штриха
         host.onStrokeStart(x, y)
         clockOffset = System.currentTimeMillis() - SystemClock.uptimeMillis()
         val st = host.strokeStyle()
@@ -867,6 +873,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         editStarted = false
         mode = Mode.NONE
+        sceneValid = false
         invalidate()
     }
 
@@ -998,23 +1005,77 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     // ---------------------------------------------------------------- рисование
 
+    // Видимая часть доски (в единицах доски) — рисуем только то, что в неё попадает.
+    private val vis = RectF()
+
+    private fun visible(l: Float, t: Float, r: Float, bt: Float) = r >= vis.left && l <= vis.right && bt >= vis.top && t <= vis.bottom
+
+    // Пока ведут пером, всё остальное не меняется: доска рисуется один раз в картинку,
+    // а каждый кадр — эта картинка плюс сам штрих. Письмо остаётся плавным даже на плотной доске.
+    private var scene: Bitmap? = null
+    private var sceneValid = false
+    private var capturing = false
+
+    private fun renderScene(): Boolean {
+        if (width <= 0 || height <= 0) return false
+        val bmp = scene?.takeIf { it.width == width && it.height == height }
+            ?: try { Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888) } catch (_: Throwable) { return false }
+        scene = bmp
+        capturing = true
+        try {
+            onDraw(Canvas(bmp))
+        } finally {
+            capturing = false
+        }
+        sceneValid = true
+        return true
+    }
+
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(Ui.PAPER)
+        val t0 = System.nanoTime()
         val z = b.camZ
+        if (mode == Mode.INK && !plain && !capturing && fading.isEmpty() && (sceneValid || renderScene())) {
+            canvas.drawBitmap(scene!!, 0f, 0f, null)
+            canvas.save()
+            canvas.scale(z, z)
+            canvas.translate(-b.camX, -b.camY)
+            val pendingStyle = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z)
+            live?.let { painter.stroke(canvas, it, liveStyle ?: pendingStyle, 255) }
+            drawInterim(canvas, z)
+            canvas.restore()
+            val ms = (System.nanoTime() - t0) / 1e6f
+            frameMs = if (frameMs == 0f) ms else frameMs * 0.8f + ms * 0.2f
+            return
+        }
+        canvas.drawColor(Ui.PAPER)
+        vis.set(b.camX, b.camY, b.camX + width / z, b.camY + height / z)
+        var drawn = 0
         canvas.save()
         canvas.scale(z, z)
         canvas.translate(-b.camX, -b.camY)
         drawGrid(canvas, z)
-        for (m in b.images) drawImage(canvas, m, z)
-        for (f in b.fills) drawFill(canvas, f, z)
-        for (d in b.strokes) painter.drawing(canvas, d)
+        for (m in b.images) if (visible(m.x, m.y, m.x + m.w, m.y + m.h)) { drawImage(canvas, m, z); drawn++ }
+        for (f in b.fills) { val r = f.bounds(); if (visible(r.left, r.top, r.right, r.bottom)) { drawFill(canvas, f, z); drawn++ } }
+        // Издалека ручка рисуется одним контуром ровной толщины — на глаз не отличить, а в разы быстрее.
+        val fast = z < 0.6f
+        val tiny = 1.5f / z // меньше полутора пикселей — рисовать нечего
+        for (d in b.strokes) {
+            val r = d.bounds()
+            if (!visible(r.left, r.top, r.right, r.bottom)) continue
+            if (r.width() < tiny && r.height() < tiny) continue
+            painter.drawing(canvas, d, 255, fast)
+            drawn++
+        }
         for (t in b.texts) {
+            if (t.size * z < 2f) continue // буквы меньше 2 пикселей не видны
+            if (!visible(t.x, t.y - t.size, t.x + textWidth(t), t.y + t.size * 0.3f)) continue
             textPaint.color = t.color
             textPaint.textSize = t.size
             canvas.drawText(t.text, t.x, t.y, textPaint)
+            drawn++
         }
-        for (c in b.callouts) drawCallout(canvas, c, z)
-        for (s in b.stickers) drawSticker(canvas, s)
+        for (c in b.callouts) if (calloutVisible(c)) { drawCallout(canvas, c, z); drawn++ }
+        for (s in b.stickers) if (visible(s.x, s.y, s.x + stickerW(s), s.y + s.h)) { drawSticker(canvas, s); drawn++ }
         if (mode == Mode.CALLOUT_DRAG && hypot(calloutNow.x - calloutDown.x, calloutNow.y - calloutDown.y) * z > slop) {
             dashPaint.strokeWidth = Ui.dpf(context, 1.5f) / z
             dashPaint.pathEffect = DashPathEffect(floatArrayOf(Ui.dpf(context, 6f) / z, Ui.dpf(context, 4f) / z), 0f)
@@ -1023,19 +1084,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         if (!plain) drawSelection(canvas, z)
         val pendingStyle = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z)
         for (s in host.pendingStrokes()) painter.stroke(canvas, s, pendingStyle, 255)
-        live?.let { painter.stroke(canvas, it, liveStyle ?: pendingStyle, 255) }
+        if (!capturing) live?.let { painter.stroke(canvas, it, liveStyle ?: pendingStyle, 255) }
         val now = SystemClock.uptimeMillis()
         fading.removeAll { now - it.second > NoteInkView.FADE_MS }
         for ((strokes, t0) in fading) {
             val a = (255 * (1f - (now - t0).toFloat() / NoteInkView.FADE_MS)).toInt().coerceIn(0, 255)
             for (s in strokes) painter.stroke(canvas, s, pendingStyle, a)
         }
-        host.interim()?.let { (bb, text) ->
-            val h = bb[3] - bb[1]
-            textPaint.color = Ui.MUTED
-            textPaint.textSize = max(h * 0.75f, Ui.dpf(context, 14f) / z)
-            canvas.drawText(text, bb[0], bb[1] - Ui.dpf(context, 8f) / z, textPaint)
-        }
+        if (!capturing) drawInterim(canvas, z)
         if (!plain && lasso.size > 1) {
             lassoPath.reset()
             lassoPath.moveTo(lasso[0].x, lasso[0].y)
@@ -1045,7 +1101,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawPath(lassoPath, dashPaint)
         }
         canvas.restore()
-        if (!plain) hover?.let {
+        if (!plain && !capturing) hover?.let {
             when {
                 host.tool() == BoardActivity.Tool.PIPETTE -> pipetteRing(context, canvas, it.x, it.y, host.pipetteColor(it.x, it.y))
                 host.tool() == BoardActivity.Tool.ERASER -> canvas.drawCircle(it.x, it.y, Ui.dpf(context, 14f), hoverRing)
@@ -1057,6 +1113,64 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
         }
         if (fading.isNotEmpty()) postInvalidateOnAnimation()
+        drawnCount = drawn
+        totalCount = b.images.size + b.fills.size + b.strokes.size + b.texts.size + b.callouts.size + b.stickers.size
+        val ms = (System.nanoTime() - t0) / 1e6f
+        frameMs = if (frameMs == 0f) ms else frameMs * 0.8f + ms * 0.2f
+        if (!plain && !gestureActive()) requestDetails()
+    }
+
+    /** Серое промежуточное слово над недописанной надписью. */
+    private fun drawInterim(canvas: Canvas, z: Float) {
+        host.interim()?.let { (bb, text) ->
+            val h = bb[3] - bb[1]
+            textPaint.color = Ui.MUTED
+            textPaint.textSize = max(h * 0.75f, Ui.dpf(context, 14f) / z)
+            canvas.drawText(text, bb[0], bb[1] - Ui.dpf(context, 8f) / z, textPaint)
+        }
+    }
+
+    /** Идёт жест (двигают, масштабируют, рисуют) — тяжёлые загрузки откладываем. */
+    private fun gestureActive() = mode != Mode.NONE && mode != Mode.STATUS
+
+    private fun calloutVisible(c: BoardCallout): Boolean {
+        calloutRect(c, rect2)
+        var l = rect2.left; var t = rect2.top; var r = rect2.right; var bt = rect2.bottom
+        var i = 0
+        while (i + 1 < c.leaders.size) {
+            l = min(l, c.leaders[i]); r = max(r, c.leaders[i]); t = min(t, c.leaders[i + 1]); bt = max(bt, c.leaders[i + 1])
+            i += 2
+        }
+        return visible(l, t, r, bt)
+    }
+
+    /**
+     * Картинки, приближенные сильнее копии 2048 px, — заказать чёткий кусок оригинала под экран.
+     * Делается, когда жест закончился (камера стоит).
+     */
+    private fun requestDetails() {
+        val imgs = images ?: return
+        val z = b.camZ
+        for (m in b.images) {
+            if (!visible(m.x, m.y, m.x + m.w, m.y + m.h)) continue
+            val big = max(m.pxW, m.pxH)
+            if (big <= BoardImages.LEVELS.last() || m.w <= 0f || m.pxW <= 0) continue
+            val screenW = m.w * z
+            if (screenW <= BoardImages.LEVELS.last() * m.pxW.toFloat() / big * 1.05f) continue
+            // Видимая часть картинки в пикселях оригинала.
+            val kx = m.pxW / m.w
+            val ky = m.pxH / m.h
+            val l = ((max(vis.left, m.x) - m.x) * kx).toInt()
+            val t = ((max(vis.top, m.y) - m.y) * ky).toInt()
+            val r = ((min(vis.right, m.x + m.w) - m.x) * kx).toInt()
+            val bt = ((min(vis.bottom, m.y + m.h) - m.y) * ky).toInt()
+            if (r <= l || bt <= t) continue
+            // Во сколько раз можно уменьшить кусок, чтобы он был не мельче экрана.
+            val pxPerScreen = kx / z
+            var sample = 1
+            while (sample * 2 <= pxPerScreen) sample *= 2
+            imgs.requestDetail(m, android.graphics.Rect(l, t, r, bt), sample)
+        }
     }
 
     private fun drawGrid(canvas: Canvas, z: Float) {
@@ -1078,13 +1192,22 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         linePaint.color = Ui.RULE
         linePaint.strokeWidth = 0f
         canvas.drawRect(rect, linePaint)
-        val bmp = host.bitmap(m)
         rect.set(m.x, m.y, m.x + m.w, m.y + m.h)
+        val screenW = m.w * z
+        val bmp = if (screenW < 3f) null else images?.get(m, screenW)
         if (bmp != null) {
             canvas.drawBitmap(bmp, null, rect, bitmapPaint)
         } else {
             fillPaint.color = Ui.DESK
             canvas.drawRect(rect, fillPaint)
+        }
+        // Чёткий кусок оригинала поверх (если картинку сильно приблизили).
+        val d = images?.detail(m)
+        if (d != null && m.pxW > 0 && m.pxH > 0) {
+            val kx = m.w / m.pxW
+            val ky = m.h / m.pxH
+            rect2.set(m.x + d.region.left * kx, m.y + d.region.top * ky, m.x + d.region.right * kx, m.y + d.region.bottom * ky)
+            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) canvas.drawBitmap(d.bitmap, null, rect2, bitmapPaint)
         }
     }
 
@@ -1109,17 +1232,17 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
     }
 
-    private val fillPath = Path()
-
     /** Заливка: полупрозрачная область и тонкий край того же цвета. */
     private fun drawFill(canvas: Canvas, f: BoardFill, z: Float) {
         val p = f.pts
         if (p.size < 6) return
-        fillPath.reset()
-        fillPath.moveTo(p[0], p[1])
-        var i = 2
-        while (i + 1 < p.size) { fillPath.lineTo(p[i], p[i + 1]); i += 2 }
-        fillPath.close()
+        val fillPath = f.path ?: Path().also { path ->
+            path.moveTo(p[0], p[1])
+            var i = 2
+            while (i + 1 < p.size) { path.lineTo(p[i], p[i + 1]); i += 2 }
+            path.close()
+            f.path = path
+        }
         fillPaint.color = f.color
         fillPaint.alpha = (255 * f.alpha).toInt().coerceIn(0, 255)
         canvas.drawPath(fillPath, fillPaint)
