@@ -16,34 +16,37 @@ import java.net.URL
 import java.util.concurrent.Executors
 
 /**
- * Обновление приложения изнутри: смотрит тестовый выпуск на GitHub, скачивает новый APK
- * и открывает системный установщик. Android всегда спрашивает подтверждение «Установить» —
- * обойти это нельзя, но браузер и поиск файла больше не нужны.
+ * Обновление приложения изнутри: узнаёт номер последней версии, скачивает новый APK
+ * и открывает системный установщик. Android всегда спрашивает подтверждение «Установить».
+ *
+ * Номер версии берётся из файла version.txt в выпуске на github.com — по тому же адресу,
+ * откуда браузер скачивает APK (у Владимира отдельный сервер api.github.com был недоступен).
+ * Запасной путь — API GitHub. Если не работает ничего — можно скачать в браузере.
  */
 object Updater {
-    /** Тестовый выпуск, куда GitHub Actions кладёт каждую сборку. */
-    const val RELEASE_API = "https://api.github.com/repos/Shulya72/bar-menu/releases/tags/freewrite-latest"
+    private const val RELEASE = "https://github.com/Shulya72/FreeWrite/releases/download/latest/"
+    const val APK_URL = RELEASE + "FreeWrite.apk"
+    private const val VERSION_URL = RELEASE + "version.txt"
+    private const val RELEASE_API = "https://api.github.com/repos/Shulya72/FreeWrite/releases/tags/latest"
 
     class Release(val version: String, val apkUrl: String, val size: Long)
 
     private val exec = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
+    private val versionRe = Regex("""\d+(?:\.\d+)*""")
 
     fun check(done: (Release?, String?) -> Unit) {
         exec.execute {
+            // 1. Файл с номером версии на github.com.
+            val direct = runCatching { fetchText(VERSION_URL).trim() }
+            val v = direct.getOrNull()
+            if (v != null && versionRe.matches(v)) {
+                main.post { done(Release(v, APK_URL, 0), null) }
+                return@execute
+            }
+            // 2. Запасной путь — API GitHub.
             try {
-                val c = (URL(RELEASE_API).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 10_000
-                    readTimeout = 15_000
-                    setRequestProperty("Accept", "application/vnd.github+json")
-                    setRequestProperty("User-Agent", "FreeWrite-Android")
-                }
-                val code = c.responseCode
-                if (code != 200) {
-                    main.post { done(null, "сервер обновлений ответил $code") }
-                    return@execute
-                }
-                val json = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                val json = JSONObject(fetchText(RELEASE_API, api = true))
                 val assets = json.getJSONArray("assets")
                 var found: Release? = null
                 val re = Regex("""FreeWrite-(\d+(?:\.\d+)*)\.apk""")
@@ -55,8 +58,41 @@ object Updater {
                 val result = found
                 main.post { done(result, if (result == null) "в выпуске нет файла приложения" else null) }
             } catch (t: Throwable) {
-                main.post { done(null, "нет связи с сервером обновлений (${t.javaClass.simpleName})") }
+                val why = direct.exceptionOrNull()?.let { it.javaClass.simpleName } ?: t.javaClass.simpleName
+                main.post { done(null, "нет связи с сервером обновлений ($why)") }
             }
+        }
+    }
+
+    /** Скачать небольшой текст, сами проходя переадресации (github.com → хранилище файлов). */
+    private fun fetchText(url: String, api: Boolean = false): String {
+        var u = URL(url)
+        repeat(6) {
+            val c = (u.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10_000
+                readTimeout = 15_000
+                instanceFollowRedirects = false
+                setRequestProperty("User-Agent", "FreeWrite-Android")
+                if (api) setRequestProperty("Accept", "application/vnd.github+json")
+            }
+            val code = c.responseCode
+            if (code in 300..399) {
+                u = URL(u, c.getHeaderField("Location"))
+                c.disconnect()
+            } else if (code == 200) {
+                return c.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                throw IllegalStateException("сервер ответил $code")
+            }
+        }
+        throw IllegalStateException("слишком много переадресаций")
+    }
+
+    /** Запасной путь: открыть ссылку на APK в браузере — он скачает файл сам. */
+    fun openInBrowser(activity: Activity) {
+        try {
+            activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(APK_URL)))
+        } catch (_: Throwable) {
         }
     }
 

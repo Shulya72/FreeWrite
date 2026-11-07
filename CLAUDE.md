@@ -1,9 +1,9 @@
 # FreeWrite — памятка для Claude
 
-Отдельный проект в папке `freewrite/`. **К сайту VIA Bar не относится.** Правила из корневого
-CLAUDE.md про сайт (выкладка, D1, тексты для гостей) здесь не действуют. Общее остаётся:
-общение с Владимиром по-русски, просто, без жаргона; репозиторий публичный — никаких ключей
-в коммитах.
+Самостоятельный проект, репозиторий `Shulya72/FreeWrite` (с 07.11.2026; до этого жил в рабочей
+ветке репозитория сайта `Shulya72/bar-menu`, история перенесена). **С сайтом VIA Bar не связан** —
+Владимир просил держать проекты раздельно. Общение с Владимиром — по-русски, просто, без жаргона;
+репозиторий публичный — никаких ключей и паролей в коммитах, логах и выпусках.
 
 ## Что это
 
@@ -23,29 +23,30 @@ MAL-CD56). Пишешь пером в любом месте поля, распо
 
 ## Где лежит и как собирается
 
-- Проект временно в репозитории `Shulya72/bar-menu`, только в рабочей ветке (`ccr-…`).
-  **В `main` не вливать**: там автоматическая выкладка сайта бара. Позже — отдельный репозиторий.
-- В облачной среде «Приложение Для Рукописного Ввода» с 07.11.2026 разрешены `dl.google.com`
-  и `developers.google.com`. Android SDK ставится в `/root/android-sdk` (cmdline-tools,
-  `platforms;android-35`, `build-tools;35.0.0`), затем:
-  `cd freewrite && ANDROID_HOME=/root/android-sdk ./gradlew assembleDebug` — около 30 с.
-  Maven Central иногда отвечает 429: просто повторить. Robolectric-тесты локально часто не
-  запускаются (429 на большой образ `android-all-instrumented`) — их гоняет CI.
-- Эмулятора Android в облачной среде нет: нет KVM, а эмулятору нужна аппаратная виртуализация.
-- Сборка — GitHub Actions «FreeWrite APK» (`.github/workflows/freewrite-apk.yml`): запускается
-  при push в любую ветку кроме `main`, если менялась папка `freewrite/`. Логи —
-  `mcp__github__get_job_logs`. При падении шаг «ML Kit classes (diagnostic)» печатает классы ML Kit.
-- В CI после сборки идёт шаг «Screen check (Robolectric)» (`app/src/test/.../MainActivitySmokeTest.kt`):
-  экран размером с MatePad Mini вертикально и горизонтально, штрих пером, касание пальцем.
-  Скриншоты `screen-portrait.png`, `screen-portrait-panel-bottom.png`, `screen-landscape.png` прикладываются к выпуску. ML Kit в Robolectric не работает (VerifyError, нет `libdigitalink.so` для обычной Java) — ошибка ML Kit на скриншотах ожидаема.
-  Шаг не блокирует выкладку APK (`continue-on-error`), результат смотреть в журнале.
-- Готовый APK: выпуск (pre-release) `freewrite-latest`, постоянная ссылка
-  https://github.com/Shulya72/bar-menu/releases/download/freewrite-latest/FreeWrite.apk
-- Отладочный ключ подписи `freewrite-debug.keystore` создаётся в сборке (keytool) и хранится
-  в кэше Actions (ключ кэша `freewrite-debug-keystore-v2`), в репозиторий не попадает.
-  Gradle берёт его из переменной `FREEWRITE_DEBUG_KEYSTORE`. Так обновления ставятся поверх.
-  Если кэш истёк (7 дней без сборок), подпись сменится: Владимиру нужно удалить старую версию
-  перед установкой. Версия 0.1.0 подписана случайным ключом — с неё на 0.1.1 тоже через удаление.
+- Код — в корне репозитория (Gradle-проект). Основная ветка `main`; каждый push в `main`
+  собирает APK.
+- Облачная среда «Приложение Для Рукописного Ввода»: разрешены `dl.google.com` и
+  `developers.google.com`. Android SDK — `/root/android-sdk` (cmdline-tools, `platforms;android-35`,
+  `build-tools;35.0.0`), сборка `./gradlew assembleDebug` (~30 с), `local.properties` с `sdk.dir`
+  не коммитится. Maven Central иногда отвечает 429 — повторить.
+- Эмулятора Android в облачной среде нет (нет KVM). Экраны проверяются Robolectric-тестами
+  (`app/src/test/.../ScreensSmokeTest.kt`, скриншоты в `app/build/screenshots/`). ML Kit в Robolectric
+  не работает (VerifyError, нет `libdigitalink.so` для обычной Java) — ошибка ML Kit на скриншотах
+  и «нераспознанная надпись → рисунок» в тестах ожидаемы.
+- Сборка — GitHub Actions «Build APK» (`.github/workflows/build.yml`): push в `main` или вручную.
+  Шаги: ключ подписи из кэша → `assembleDebug` → Robolectric (`continue-on-error`, смотреть
+  PASSED/FAILED в журнале) → выпуск `latest` (APK, `FreeWrite-x.y.z.apk`, `version.txt`, скриншоты).
+  Постоянная ссылка: https://github.com/Shulya72/FreeWrite/releases/download/latest/FreeWrite.apk
+- Обновление внутри приложения (`Updater`): номер версии — `version.txt` из выпуска на github.com
+  (тот же адрес, что у браузера; у Владимира api.github.com был недоступен), запасной путь — API,
+  при ошибке — «Скачать в браузере».
+- Ключ подписи `freewrite-debug.keystore` создаётся в сборке (keytool, пароли отладочные) и живёт
+  в кэше Actions (`freewrite-debug-keystore-v1`), в репозиторий не попадает. Кэш удаляется, если к
+  нему не обращаться 7 дней, поэтому раз в неделю задание `keep-signing-key` его трогает (cron;
+  GitHub отключает расписание после 60 дней без активности в репозитории). Если ключ всё же
+  сменится — обновление встанет только после удаления старой версии (записи пропадут).
+  Надёжнее — ключ в секрете репозитория (сделать, когда появятся важные записи).
+- При каждой сборке для планшета повышать `versionCode` и `versionName` в `app/build.gradle.kts`.
 - Импорты ML Kit 19.0.0: `com.google.mlkit.vision.digitalink.recognition.*` (`Ink`, `Ink.Stroke`,
   `Ink.Point`, распознаватель, модель), результаты — в `...digitalink.common`.
 - **Версия:** при каждой сборке для планшета повышать `versionCode` и `versionName`
@@ -99,6 +100,9 @@ MAL-CD56). Пишешь пером в любом месте поля, распо
   (В текст — распознаётся и ставится текстом на месте написания, Ручка, Маркер, Ластик, Статус);
   палец — сдвиг, два пальца — масштаб, короткое касание метки — следующий статус, долгое на картинке —
   удалить; «Рука» — двигать предметы. Рисование штрихов вынесено в `InkPainter` (лист и доска).
+- **07.11.2026 — 0.4.0: переезд в `Shulya72/FreeWrite`.** Новый ключ подписи — Владимир один раз
+  удаляет старую FreeWrite (важных записей не было) и ставит новую по ссылке. Обновление — через
+  `version.txt` + «Скачать в браузере».
 - Robolectric: `ScreensSmokeTest` (Ежедневник, Запись портрет/альбом, Проверка планшета).
   Локально часто 429 от Maven Central на образ Android — повторить.
 - Владимир спрашивал, не вредит ли проект сайту бара: нет (отдельная папка и ветка, выкладка

@@ -294,14 +294,28 @@ class HomeActivity : Activity() {
                 updateButton.text = "Обновить"
                 updateButton.isEnabled = true
                 updateBar.visibility = View.VISIBLE
+            } else if (!silent && err != null) {
+                // Встроенная проверка не дотянулась до сервера — предлагаем браузер.
+                AlertDialog.Builder(this)
+                    .setTitle("Не удалось проверить обновления")
+                    .setMessage("$err.\n\nМожно скачать последнюю версию в браузере и установить её поверх.")
+                    .setPositiveButton("Скачать в браузере") { _, _ -> Updater.openInBrowser(this) }
+                    .setNegativeButton("Закрыть", null)
+                    .show()
             } else if (!silent) {
-                val msg = err?.let { "Не удалось проверить: $it" } ?: "У вас последняя версия ${BuildConfig.VERSION_NAME}"
-                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "У вас последняя версия ${BuildConfig.VERSION_NAME}", Toast.LENGTH_LONG).show()
             }
         }
     }
 
+    private var downloadFailed = false
+
     private fun startUpdate() {
+        if (downloadFailed) {
+            downloadFailed = false
+            Updater.openInBrowser(this)
+            return
+        }
         downloaded?.let { if (it.exists()) { install(it); return } }
         val r = release ?: return
         updateButton.isEnabled = false
@@ -311,8 +325,9 @@ class HomeActivity : Activity() {
         }) { file, err ->
             updateButton.isEnabled = true
             if (file == null) {
-                updateText.text = "Не удалось скачать: $err"
-                updateButton.text = "Ещё раз"
+                updateText.text = "Не удалось скачать: $err. Можно скачать в браузере."
+                updateButton.text = "В браузере"
+                downloadFailed = true
                 return@download
             }
             downloaded = file
