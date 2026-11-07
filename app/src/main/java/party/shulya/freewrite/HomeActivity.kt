@@ -170,12 +170,14 @@ class HomeActivity : Activity() {
         row.addView(Ui.mono(this, Ui.time(b.created), 13f, Ui.INK2), LinearLayout.LayoutParams(dp(58f), Ui.WRAP))
         val what = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         what.addView(Ui.text(this, b.title, 16f, Ui.INK, bold = true).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END })
-        val items = b.strokes.size + b.texts.size + b.images.size + b.stickers.size
+        val items = b.strokes.size + b.texts.size + b.images.size + b.stickers.size + b.fills.size + b.callouts.size
         what.addView(Ui.text(this, if (items == 0) "доска · пустая" else "доска · предметов: $items", 13f, Ui.MUTED))
         row.addView(what, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        if (b.count(2) > 0) row.addView(Ui.chip(this, "${b.count(2)} сдано", Ui.OK, Ui.OK_SOFT), chipParams())
-        if (b.count(1) > 0) row.addView(Ui.chip(this, "${b.count(1)} в работе", Ui.WARN, Ui.WARN_SOFT), chipParams())
-        if (b.count(0) > 0) row.addView(Ui.chip(this, "${b.count(0)} не сдано", Ui.BAD, Ui.BAD_SOFT), chipParams())
+        // Счётчики по статусам доски (до трёх самых частых).
+        val counts = b.statuses.map { it to b.countStatus(it.id) }.filter { it.second > 0 }.sortedByDescending { it.second }
+        for ((st, n) in counts.take(3)) {
+            row.addView(Ui.chip(this, "$n ${st.name.lowercase()}", Board.statusFg(st.color), Board.statusBg(st.color)), chipParams())
+        }
         return row
     }
 

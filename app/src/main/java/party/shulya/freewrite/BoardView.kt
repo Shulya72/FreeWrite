@@ -29,6 +29,11 @@ import kotlin.math.min
  * инструмент «Выделить» — обвести пером или пальцем (лассо) несколько объектов.
  * Выделенное тянут (палец — при любом инструменте), уголки рамки — размер, два пальца на выделенном —
  * масштаб. Долгое нажатие на картинку — удалить.
+ *
+ * Статусы: касание метки или нижней строки выноски — следующий статус по списку доски,
+ * долгое нажатие — список всех статусов. «Выноска»: провести пером от места на чертеже туда, где
+ * будет рамка (или от рамки — ещё один указатель). Концы указателей выделенной выноски можно тянуть;
+ * конец, утащенный на рамку, убирает указатель.
  */
 @SuppressLint("ViewConstructor")
 class BoardView(context: Context, private val host: Host) : View(context) {
@@ -44,6 +49,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onErase(x: Float, y: Float, first: Boolean)
         fun onStatusTap(x: Float, y: Float)
         fun onStickerTap(index: Int)
+        /** Касание нижней строки выноски — следующий статус. */
+        fun onCalloutStatusTap(c: BoardCallout)
+        /** Долгое нажатие на метку или строку статуса выноски — список статусов. */
+        fun onStatusMenu(obj: Any)
+        /** «Выноска»: провели пером от места (tx, ty) до рамки (bx, by); moved = false — просто касание. */
+        fun onCalloutCreate(tx: Float, ty: Float, bx: Float, by: Float, moved: Boolean)
         /** Перед изменением объектов жестом (для «Отменить»). */
         fun onDragStart()
         /** После жеста — сохранить. */
@@ -60,10 +71,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onPipettePick(sx: Float, sy: Float)
     }
 
-    enum class Kind { STICKER, TEXT, IMAGE, STROKE }
+    enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL }
     class Hit(val kind: Kind, val index: Int)
 
-    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE }
+    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER }
 
     private var mode = Mode.NONE
     private var activePointer = MotionEvent.INVALID_POINTER_ID
@@ -105,12 +116,18 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     private val longPress = Runnable {
         if ((mode == Mode.PAN || mode == Mode.MOVE_SEL) && !moved) {
-            val h = hitAt(wx(downX), wy(downY))
-            if (h?.kind == Kind.IMAGE) {
+            val x = wx(downX); val y = wy(downY)
+            val h = hitAt(x, y)
+            val status: Any? = when {
+                h?.kind == Kind.STICKER -> b.stickers.getOrNull(h.index)
+                h?.kind == Kind.CALLOUT && inStatusRow(b.callouts[h.index], x, y) -> b.callouts[h.index]
+                else -> null
+            }
+            if (status != null || h?.kind == Kind.IMAGE) {
                 if (mode == Mode.MOVE_SEL && editStarted) host.onDragEnd()
                 editStarted = false
                 mode = Mode.NONE
-                host.onImageLongPress(h.index)
+                if (status != null) host.onStatusMenu(status) else host.onImageLongPress(h!!.index)
             }
         }
     }
@@ -153,7 +170,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (d in b.strokes) { var i = 0; while (i + 1 < d.pts.size) { add(d.pts[i], d.pts[i + 1]); i += 3 } }
         for (x in b.texts) { add(x.x, x.y - x.size); add(x.x + textWidth(x), x.y + x.size * 0.3f) }
         for (m in b.images) { add(m.x, m.y); add(m.x + m.w, m.y + m.h) }
-        for (s in b.stickers) { add(s.x, s.y); add(s.x + s.w, s.y + s.h) }
+        for (s in b.stickers) { add(s.x, s.y); add(s.x + stickerW(s), s.y + s.h) }
+        for (f in b.fills) { var i = 0; while (i + 1 < f.pts.size) { add(f.pts[i], f.pts[i + 1]); i += 2 } }
+        for (c in b.callouts) {
+            calloutRect(c, rect2); add(rect2.left, rect2.top); add(rect2.right, rect2.bottom)
+            var i = 0; while (i + 1 < c.leaders.size) { add(c.leaders[i], c.leaders[i + 1]); i += 2 }
+        }
         return if (l <= r) RectF(l, t, r, bt) else null
     }
 
@@ -167,12 +189,84 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         return textPaint.measureText(t.text)
     }
 
-    /** Что лежит в точке доски (сверху вниз: метки, тексты, картинки). Штрихи — см. [selectableAt]. */
+    /** Ширина метки — под название её статуса. */
+    fun stickerW(s: BoardSticker): Float = s.width(b.status(s.sid).name)
+
+    // ---------------------------------------------------------------- выноски: размеры
+
+    private fun titleSize(c: BoardCallout) = 15f * c.scale
+    private fun statusSize(c: BoardCallout) = 14f * c.scale
+    private fun rowH(c: BoardCallout) = 30f * c.scale
+
+    /** Рамка выноски: две строки — надпись и статус. */
+    fun calloutRect(c: BoardCallout, out: RectF): RectF {
+        textPaint.textSize = titleSize(c)
+        val tw = textPaint.measureText(c.title.ifEmpty { " " })
+        textPaint.textSize = statusSize(c)
+        textPaint.isFakeBoldText = true
+        val sw = textPaint.measureText(b.status(c.sid).name)
+        textPaint.isFakeBoldText = false
+        val pad = 12f * c.scale
+        val w = max(150f * c.scale, max(tw, sw) + pad * 2)
+        out.set(c.x, c.y, c.x + w, c.y + rowH(c) * 2)
+        return out
+    }
+
+    /** Точка внутри нижней строки (статус) выноски. */
+    fun inStatusRow(c: BoardCallout, x: Float, y: Float): Boolean {
+        calloutRect(c, rect2)
+        return x >= rect2.left && x <= rect2.right && y >= rect2.top + rowH(c) && y <= rect2.bottom
+    }
+
+    fun calloutAt(x: Float, y: Float): Int {
+        val pad = Ui.dpf(context, 4f) / b.camZ
+        for (i in b.callouts.indices.reversed()) {
+            calloutRect(b.callouts[i], rect2)
+            if (x >= rect2.left - pad && x <= rect2.right + pad && y >= rect2.top - pad && y <= rect2.bottom + pad) return i
+        }
+        return -1
+    }
+
+    /** Заливка, внутри которой точка (верхняя). */
+    fun fillAt(x: Float, y: Float): Int {
+        for (i in b.fills.indices.reversed()) if (insidePolygon(b.fills[i].pts, x, y)) return i
+        return -1
+    }
+
+    /** Заливка, край которой рядом с точкой (для ластика). */
+    fun fillBorderAt(x: Float, y: Float, r: Float): Int {
+        for (i in b.fills.indices.reversed()) {
+            val p = b.fills[i].pts
+            val n = p.size / 2
+            for (k in 0 until n) {
+                val j = (k + 1) % n
+                if (segDist(x, y, p[k * 2], p[k * 2 + 1], p[j * 2], p[j * 2 + 1]) <= r) return i
+            }
+        }
+        return -1
+    }
+
+    private fun insidePolygon(p: FloatArray, x: Float, y: Float): Boolean {
+        val n = p.size / 2
+        if (n < 3) return false
+        var c = false
+        var j = n - 1
+        for (i in 0 until n) {
+            val xi = p[i * 2]; val yi = p[i * 2 + 1]; val xj = p[j * 2]; val yj = p[j * 2 + 1]
+            if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c
+            j = i
+        }
+        return c
+    }
+
+    /** Что лежит в точке доски (сверху вниз: метки, выноски, тексты, картинки). Штрихи — см. [selectableAt]. */
     fun hitAt(x: Float, y: Float): Hit? {
         for (i in b.stickers.indices.reversed()) {
             val s = b.stickers[i]
-            if (x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h) return Hit(Kind.STICKER, i)
+            if (x >= s.x && x <= s.x + stickerW(s) && y >= s.y && y <= s.y + s.h) return Hit(Kind.STICKER, i)
         }
+        val ci = calloutAt(x, y)
+        if (ci >= 0) return Hit(Kind.CALLOUT, ci)
         for (i in b.texts.indices.reversed()) {
             val t = b.texts[i]
             if (x >= t.x && x <= t.x + textWidth(t) && y >= t.y - t.size && y <= t.y + t.size * 0.3f) return Hit(Kind.TEXT, i)
@@ -206,12 +300,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         return -1
     }
 
-    /** То, что можно выделить, в точке: метки, надписи, штрихи (поверх картинок), картинки. */
+    /** То, что можно выделить, в точке: метки, выноски, надписи, штрихи, заливки (поверх картинок), картинки. */
     fun selectableAt(x: Float, y: Float): Any? {
         val h = hitAt(x, y)
         if (h != null && h.kind != Kind.IMAGE) return objectOf(h)
         val s = strokeAt(x, y)
         if (s >= 0) return b.strokes[s]
+        val f = fillAt(x, y)
+        if (f >= 0) return b.fills[f]
         return h?.let { objectOf(it) }
     }
 
@@ -228,6 +324,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         Kind.TEXT -> b.texts.getOrNull(h.index)
         Kind.IMAGE -> b.images.getOrNull(h.index)
         Kind.STROKE -> b.strokes.getOrNull(h.index)
+        Kind.CALLOUT -> b.callouts.getOrNull(h.index)
+        Kind.FILL -> b.fills.getOrNull(h.index)
     }
 
     // ---------------------------------------------------------------- выделение
@@ -259,6 +357,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         is BoardImage -> b.images.any { it === o }
         is BoardSticker -> b.stickers.any { it === o }
         is Drawing -> b.strokes.any { it === o }
+        is BoardFill -> b.fills.any { it === o }
+        is BoardCallout -> b.callouts.any { it === o }
         else -> false
     }
 
@@ -266,7 +366,17 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         when (o) {
             is BoardText -> out.set(o.x, o.y - o.size, o.x + textWidth(o), o.y + o.size * 0.3f)
             is BoardImage -> out.set(o.x, o.y, o.x + o.w, o.y + o.h)
-            is BoardSticker -> out.set(o.x, o.y, o.x + o.w, o.y + o.h)
+            is BoardSticker -> out.set(o.x, o.y, o.x + stickerW(o), o.y + o.h)
+            is BoardCallout -> calloutRect(o, out)
+            is BoardFill -> {
+                var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var bt = -Float.MAX_VALUE
+                var i = 0
+                while (i + 1 < o.pts.size) {
+                    l = min(l, o.pts[i]); t = min(t, o.pts[i + 1]); r = max(r, o.pts[i]); bt = max(bt, o.pts[i + 1])
+                    i += 2
+                }
+                if (l <= r) out.set(l, t, r, bt) else out.setEmpty()
+            }
             is Drawing -> {
                 var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var bt = -Float.MAX_VALUE
                 var i = 0
@@ -311,6 +421,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 is BoardImage -> Orig(o, floatArrayOf(o.x, o.y, o.w, o.h), 0f)
                 is BoardSticker -> Orig(o, floatArrayOf(o.x, o.y, o.scale), 0f)
                 is Drawing -> Orig(o, o.pts.copyOf(), o.width)
+                is BoardFill -> Orig(o, o.pts.copyOf(), 0f)
+                is BoardCallout -> Orig(o, floatArrayOf(o.x, o.y, o.scale) + o.leaders.toFloatArray(), 0f)
                 else -> continue
             }
         }
@@ -334,6 +446,25 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                         i += 3
                     }
                     o.width = or.w * s
+                }
+                is BoardFill -> {
+                    var i = 0
+                    while (i + 1 < a.size && i + 1 < o.pts.size) {
+                        o.pts[i] = tx(a[i]); o.pts[i + 1] = ty(a[i + 1])
+                        i += 2
+                    }
+                }
+                is BoardCallout -> {
+                    o.x = tx(a[0]); o.y = ty(a[1]); o.scale = a[2] * s
+                    // Одну выноску двигают — указатели остаются на своих местах чертежа;
+                    // вместе с другими объектами — едут вместе со всем.
+                    if (origs.size > 1) {
+                        var i = 3
+                        while (i + 1 < a.size && i - 2 < o.leaders.size) {
+                            o.leaders[i - 3] = tx(a[i]); o.leaders[i - 2] = ty(a[i + 1])
+                            i += 2
+                        }
+                    }
                 }
             }
         }
@@ -388,6 +519,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             return c
         }
         for (o in b.images) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
+        for (o in b.fills) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
+        for (o in b.callouts) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.strokes) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.texts) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.stickers) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
@@ -476,6 +609,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             invalidate()
             return
         }
+        // Конец указателя выделенной выноски — тянуть.
+        val sc = selection.singleOrNull() as? BoardCallout
+        if (sc != null) {
+            val r = Ui.dpf(context, 24f)
+            for (i in 0 until sc.leaderCount) {
+                if (hypot(sx(sc.leaders[i * 2]) - downX, sy(sc.leaders[i * 2 + 1]) - downY) <= r) {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    leaderCallout = sc
+                    leaderIndex = i
+                    mode = Mode.LEADER
+                    return
+                }
+            }
+        }
         // Уголок рамки выделения — пером или пальцем, при любом инструменте.
         if (selection.isNotEmpty()) {
             val c = handleAt(downX, downY)
@@ -518,6 +665,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         parent?.requestDisallowInterceptTouchEvent(true)
         requestUnbufferedDispatch(ev)
+        if (t == BoardActivity.Tool.CALLOUT && tool != MotionEvent.TOOL_TYPE_ERASER) {
+            val ci = calloutAt(x, y)
+            calloutFrom = if (ci >= 0) b.callouts[ci] else null
+            calloutDown.set(x, y)
+            calloutNow.set(x, y)
+            mode = Mode.CALLOUT_DRAG
+            return
+        }
         if (tool == MotionEvent.TOOL_TYPE_ERASER || t == BoardActivity.Tool.ERASER) {
             mode = Mode.ERASE
             host.onErase(x, y, true)
@@ -535,6 +690,13 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         live = InkStroke(tool).also { it.points.add(InkPoint(x, y, ev.eventTime + clockOffset, pressure(ev, idx, -1))) }
         invalidate()
     }
+
+    // «Выноска»: откуда ведут линию (место на чертеже или рамка выноски) и где перо сейчас.
+    private var calloutFrom: BoardCallout? = null
+    private val calloutDown = PointF()
+    private val calloutNow = PointF()
+    private var leaderCallout: BoardCallout? = null
+    private var leaderIndex = -1
 
     private fun pressure(ev: MotionEvent, idx: Int, h: Int): Float {
         if (!isPen(ev.getToolType(idx))) return 0.5f
@@ -585,6 +747,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
             Mode.PIPETTE -> {
                 hover = PointF(sxp, syp)
+                invalidate()
+            }
+            Mode.CALLOUT_DRAG -> {
+                calloutNow.set(wx(sxp), wy(syp))
+                invalidate()
+            }
+            Mode.LEADER -> {
+                if (!moved) return
+                val c = leaderCallout ?: return
+                if (!editStarted) { editStarted = true; host.onDragStart() }
+                if (leaderIndex * 2 + 1 < c.leaders.size) {
+                    c.leaders[leaderIndex * 2] = wx(sxp)
+                    c.leaders[leaderIndex * 2 + 1] = wy(syp)
+                }
                 invalidate()
             }
             Mode.ERASE -> {
@@ -655,6 +831,38 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 hover = null
                 host.onPipettePick(sxp, syp)
             }
+            Mode.CALLOUT_DRAG -> {
+                val x = wx(sxp); val y = wy(syp)
+                val from = calloutFrom
+                calloutFrom = null
+                if (from != null && exists(from)) {
+                    if (moved && calloutAt(x, y) < 0) {
+                        // От рамки — ещё один указатель.
+                        host.onDragStart()
+                        from.addLeader(x, y)
+                        host.onDragEnd()
+                        select(listOf(from))
+                    } else {
+                        select(listOf(from))
+                    }
+                } else {
+                    host.onCalloutCreate(calloutDown.x, calloutDown.y, x, y, moved)
+                }
+            }
+            Mode.LEADER -> {
+                val c = leaderCallout
+                if (c != null && editStarted) {
+                    // Конец указателя утащили на рамку — убираем указатель.
+                    calloutRect(c, rect2)
+                    val x = wx(sxp); val y = wy(syp)
+                    if (rect2.contains(x, y) && leaderIndex * 2 + 1 < c.leaders.size) {
+                        c.leaders.removeAt(leaderIndex * 2 + 1)
+                        c.leaders.removeAt(leaderIndex * 2)
+                    }
+                    host.onDragEnd()
+                }
+                leaderCallout = null
+            }
             else -> Unit
         }
         editStarted = false
@@ -662,13 +870,23 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         invalidate()
     }
 
-    /** Короткое касание пальцем: метка — следующий статус, объект — выделить, пусто — снять выделение. */
+    /**
+     * Короткое касание пальцем: метка или строка статуса выноски — следующий статус,
+     * объект — выделить, пусто — снять выделение.
+     */
     private fun tapAt(x: Float, y: Float) {
         val h = hitAt(x, y)
         if (h?.kind == Kind.STICKER && host.tool() != BoardActivity.Tool.SELECT) {
             clearSelection()
             host.onStickerTap(h.index)
             return
+        }
+        if (h?.kind == Kind.CALLOUT && host.tool() != BoardActivity.Tool.SELECT) {
+            val c = b.callouts[h.index]
+            if (inStatusRow(c, x, y)) {
+                host.onCalloutStatusTap(c)
+                return
+            }
         }
         val o = selectableAt(x, y)
         when {
@@ -788,13 +1006,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         canvas.translate(-b.camX, -b.camY)
         drawGrid(canvas, z)
         for (m in b.images) drawImage(canvas, m, z)
+        for (f in b.fills) drawFill(canvas, f, z)
         for (d in b.strokes) painter.drawing(canvas, d)
         for (t in b.texts) {
             textPaint.color = t.color
             textPaint.textSize = t.size
             canvas.drawText(t.text, t.x, t.y, textPaint)
         }
+        for (c in b.callouts) drawCallout(canvas, c, z)
         for (s in b.stickers) drawSticker(canvas, s)
+        if (mode == Mode.CALLOUT_DRAG && hypot(calloutNow.x - calloutDown.x, calloutNow.y - calloutDown.y) * z > slop) {
+            dashPaint.strokeWidth = Ui.dpf(context, 1.5f) / z
+            dashPaint.pathEffect = DashPathEffect(floatArrayOf(Ui.dpf(context, 6f) / z, Ui.dpf(context, 4f) / z), 0f)
+            canvas.drawLine(calloutDown.x, calloutDown.y, calloutNow.x, calloutNow.y, dashPaint)
+        }
         if (!plain) drawSelection(canvas, z)
         val pendingStyle = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z)
         for (s in host.pendingStrokes()) painter.stroke(canvas, s, pendingStyle, 255)
@@ -884,9 +1109,103 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
     }
 
+    private val fillPath = Path()
+
+    /** Заливка: полупрозрачная область и тонкий край того же цвета. */
+    private fun drawFill(canvas: Canvas, f: BoardFill, z: Float) {
+        val p = f.pts
+        if (p.size < 6) return
+        fillPath.reset()
+        fillPath.moveTo(p[0], p[1])
+        var i = 2
+        while (i + 1 < p.size) { fillPath.lineTo(p[i], p[i + 1]); i += 2 }
+        fillPath.close()
+        fillPaint.color = f.color
+        fillPaint.alpha = (255 * f.alpha).toInt().coerceIn(0, 255)
+        canvas.drawPath(fillPath, fillPaint)
+        fillPaint.alpha = 255
+        linePaint.color = f.color
+        linePaint.alpha = 200
+        linePaint.strokeWidth = Ui.dpf(context, 1.5f) / z
+        canvas.drawPath(fillPath, linePaint)
+        linePaint.alpha = 255
+    }
+
+    private val arrowPath = Path()
+
+    /** Мультивыноска: указатели со стрелками, рамка, надпись и строка статуса цвета статуса. */
+    private fun drawCallout(canvas: Canvas, c: BoardCallout, z: Float) {
+        val st = b.status(c.sid)
+        val fg = Board.statusFg(st.color)
+        val box = calloutRect(c, RectF())
+        val lw = 1.6f * c.scale
+        linePaint.color = Ui.INK2
+        linePaint.strokeWidth = lw
+        fillPaint.color = Ui.INK2
+        for (i in 0 until c.leaderCount) {
+            val tx = c.leaders[i * 2]; val ty = c.leaders[i * 2 + 1]
+            // Начало указателя — ближайшая к цели точка рамки.
+            val ax = tx.coerceIn(box.left, box.right)
+            val ay = ty.coerceIn(box.top, box.bottom)
+            val ox = if (ax == tx && ay == ty) box.centerX() else ax
+            val oy = if (ax == tx && ay == ty) box.bottom else ay
+            canvas.drawLine(ox, oy, tx, ty, linePaint)
+            val len = hypot(tx - ox, ty - oy)
+            if (len > 1f) {
+                val ux = (tx - ox) / len; val uy = (ty - oy) / len
+                val al = 11f * c.scale; val aw = 4.5f * c.scale
+                arrowPath.reset()
+                arrowPath.moveTo(tx, ty)
+                arrowPath.lineTo(tx - ux * al - uy * aw, ty - uy * al + ux * aw)
+                arrowPath.lineTo(tx - ux * al + uy * aw, ty - uy * al - ux * aw)
+                arrowPath.close()
+                canvas.drawPath(arrowPath, fillPaint)
+            }
+        }
+        val r = 8f * c.scale
+        val row = rowH(c)
+        fillPaint.color = Color.WHITE
+        canvas.drawRoundRect(box, r, r, fillPaint)
+        // Нижняя строка — кнопка статуса.
+        fillPaint.color = Board.statusBg(st.color)
+        rect.set(box.left, box.top + row, box.right, box.bottom)
+        canvas.save()
+        canvas.clipRect(rect)
+        canvas.drawRoundRect(box, r, r, fillPaint)
+        canvas.restore()
+        linePaint.color = fg
+        linePaint.strokeWidth = 1.5f * c.scale
+        canvas.drawRoundRect(box, r, r, linePaint)
+        canvas.drawLine(box.left, box.top + row, box.right, box.top + row, linePaint)
+        val pad = 12f * c.scale
+        textPaint.color = Ui.INK
+        textPaint.textSize = titleSize(c)
+        canvas.drawText(c.title, box.left + pad, box.top + row / 2f + textPaint.textSize * 0.36f, textPaint)
+        textPaint.color = fg
+        textPaint.textSize = statusSize(c)
+        textPaint.isFakeBoldText = true
+        canvas.drawText(st.name, box.left + pad, box.top + row * 1.5f + textPaint.textSize * 0.36f, textPaint)
+        textPaint.isFakeBoldText = false
+        // Концы указателей выделенной выноски — кружки, за которые тянут.
+        if (!plain && selection.size == 1 && selection[0] === c) {
+            val hr = Ui.dpf(context, 7f) / z
+            linePaint.color = Ui.ACCENT
+            linePaint.strokeWidth = Ui.dpf(context, 2f) / z
+            for (i in 0 until c.leaderCount) {
+                fillPaint.color = Color.WHITE
+                canvas.drawCircle(c.leaders[i * 2], c.leaders[i * 2 + 1], hr, fillPaint)
+                canvas.drawCircle(c.leaders[i * 2], c.leaders[i * 2 + 1], hr, linePaint)
+            }
+        }
+    }
+
     private fun drawSticker(canvas: Canvas, s: BoardSticker) {
-        val (label, fg, bg) = STATUS[s.status.coerceIn(0, 2)]
-        rect.set(s.x, s.y, s.x + s.w, s.y + s.h)
+        val st = b.status(s.sid)
+        val label = st.name
+        val fg = Board.statusFg(st.color)
+        val bg = Board.statusBg(st.color)
+        val w = s.width(label)
+        rect.set(s.x, s.y, s.x + w, s.y + s.h)
         fillPaint.color = bg
         canvas.drawRoundRect(rect, s.h / 2f, s.h / 2f, fillPaint)
         linePaint.color = fg
@@ -896,16 +1215,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         textPaint.textSize = 16f * s.scale
         textPaint.isFakeBoldText = true
         val tw = textPaint.measureText(label)
-        canvas.drawText(label, s.x + (s.w - tw) / 2f, s.y + s.h / 2f + textPaint.textSize * 0.36f, textPaint)
+        canvas.drawText(label, s.x + (w - tw) / 2f, s.y + s.h / 2f + textPaint.textSize * 0.36f, textPaint)
         textPaint.isFakeBoldText = false
-    }
-
-    companion object {
-        /** Подпись, цвет текста, цвет фона — для статусов 0, 1, 2. */
-        val STATUS = listOf(
-            Triple("Не сдано", Ui.BAD, Ui.BAD_SOFT),
-            Triple("В работе", Ui.WARN, Ui.WARN_SOFT),
-            Triple("Сдано", Ui.OK, Ui.OK_SOFT),
-        )
     }
 }

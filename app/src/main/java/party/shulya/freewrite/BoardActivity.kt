@@ -32,7 +32,7 @@ import kotlin.math.roundToInt
  */
 class BoardActivity : Activity(), BoardView.Host {
 
-    enum class Tool { WRITE, PEN, MARKER, SHAPE, ERASER, SELECT, STATUS, PIPETTE }
+    enum class Tool { WRITE, PEN, MARKER, SHAPE, FILL, ERASER, SELECT, STATUS, CALLOUT, PIPETTE }
 
     private lateinit var store: BoardStore
     private lateinit var noteStore: NoteStore
@@ -152,9 +152,11 @@ class BoardActivity : Activity(), BoardView.Host {
         addTool(row, Tool.PEN, R.drawable.ic_pen, "Ручка")
         addTool(row, Tool.MARKER, R.drawable.ic_marker, "Маркер")
         addTool(row, Tool.SHAPE, R.drawable.ic_shapes, "Фигуры")
+        addTool(row, Tool.FILL, R.drawable.ic_fill, "Заливка")
         addTool(row, Tool.ERASER, R.drawable.ic_eraser, "Ластик")
         addTool(row, Tool.SELECT, R.drawable.ic_lasso, "Выделить")
-        addTool(row, Tool.STATUS, R.drawable.ic_status, "Статус")
+        addTool(row, Tool.STATUS, R.drawable.ic_status, "Метка")
+        addTool(row, Tool.CALLOUT, R.drawable.ic_callout, "Выноска")
         // Три последних цвета и «Цвет» — палитра из 24 цветов и пипетка.
         for (i in 0 until 3) {
             val v = View(this).apply {
@@ -174,6 +176,10 @@ class BoardActivity : Activity(), BoardView.Host {
         row.addView(Ui.ToolButton(this, R.drawable.ic_undo, "Отменить").apply { setOnClickListener { undo() } })
         row.addView(Ui.ToolButton(this, R.drawable.ic_redo, "Вернуть").apply { setOnClickListener { redo() } })
         row.addView(Ui.ToolButton(this, R.drawable.ic_fit, "Всё").apply { setOnClickListener { view.fitAll() } })
+        row.addView(Ui.ToolButton(this, R.drawable.ic_statuses, "Статусы").apply {
+            tag = "board_statuses"
+            setOnClickListener { statusesDialog() }
+        })
         row.addView(Ui.separator(this))
         row.addView(CheckBox(this).apply {
             text = "Палец пишет"; textSize = 13f; setTextColor(Ui.INK2)
@@ -243,12 +249,14 @@ class BoardActivity : Activity(), BoardView.Host {
         for ((k, v) in toolButtons) v.selectedTool = k == t
         refreshColors()
         if (t != Tool.SHAPE) shapeTool.reset()
-        if (t == Tool.STATUS) hint("Коснитесь пером: метка «Не сдано». Пальцем по метке — следующий статус")
+        if (t == Tool.STATUS) hint("Коснитесь пером — метка статуса. Касание метки — следующий статус, подержать — список", 3500)
+        if (t == Tool.FILL) hint("Обведите пером захватку — она зальётся выбранным цветом", 3500)
+        if (t == Tool.CALLOUT) hint("Проведите пером от места на чертеже туда, где будет надпись. От надписи — ещё указатель", 4000)
         if (t == Tool.SELECT) hint("Обведите, что выделить. Касание — один объект. Доску двигать — двумя пальцами", 3500)
         if (t == Tool.SHAPE) hint("Нарисуйте линию, стрелку, квадрат, круг или треугольник — станет ровной фигурой", 3500)
     }
 
-    private fun colorTool(t: Tool) = t == Tool.PEN || t == Tool.MARKER || t == Tool.SHAPE
+    private fun colorTool(t: Tool) = t == Tool.PEN || t == Tool.MARKER || t == Tool.SHAPE || t == Tool.FILL
 
     private fun refreshColors() {
         val rec = ColorKit.recent(this)
@@ -387,9 +395,10 @@ class BoardActivity : Activity(), BoardView.Host {
     private fun pickImage() {
         current?.let { commit(it) }
         val i = Intent(Intent.ACTION_GET_CONTENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE)
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true) // можно выбрать сразу несколько чертежей
         try {
             @Suppress("DEPRECATION")
-            startActivityForResult(Intent.createChooser(i, "Выберите картинку"), REQ_IMAGE)
+            startActivityForResult(Intent.createChooser(i, "Выберите картинки"), REQ_IMAGE)
         } catch (t: Throwable) {
             hint("Не нашлось приложения для выбора картинки")
         }
@@ -399,26 +408,50 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQ_IMAGE || resultCode != RESULT_OK) return
-        val uri = data?.data ?: return
-        hint("Добавляю картинку…", 1500)
+        if (requestCode != REQ_IMAGE || resultCode != RESULT_OK || data == null) return
+        val uris = ArrayList<android.net.Uri>()
+        data.clipData?.let { c -> for (k in 0 until c.itemCount) c.getItemAt(k).uri?.let { uris += it } }
+        if (uris.isEmpty()) data.data?.let { uris += it }
+        if (uris.isEmpty()) return
+        hint(if (uris.size == 1) "Добавляю картинку…" else "Добавляю картинки: ${uris.size}…", 1500)
         io.execute {
-            val block = try { noteStore.importImage(this, uri) } catch (t: Throwable) { null }
-            handler.post {
-                if (block == null) { hint("Не удалось открыть картинку"); return@post }
-                val z = board.camZ
-                val maxW = dp(460f) / z
-                val k = min(1f, maxW / block.width)
-                val w = block.width * k
-                val h = block.height * k
-                val cx = view.wx(view.width / 2f)
-                val cy = view.wy(view.height / 2f)
-                pushUndo()
-                board.images += BoardImage(block.file, cx - w / 2f, cy - h / 2f, w, h, block.width, block.height)
-                changed()
-                view.select(listOf(board.images.last()))
-            }
+            val blocks = uris.mapNotNull { u -> try { noteStore.importImage(this, u) } catch (t: Throwable) { null } }
+            handler.post { placeImages(blocks, uris.size) }
         }
+    }
+
+    /** Разложить новые картинки рядами (до 4 в ряд) в середине экрана и выделить их. */
+    private fun placeImages(blocks: List<Block.Image>, asked: Int) {
+        if (blocks.isEmpty()) { hint("Не удалось открыть картинку"); return }
+        val z = board.camZ
+        val maxW = dp(if (blocks.size == 1) 460f else 320f) / z
+        val gap = dp(24f) / z
+        val cols = when { blocks.size <= 1 -> 1; blocks.size <= 4 -> 2; blocks.size <= 9 -> 3; else -> 4 }
+        val sizes = blocks.map { b -> val k = min(1f, maxW / b.width); b.width * k to b.height * k }
+        val rows = sizes.chunked(cols)
+        val rowH = rows.map { r -> r.maxOf { it.second } }
+        val totalW = rows.maxOf { r -> r.sumOf { it.first.toDouble() }.toFloat() + gap * (r.size - 1) }
+        val totalH = rowH.sum() + gap * (rows.size - 1)
+        var y = view.wy(view.height / 2f) - totalH / 2f
+        val left = view.wx(view.width / 2f) - totalW / 2f
+        pushUndo()
+        val added = ArrayList<Any>()
+        var idx = 0
+        for ((ri, r) in rows.withIndex()) {
+            var x = left
+            for ((w, h) in r) {
+                val b = blocks[idx++]
+                val img = BoardImage(b.file, x, y, w, h, b.width, b.height)
+                board.images += img
+                added += img
+                x += w + gap
+            }
+            y += rowH[ri] + gap
+        }
+        changed()
+        view.select(added)
+        if (blocks.size < asked) hint("Добавлено ${blocks.size} из $asked — остальные не открылись")
+        else if (blocks.size > 1) hint("Добавлено картинок: ${blocks.size}")
     }
 
     private fun confirmDeleteImage(i: Int) {
@@ -445,6 +478,7 @@ class BoardActivity : Activity(), BoardView.Host {
         Tool.MARKER -> NoteInkView.StrokeStyle("marker", penColor, Ui.dpf(this, 16f))
         Tool.WRITE -> NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(this, 2.6f))
         Tool.SHAPE -> NoteInkView.StrokeStyle("shape", penColor, Ui.dpf(this, 2.4f))
+        Tool.FILL -> NoteInkView.StrokeStyle("fill", penColor, Ui.dpf(this, 2f))
         else -> NoteInkView.StrokeStyle("pen", penColor, Ui.dpf(this, 2.4f))
     }
 
@@ -465,6 +499,8 @@ class BoardActivity : Activity(), BoardView.Host {
             handler.removeCallbacks(interimRunnable); handler.removeCallbacks(commitRunnable)
             handler.postDelayed(interimRunnable, 180)
             handler.postDelayed(commitRunnable, pauseMs)
+        } else if (style.kind == "fill") {
+            createFill(stroke)
         } else if (style.kind == "shape") {
             pushUndo()
             val z = board.camZ
@@ -500,29 +536,38 @@ class BoardActivity : Activity(), BoardView.Host {
             hit
         }
         val h = view.hitAt(x, y)
-        if (keep.size != board.strokes.size || (h != null && h.kind != BoardView.Kind.IMAGE)) {
+        val fi = view.fillBorderAt(x, y, r)
+        if (keep.size != board.strokes.size || fi >= 0 || (h != null && h.kind != BoardView.Kind.IMAGE)) {
             if (!eraseUndoPushed) { pushUndo(); eraseUndoPushed = true }
             if (keep.size != board.strokes.size) { board.strokes.clear(); board.strokes.addAll(keep); changedAny = true }
             when (h?.kind) {
                 BoardView.Kind.TEXT -> { board.texts.removeAt(h.index); changedAny = true }
                 BoardView.Kind.STICKER -> { board.stickers.removeAt(h.index); changedAny = true }
+                BoardView.Kind.CALLOUT -> { board.callouts.removeAt(h.index); changedAny = true }
                 else -> Unit
             }
+            // Заливка стирается касанием её края (внутри можно стирать рисунки поверх неё).
+            if (fi >= 0 && fi < board.fills.size) { board.fills.removeAt(fi); changedAny = true }
         }
         if (changedAny) changed()
     }
 
     override fun onStatusTap(x: Float, y: Float) {
         val h = view.hitAt(x, y)
+        if (h?.kind == BoardView.Kind.CALLOUT) {
+            val c = board.callouts[h.index]
+            if (view.inStatusRow(c, x, y)) onCalloutStatusTap(c) else view.select(listOf(c))
+            return
+        }
         pushUndo()
         if (h?.kind == BoardView.Kind.STICKER) {
             val s = board.stickers[h.index]
-            s.status = (s.status + 1) % 3
+            s.sid = board.nextStatus(s.sid)
         } else {
-            // Метка ставится «в рост» текущего масштаба: на экране около 128×36 dp.
+            // Метка ставится «в рост» текущего масштаба: на экране около 128×36 dp; статус — первый в списке.
             val scale = resources.displayMetrics.density / board.camZ
-            val s = BoardSticker(0f, 0f, 0, scale)
-            s.x = x - s.w / 2f; s.y = y - s.h / 2f
+            val s = BoardSticker(0f, 0f, board.status("").id, scale)
+            s.x = x - view.stickerW(s) / 2f; s.y = y - s.h / 2f
             board.stickers += s
         }
         changed()
@@ -531,8 +576,39 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onStickerTap(index: Int) {
         val s = board.stickers.getOrNull(index) ?: return
         pushUndo()
-        s.status = (s.status + 1) % 3
+        s.sid = board.nextStatus(s.sid)
         changed()
+    }
+
+    override fun onCalloutStatusTap(c: BoardCallout) {
+        pushUndo()
+        c.sid = board.nextStatus(c.sid)
+        changed()
+        hint(board.status(c.sid).name, 1200)
+    }
+
+    override fun onStatusMenu(obj: Any) = chooseStatus(obj)
+
+    override fun onCalloutCreate(tx: Float, ty: Float, bx: Float, by: Float, moved: Boolean) {
+        calloutDialog(null) { title, sid ->
+            val z = board.camZ
+            val c = BoardCallout(0f, 0f, resources.displayMetrics.density / z, title, sid)
+            c.addLeader(tx, ty)
+            val r = view.calloutRect(c, android.graphics.RectF())
+            if (moved) {
+                c.x = bx - r.width() / 2f
+                c.y = by - r.height() / 2f
+            } else {
+                // Просто касание — рамка выше и правее места.
+                c.x = tx + dp(36f) / z
+                c.y = ty - dp(36f) / z - r.height()
+            }
+            pushUndo()
+            board.callouts += c
+            changed()
+            view.select(listOf(c))
+            hint("Ещё указатель — проведите пером от выноски. Касание строки статуса — следующий статус", 4000)
+        }
     }
 
     override fun onDragStart() { pushUndo() }
@@ -557,14 +633,40 @@ class BoardActivity : Activity(), BoardView.Host {
             sel[0] is BoardText -> "Надпись"
             sel[0] is BoardImage -> "Картинка"
             sel[0] is BoardSticker -> "Метка"
+            sel[0] is BoardCallout -> "Выноска"
+            sel[0] is BoardFill -> "Заливка"
             else -> "Рисунок"
         }
         val buttons = ArrayList<TextView>()
         if (sel.size == 1 && sel[0] is BoardText) {
             buttons += Ui.pill(this, "Изменить", Ui.INK, Ui.DESK).apply { tag = "sel_edit"; setOnClickListener { editText(sel[0] as BoardText) } }
         }
+        if (sel.size == 1 && sel[0] is BoardCallout) {
+            val c = sel[0] as BoardCallout
+            buttons += Ui.pill(this, "Изменить", Ui.INK, Ui.DESK).apply {
+                tag = "sel_edit"
+                setOnClickListener {
+                    calloutDialog(c) { title, sid ->
+                        pushUndo(); c.title = title; c.sid = sid; changed(); buildSelectionBar()
+                    }
+                }
+            }
+            buttons += Ui.pill(this, "+ Указатель", Ui.INK, Ui.DESK).apply {
+                tag = "sel_leader"
+                setOnClickListener {
+                    setTool(Tool.CALLOUT)
+                    hint("Проведите пером от выноски к месту на чертеже", 3500)
+                }
+            }
+        }
+        if (sel.size == 1 && sel[0] is BoardSticker) {
+            buttons += Ui.pill(this, "Статус", Ui.INK, Ui.DESK).apply { tag = "sel_status"; setOnClickListener { chooseStatus(sel[0]) } }
+        }
+        if (sel.any { it is Drawing && isClosed(it) }) {
+            buttons += Ui.pill(this, "Залить", Ui.INK, Ui.DESK).apply { tag = "sel_fill"; setOnClickListener { fillSelectedShapes() } }
+        }
         buttons += Ui.pill(this, "Копия", Ui.INK, Ui.DESK).apply { tag = "sel_copy"; setOnClickListener { duplicateSelection() } }
-        if (sel.any { it is BoardText || it is Drawing }) {
+        if (sel.any { it is BoardText || it is Drawing || it is BoardFill }) {
             buttons += Ui.pill(this, "Цвет", Ui.INK, Ui.DESK).apply { tag = "sel_color"; setOnClickListener { recolorSelection() } }
         }
         buttons += Ui.pill(this, "Удалить", Ui.BAD, Ui.BAD_SOFT).apply { tag = "sel_delete"; setOnClickListener { deleteSelection() } }
@@ -603,12 +705,24 @@ class BoardActivity : Activity(), BoardView.Host {
             when (o) {
                 is BoardText -> BoardText(o.x + off, o.y + off, o.size, o.text, o.color).also { board.texts += it; copies += it }
                 is BoardImage -> BoardImage(o.file, o.x + off, o.y + off, o.w, o.h, o.pxW, o.pxH).also { board.images += it; copies += it }
-                is BoardSticker -> BoardSticker(o.x + off, o.y + off, o.status, o.scale).also { board.stickers += it; copies += it }
+                is BoardSticker -> BoardSticker(o.x + off, o.y + off, o.sid, o.scale).also { board.stickers += it; copies += it }
                 is Drawing -> o.copy().also { d ->
                     var i = 0
                     while (i + 1 < d.pts.size) { d.pts[i] += off; d.pts[i + 1] += off; i += 3 }
                     board.strokes += d
                     copies += d
+                }
+                is BoardFill -> o.copy().also { f ->
+                    var i = 0
+                    while (i + 1 < f.pts.size) { f.pts[i] += off; f.pts[i + 1] += off; i += 2 }
+                    board.fills += f
+                    copies += f
+                }
+                is BoardCallout -> o.copy().also { c ->
+                    c.x += off; c.y += off
+                    for (i in c.leaders.indices) c.leaders[i] += off
+                    board.callouts += c
+                    copies += c
                 }
             }
         }
@@ -633,6 +747,7 @@ class BoardActivity : Activity(), BoardView.Host {
         for (o in sel) when (o) {
             is BoardText -> o.color = c
             is Drawing -> o.color = c
+            is BoardFill -> o.color = c
         }
         penColor = c
         ColorKit.remember(this, c)
@@ -648,8 +763,249 @@ class BoardActivity : Activity(), BoardView.Host {
         board.images.removeAll { m -> sel.any { it === m } }
         board.stickers.removeAll { s -> sel.any { it === s } }
         board.strokes.removeAll { d -> sel.any { it === d } }
+        board.fills.removeAll { f -> sel.any { it === f } }
+        board.callouts.removeAll { c -> sel.any { it === c } }
         view.clearSelection()
         changed()
+    }
+
+    // ---------------------------------------------------------------- заливки
+
+    private fun isClosed(d: Drawing): Boolean {
+        val p = d.pts
+        if (p.size < 12) return false
+        return Math.hypot((p[0] - p[p.size - 3]).toDouble(), (p[1] - p[p.size - 2]).toDouble()) <= d.width * 2 + dp(6f) / board.camZ
+    }
+
+    /** Обвели пером область — заливка: ровная фигура, если похоже на прямоугольник/многоугольник/овал, иначе — как обвели. */
+    private fun createFill(stroke: InkStroke) {
+        val z = board.camZ
+        val bb = NoteInkView.bounds(listOf(stroke))
+        if (stroke.points.size < 3 || max(bb[2] - bb[0], bb[3] - bb[1]) < dp(24f) / z) {
+            hint("Обведите захватку целиком — замкнутым контуром")
+            return
+        }
+        val raw = ShapeTool.xy(stroke)
+        val shape = ShapeRecognizer.recognize(listOf(raw), dp(24f) / z, Float.MAX_VALUE)
+        val pts = if (shape != null && shape.isClosed) shape.pts else thin(raw, dp(1.5f) / z)
+        if (pts.size < 6) return
+        pushUndo()
+        board.fills += BoardFill(pts, penColor)
+        changed()
+    }
+
+    /** Убрать лишние точки контура (ближе step друг к другу). */
+    private fun thin(p: FloatArray, step: Float): FloatArray {
+        val out = ArrayList<Float>()
+        var lx = Float.NaN; var ly = Float.NaN
+        var i = 0
+        while (i + 1 < p.size) {
+            if (lx.isNaN() || Math.hypot((p[i] - lx).toDouble(), (p[i + 1] - ly).toDouble()) >= step) {
+                out += p[i]; out += p[i + 1]; lx = p[i]; ly = p[i + 1]
+            }
+            i += 2
+        }
+        return out.toFloatArray()
+    }
+
+    /** «Залить»: замкнутые фигуры из выделенного становятся заливками своего цвета. */
+    private fun fillSelectedShapes() {
+        val shapes = view.selection.filterIsInstance<Drawing>().filter { isClosed(it) }
+        if (shapes.isEmpty()) return
+        pushUndo()
+        val fills = ArrayList<Any>()
+        for (d in shapes) {
+            val n = d.pts.size / 3
+            val xy = FloatArray(n * 2) { k -> d.pts[(k / 2) * 3 + (k % 2)] }
+            val f = BoardFill(xy, d.color)
+            val at = board.strokes.indexOfFirst { it === d }
+            board.strokes.removeAt(at)
+            board.fills += f
+            fills += f
+        }
+        changed()
+        view.select(fills)
+    }
+
+    // ---------------------------------------------------------------- статусы
+
+    /** Кружок цвета 18 dp. */
+    private fun dot(color: Int): View = View(this).apply { background = ColorKit.swatch(this@BoardActivity, color, false) }
+
+    /** Выбрать статус метки или выноски из списка (долгое нажатие или кнопка «Статус»). */
+    private fun chooseStatus(obj: Any) {
+        val current = when (obj) { is BoardSticker -> obj.sid; is BoardCallout -> obj.sid; else -> return }
+        val names = board.statuses.map { (if (it.id == current) "● " else "   ") + it.name } + "Настроить статусы…"
+        AlertDialog.Builder(this)
+            .setTitle("Статус")
+            .setItems(names.toTypedArray()) { _, which ->
+                if (which == board.statuses.size) { statusesDialog(); return@setItems }
+                val sid = board.statuses[which].id
+                pushUndo()
+                when (obj) { is BoardSticker -> obj.sid = sid; is BoardCallout -> obj.sid = sid }
+                changed()
+            }
+            .show()
+    }
+
+    /**
+     * Окно «Статусы»: список доски (порядок = порядок переключения касанием) — цвет, название,
+     * сколько меток и выносок; ▲▼ — порядок, ✎ — изменить, ✕ — удалить, «Добавить статус».
+     */
+    private fun statusesDialog() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16f), dp(8f), dp(16f), 0) }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Статусы доски")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Готово", null)
+            .create()
+        fun small(text: String, color: Int = Ui.INK2, action: () -> Unit) = Ui.text(this, text, 18f, color).apply {
+            setPadding(dp(10f), dp(6f), dp(10f), dp(6f))
+            isClickable = true
+            setOnClickListener { action() }
+        }
+        lateinit var render: () -> Unit
+        render = {
+            box.removeAllViews()
+            box.addView(Ui.text(this, "Касание статуса на метке или выноске переключает их по этому списку сверху вниз.", 13f, Ui.MUTED)
+                .apply { setPadding(0, 0, 0, dp(8f)) })
+            for ((i, st) in board.statuses.withIndex()) {
+                val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; tag = "status_row" }
+                row.addView(dot(st.color), LinearLayout.LayoutParams(dp(18f), dp(18f)))
+                row.addView(Ui.text(this, st.name, 16f, Ui.INK).apply { setPadding(dp(10f), 0, dp(6f), 0) },
+                    LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+                row.addView(Ui.mono(this, board.countStatus(st.id).toString(), 13f))
+                row.addView(small("▲") {
+                    if (i > 0) { pushUndo(); board.statuses.add(i - 1, board.statuses.removeAt(i)); changed(); render() }
+                })
+                row.addView(small("▼") {
+                    if (i < board.statuses.size - 1) { pushUndo(); board.statuses.add(i + 1, board.statuses.removeAt(i)); changed(); render() }
+                })
+                row.addView(small("✎") { editStatusDialog(st) { render() } })
+                row.addView(small("✕", Ui.BAD) { deleteStatus(st) { render() } })
+                box.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            }
+            box.addView(Ui.pill(this, "+ Добавить статус", Color.WHITE, Ui.ACCENT).apply {
+                tag = "status_add"
+                setOnClickListener { editStatusDialog(null) { render() } }
+            }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(10f); bottomMargin = dp(6f) })
+        }
+        render()
+        dialog.show()
+    }
+
+    /** Новый статус (st = null) или правка: название и цвет из палитры. */
+    private fun editStatusDialog(st: BoardStatus?, done: (BoardStatus) -> Unit) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0) }
+        val name = EditText(this).apply {
+            setText(st?.name.orEmpty())
+            hint = "Например: Сдали опалубку"
+            isSingleLine = true
+            tag = "status_name"
+        }
+        box.addView(name)
+        var color = st?.color ?: ColorKit.PALETTE[7]
+        val grid = android.widget.GridLayout(this).apply { columnCount = 6 }
+        val swatches = ArrayList<Pair<Int, View>>()
+        for (c in ColorKit.PALETTE) {
+            val v = View(this).apply { tag = "status_color" }
+            swatches += c to v
+            grid.addView(v, android.widget.GridLayout.LayoutParams().apply {
+                width = dp(34f); height = dp(34f); setMargins(dp(5f), dp(5f), dp(5f), dp(5f))
+            })
+        }
+        fun paint() { for ((c, v) in swatches) v.background = ColorKit.swatch(this, c, c == color) }
+        for ((c, v) in swatches) v.setOnClickListener { color = c; paint() }
+        paint()
+        box.addView(grid, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(8f) })
+        AlertDialog.Builder(this)
+            .setTitle(if (st == null) "Новый статус" else "Статус")
+            .setView(box)
+            .setPositiveButton("Готово") { _, _ ->
+                val n = name.text.toString().trim()
+                if (n.isEmpty()) return@setPositiveButton
+                pushUndo()
+                val result = if (st == null) BoardStatus(Board.newStatusId(), n, color).also { board.statuses += it }
+                else st.also { it.name = n; it.color = color }
+                changed()
+                done(result)
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun deleteStatus(st: BoardStatus, done: () -> Unit) {
+        if (board.statuses.size <= 1) { hint("Должен остаться хотя бы один статус"); return }
+        val used = board.countStatus(st.id)
+        val rest = board.statuses.first { it.id != st.id }
+        val msg = if (used == 0) "Удалить статус «${st.name}»?"
+        else "Статус «${st.name}» стоит у $used меток и выносок. Удалить? Они станут «${rest.name}»."
+        AlertDialog.Builder(this)
+            .setMessage(msg)
+            .setPositiveButton("Удалить") { _, _ ->
+                pushUndo()
+                for (s in board.stickers) if (s.sid == st.id) s.sid = rest.id
+                for (c in board.callouts) if (c.sid == st.id) c.sid = rest.id
+                board.statuses.removeAll { it.id == st.id }
+                changed()
+                done()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    // ---------------------------------------------------------------- выноски
+
+    /**
+     * Окно выноски: верхняя строка — надпись, нижняя — статус из списка (или новый).
+     * c = null — новая выноска.
+     */
+    private fun calloutDialog(c: BoardCallout?, done: (String, String) -> Unit) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0) }
+        val title = EditText(this).apply {
+            setText(c?.title.orEmpty())
+            hint = "Например: Захватка №1 от 11.09.26"
+            isSingleLine = true
+            tag = "callout_title"
+        }
+        box.addView(Ui.text(this, "Надпись", 13f, Ui.MUTED))
+        box.addView(title)
+        box.addView(Ui.text(this, "Статус", 13f, Ui.MUTED).apply { setPadding(0, dp(12f), 0, dp(4f)) })
+        var sid = c?.sid ?: board.status("").id
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(list)
+        lateinit var render: () -> Unit
+        render = {
+            list.removeAllViews()
+            for (st in board.statuses) {
+                val row = LinearLayout(this).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+                    background = if (st.id == sid) Ui.rounded(this@BoardActivity, Board.statusBg(st.color), Board.statusFg(st.color), 10f) else null
+                    isClickable = true
+                    tag = "callout_status"
+                    setOnClickListener { sid = st.id; render() }
+                }
+                row.addView(dot(st.color), LinearLayout.LayoutParams(dp(16f), dp(16f)))
+                row.addView(Ui.text(this, st.name, 16f, if (st.id == sid) Board.statusFg(st.color) else Ui.INK, bold = st.id == sid)
+                    .apply { setPadding(dp(10f), 0, 0, 0) })
+                list.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { bottomMargin = dp(2f) })
+            }
+            list.addView(Ui.text(this, "+ Новый статус", 15f, Ui.ACCENT).apply {
+                setPadding(dp(10f), dp(10f), dp(10f), dp(10f))
+                isClickable = true
+                tag = "callout_new_status"
+                setOnClickListener { editStatusDialog(null) { st -> sid = st.id; render() } }
+            })
+        }
+        render()
+        AlertDialog.Builder(this)
+            .setTitle(if (c == null) "Выноска" else "Изменить выноску")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Готово") { _, _ -> done(title.text.toString().trim(), sid) }
+            .setNegativeButton("Отмена", null)
+            .show()
+        title.requestFocus()
     }
 
     // ---------------------------------------------------------------- пипетка
@@ -662,9 +1018,12 @@ class BoardActivity : Activity(), BoardView.Host {
         val h = view.hitAt(x, y)
         when (h?.kind) {
             BoardView.Kind.TEXT -> return board.texts[h.index].color
-            BoardView.Kind.STICKER -> return BoardView.STATUS[board.stickers[h.index].status.coerceIn(0, 2)].second
+            BoardView.Kind.STICKER -> return board.status(board.stickers[h.index].sid).color
+            BoardView.Kind.CALLOUT -> return board.status(board.callouts[h.index].sid).color
             else -> Unit
         }
+        val fi = view.fillAt(x, y)
+        if (fi >= 0) return board.fills[fi].color
         val snap = pipetteSnap ?: view.plainSnapshot()?.also { pipetteSnap = it }
         return snap?.colorAt(sx, sy)
     }

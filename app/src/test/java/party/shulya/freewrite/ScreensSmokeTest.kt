@@ -189,9 +189,9 @@ class ScreensSmokeTest {
         b.texts += BoardText(100f, 230f, 24f, "Фундамент", Ui.INK)
         b.texts += BoardText(300f, 230f, 24f, "Колонны 2 эт.", Ui.INK)
         b.texts += BoardText(500f, 420f, 24f, "Перекрытие", Ui.INK)
-        b.stickers += BoardSticker(100f, 250f, 2, 1.2f)
-        b.stickers += BoardSticker(300f, 250f, 1, 1.2f)
-        b.stickers += BoardSticker(500f, 440f, 0, 1.2f)
+        b.stickers += BoardSticker(100f, 250f, "s2", 1.2f)
+        b.stickers += BoardSticker(300f, 250f, "s1", 1.2f)
+        b.stickers += BoardSticker(500f, 440f, "s0", 1.2f)
         // «Фото» — картинка, нарисованная прямо в тесте.
         val bmp = Bitmap.createBitmap(640, 440, Bitmap.Config.ARGB_8888)
         Canvas(bmp).apply {
@@ -237,14 +237,14 @@ class ScreensSmokeTest {
         root.findViewWithTag<View>("board_tool_status").performClick()
         tap(view, MotionEvent.TOOL_TYPE_STYLUS, view.width * 0.5f, view.height * 0.85f)
         assertEquals(4, board().stickers.size)
-        assertEquals(0, board().stickers.last().status)
+        assertEquals("s0", board().stickers.last().sid)
 
         // Пальцем по метке — следующий статус («В работе»).
         val s = board().stickers.last()
-        val sx = (s.x + s.w / 2 - board().camX) * board().camZ
+        val sx = (s.x + view.stickerW(s) / 2 - board().camX) * board().camZ
         val sy = (s.y + s.h / 2 - board().camY) * board().camZ
         tap(view, MotionEvent.TOOL_TYPE_FINGER, sx, sy)
-        assertEquals(1, board().stickers.last().status)
+        assertEquals("s1", board().stickers.last().sid)
 
         // Палец двигает доску.
         val camX0 = board().camX
@@ -642,7 +642,7 @@ class ScreensSmokeTest {
         assertEquals(0, view.selection.size)
         root.findViewWithTag<View>("board_tool_select").performClick()
         val st = board().stickers
-        val l = st.minOf { it.x } - 20f; val r = st.maxOf { it.x + it.w } + 20f
+        val l = st.minOf { it.x } - 20f; val r = st.maxOf { it.x + view.stickerW(it) } + 20f
         val tp = st.minOf { it.y } - 20f; val bt = st.maxOf { it.y + it.h } + 20f
         drawPath(view, MotionEvent.TOOL_TYPE_STYLUS, poly(sx(l), sy(tp), sx(r), sy(tp), sx(r), sy(bt), sx(l), sy(bt), sx(l), sy(tp)))
         assertTrue("все метки в выделении: ${view.selection.size}", st.all { s -> view.selection.any { it === s } })
@@ -683,6 +683,114 @@ class ScreensSmokeTest {
         val head = listOf(355f, 225f, 400f, 250f, 355f, 278f)
         val shape = ShapeRecognizer.recognize(listOf(pts.toFloatArray(), head.toFloatArray()), 40f, 6f)
         assertEquals(ShapeRecognizer.Kind.ARROW, shape?.kind)
+    }
+
+    // ------------------------------------------------------------------ 0.7: статусы, заливки, выноски
+
+    @Test
+    fun board_jsonStatusesFillsCalloutsAndOldBoards() {
+        // Доска до 0.7.0: метки с числом статуса, без списка статусов.
+        val old = org.json.JSONObject("""{"id":"old1","title":"Старая","stickers":[{"x":1,"y":2,"status":2,"scale":1}]}""")
+        val b = Board.fromJson(old)
+        assertEquals(listOf("Не сдано", "В работе", "Сдано"), b.statuses.map { it.name })
+        assertEquals("Сдано", b.status(b.stickers[0].sid).name)
+        // Свои статусы, заливка, выноска — сохраняются и читаются обратно.
+        b.statuses += BoardStatus("own", "Сдали опалубку", ColorKit.PALETTE[7])
+        b.fills += BoardFill(floatArrayOf(0f, 0f, 100f, 0f, 100f, 50f, 0f, 50f), ColorKit.PALETTE[19])
+        b.callouts += BoardCallout(10f, 20f, 1.5f, "Захватка №1 от 11.09.26", "own").apply { addLeader(50f, 25f); addLeader(80f, 40f) }
+        val back = Board.fromJson(org.json.JSONObject(b.toJson().toString()))
+        assertEquals("Сдали опалубку", back.statuses.last().name)
+        assertEquals(1, back.fills.size)
+        assertEquals(8, back.fills[0].pts.size)
+        assertEquals("Захватка №1 от 11.09.26", back.callouts[0].title)
+        assertEquals(2, back.callouts[0].leaderCount)
+        assertEquals("own", back.nextStatus("Сдано".let { back.statuses.first { s -> s.name == it }.id }))
+        assertEquals(1, back.countStatus("own"))
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun board_statusesFillCallout() {
+        val b0 = sampleBoard()
+        val controller = Robolectric.buildActivity(
+            BoardActivity::class.java,
+            Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b0.id),
+        ).setup()
+        val activity = controller.get()
+        val root = activity.window.decorView
+        idle()
+        val view = find(root, BoardView::class.java)
+        view.fitAll()
+        idle()
+        val board = { activity.board() }
+        fun sx(x: Float) = (x - board().camX) * board().camZ
+        fun sy(y: Float) = (y - board().camY) * board().camZ
+        fun positive() = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+            .getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+
+        // «Статусы» → три своих статуса.
+        root.findViewWithTag<View>("board_statuses").performClick()
+        idle()
+        val statusesRoot = latestDialogRoot()
+        for ((name, color) in listOf("Сдали опалубку" to 7, "Забетонировано" to 3, "Сняли опалубку" to 5)) {
+            statusesRoot.findViewWithTag<View>("status_add").performClick()
+            idle()
+            val d = latestDialogRoot()
+            d.findViewWithTag<android.widget.EditText>("status_name").setText(name)
+            findAll(d) { it.tag == "status_color" }[color].performClick()
+            positive()
+            idle()
+        }
+        assertEquals(listOf("Сдали опалубку", "Забетонировано", "Сняли опалубку"), board().statuses.takeLast(3).map { it.name })
+        assertEquals(6, findAll(statusesRoot) { it.tag == "status_row" }.size)
+        screenshot(statusesRoot.rootView, "board-statuses.png")
+        org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().dismiss()
+        org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()?.dismiss()
+        idle()
+
+        // «Заливка»: обвести пером стену (прямоугольник) — ровная заливка.
+        root.findViewWithTag<View>("board_tool_fill").performClick()
+        drawPath(view, MotionEvent.TOOL_TYPE_STYLUS, wobbly(poly(sx(100f), sy(150f), sx(260f), sy(152f), sx(258f), sy(320f), sx(102f), sy(318f), sx(100f), sy(152f))))
+        assertEquals(1, board().fills.size)
+        assertTrue("ровный контур: ${board().fills[0].pts.size}", board().fills[0].pts.size <= 12)
+
+        // «Выноска»: от заливки вверх-вправо — окно: надпись и статус.
+        root.findViewWithTag<View>("board_tool_callout").performClick()
+        drag(view, MotionEvent.TOOL_TYPE_STYLUS, sx(180f), sy(240f), sx(180f) + 260f, sy(240f) - 220f)
+        val dlg = latestDialogRoot()
+        dlg.findViewWithTag<android.widget.EditText>("callout_title").setText("Захватка №1 от 11.09.26")
+        findAll(dlg) { v -> v.tag == "callout_status" && findAll(v) { it is android.widget.TextView && it.text.toString() == "Сдали опалубку" }.isNotEmpty() }
+            .first().performClick()
+        idle()
+        positive()
+        idle()
+        assertEquals(1, board().callouts.size)
+        val c = board().callouts[0]
+        assertEquals("Захватка №1 от 11.09.26", c.title)
+        assertEquals("Сдали опалубку", board().status(c.sid).name)
+        assertEquals(1, c.leaderCount)
+
+        // Касание строки статуса пальцем — следующий статус по списку.
+        fun tapStatus() {
+            val r = view.calloutRect(c, android.graphics.RectF())
+            tap(view, MotionEvent.TOOL_TYPE_FINGER, sx(r.centerX()), sy(r.top + r.height() * 0.75f))
+        }
+        tapStatus()
+        assertEquals("Забетонировано", board().status(c.sid).name)
+        tapStatus()
+        assertEquals("Сняли опалубку", board().status(c.sid).name)
+
+        // От рамки — второй указатель.
+        val r = view.calloutRect(c, android.graphics.RectF())
+        drag(view, MotionEvent.TOOL_TYPE_STYLUS, sx(r.centerX()), sy(r.top + r.height() * 0.25f), sx(500f), sy(400f))
+        assertEquals(2, c.leaderCount)
+        screenshot(root, "board-callouts.png")
+
+        controller.pause()
+        val saved = BoardStore(ctx).load(b0.id)!!
+        assertEquals(1, saved.fills.size)
+        assertEquals("Сняли опалубку", saved.status(saved.callouts[0].sid).name)
+        assertEquals(2, saved.callouts[0].leaderCount)
     }
 
     /** Фото для записи — нарисовано прямо в тесте. */
