@@ -84,7 +84,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private var fingerDownTime = -100_000L
     private val downCam = FloatArray(3)
 
-    private fun notePen() { lastPenTime = SystemClock.uptimeMillis() }
+    private fun notePen() {
+        lastPenTime = SystemClock.uptimeMillis()
+        fingerArmed = false
+    }
 
     private fun penNear() = SystemClock.uptimeMillis() - lastPenTime < PEN_GRACE_MS
 
@@ -193,7 +196,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         /** Сколько после пера (касания или наведения) пальцы считаются ладонью. */
         const val PEN_GRACE_MS = 700L
         /** Если перо пришло так скоро после касания пальцем, сдвиг доски пальцем отменяется. */
-        const val PALM_REVERT_MS = 700L
+        const val PALM_REVERT_MS = 1500L
     }
 
     /** Загрузчик картинок (уровни, фон, память) — задаёт экран доски. */
@@ -237,7 +240,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var bt = -Float.MAX_VALUE
         fun add(x: Float, y: Float) { l = min(l, x); t = min(t, y); r = max(r, x); bt = max(bt, y) }
         for (d in b.strokes) { var i = 0; while (i + 1 < d.pts.size) { add(d.pts[i], d.pts[i + 1]); i += 3 } }
-        for (x in b.texts) { add(x.x, x.y - x.size); add(x.x + textWidth(x), x.y + x.size * 0.3f) }
+        for (x in b.texts) { add(x.x, x.y - x.size); add(x.x + textWidth(x), textBottom(x)) }
         for (m in b.images) { add(m.x, m.y); add(m.x + m.w, m.y + m.h) }
         for (s in b.stickers) { add(s.x, s.y); add(s.x + stickerW(s), s.y + s.h) }
         for (f in b.fills) { var i = 0; while (i + 1 < f.pts.size) { add(f.pts[i], f.pts[i + 1]); i += 2 } }
@@ -253,14 +256,31 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         postInvalidateOnAnimation()
     }
 
+    /** Ширина надписи (самой длинной строки). */
     fun textWidth(t: BoardText): Float {
         if (t.wText != t.text || t.wSize != t.size) {
             textPaint.textSize = t.size
-            t.w = textPaint.measureText(t.text)
+            var w = 0f
+            var n = 0
+            for (line in t.text.split('\n')) { w = max(w, textPaint.measureText(line)); n++ }
+            t.w = w
+            t.nLines = n
             t.wText = t.text
             t.wSize = t.size
         }
         return t.w
+    }
+
+    /** Низ надписи (с учётом всех строк). */
+    fun textBottom(t: BoardText): Float {
+        textWidth(t)
+        return t.y + (t.nLines - 1) * t.size * BoardText.LINE + t.size * 0.3f
+    }
+
+    /** Ширина одной строки текста при размере size. */
+    fun lineWidth(size: Float, line: String): Float {
+        textPaint.textSize = size
+        return textPaint.measureText(line)
     }
 
     /** Ширина метки — под название её статуса. */
@@ -348,7 +368,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         if (ci >= 0) return Hit(Kind.CALLOUT, ci)
         for (i in b.texts.indices.reversed()) {
             val t = b.texts[i]
-            if (x >= t.x && x <= t.x + textWidth(t) && y >= t.y - t.size && y <= t.y + t.size * 0.3f) return Hit(Kind.TEXT, i)
+            if (x >= t.x && x <= t.x + textWidth(t) && y >= t.y - t.size && y <= textBottom(t)) return Hit(Kind.TEXT, i)
         }
         for (i in b.images.indices.reversed()) {
             val m = b.images[i]
@@ -412,7 +432,15 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     /** Выделенные объекты (сами объекты доски: BoardText, BoardImage, BoardSticker, Drawing). */
     val selection = ArrayList<Any>()
 
+    /**
+     * Выделенное можно тащить одним пальцем, только если его только что выделили касанием пальца.
+     * Вставленную картинку или выделенное лассо ладонь не утащит (тащить — пером в «Выделить»
+     * или сначала коснуться пальцем). Перо рядом — снова нельзя.
+     */
+    private var fingerArmed = false
+
     fun select(objs: List<Any>) {
+        fingerArmed = false
         selection.clear()
         selection.addAll(objs.filter { exists(it) })
         host.onSelectionChanged()
@@ -443,7 +471,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     fun boundsOf(o: Any, out: RectF): RectF {
         when (o) {
-            is BoardText -> out.set(o.x, o.y - o.size, o.x + textWidth(o), o.y + o.size * 0.3f)
+            is BoardText -> out.set(o.x, o.y - o.size, o.x + textWidth(o), textBottom(o))
             is BoardImage -> out.set(o.x, o.y, o.x + o.w, o.y + o.h)
             is BoardSticker -> out.set(o.x, o.y, o.x + stickerW(o), o.y + o.h)
             is BoardCallout -> calloutRect(o, out)
@@ -730,8 +758,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             return
         }
         if (!pen) {
-            // Палец: выделенное — двигать, иначе — двигать доску.
-            if (insideSelection(x, y)) {
+            // Палец: выделенное (если его выделили касанием пальца) — двигать, иначе — двигать доску.
+            if (fingerArmed && insideSelection(x, y)) {
                 captureOrigs()
                 dragStart.set(x, y)
                 mode = Mode.MOVE_SEL
@@ -975,8 +1003,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         val o = selectableAt(x, y)
         when {
             o == null -> clearSelection()
-            selection.size == 1 && selection[0] === o -> clearSelection()
-            else -> select(listOf(o))
+            // Уже выделено (например, только что вставленная картинка): первое касание пальцем
+            // разрешает тащить, второе — снимает выделение.
+            selection.size == 1 && selection[0] === o -> if (fingerArmed) clearSelection() else fingerArmed = true
+            else -> { select(listOf(o)); fingerArmed = true }
         }
     }
 
@@ -1153,10 +1183,15 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         for (t in b.texts) {
             if (t.size * z < 2f) continue // буквы меньше 2 пикселей не видны
-            if (!visible(t.x, t.y - t.size, t.x + textWidth(t), t.y + t.size * 0.3f)) continue
+            if (!visible(t.x, t.y - t.size, t.x + textWidth(t), textBottom(t))) continue
             textPaint.color = t.color
             textPaint.textSize = t.size
-            canvas.drawText(t.text, t.x, t.y, textPaint)
+            if (t.nLines == 1) {
+                canvas.drawText(t.text, t.x, t.y, textPaint)
+            } else {
+                var ly = t.y
+                for (line in t.text.split('\n')) { canvas.drawText(line, t.x, ly, textPaint); ly += t.size * BoardText.LINE }
+            }
             drawn++
         }
         for (c in b.callouts) if (calloutVisible(c)) { drawCallout(canvas, c, z); drawn++ }

@@ -687,6 +687,9 @@ class BoardActivity : Activity(), BoardView.Host {
         if (sel.size == 1 && sel[0] is BoardText) {
             buttons += Ui.pill(this, "Изменить", Ui.INK, Ui.DESK).apply { tag = "sel_edit"; setOnClickListener { editText(sel[0] as BoardText) } }
         }
+        if (sel.count { it is BoardText } >= 2) {
+            buttons += Ui.pill(this, "Объединить", Ui.INK, Ui.DESK).apply { tag = "sel_merge"; setOnClickListener { mergeSelectedTexts() } }
+        }
         if (sel.size == 1 && sel[0] is BoardCallout) {
             val c = sel[0] as BoardCallout
             buttons += Ui.pill(this, "Изменить", Ui.INK, Ui.DESK).apply {
@@ -723,7 +726,14 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     private fun editText(t: BoardText) {
-        val edit = EditText(this).apply { setText(t.text); setSelection(t.text.length) }
+        val edit = EditText(this).apply {
+            setText(t.text)
+            setSelection(t.text.length)
+            // Надпись может быть в несколько строк.
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 2
+        }
         val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
         AlertDialog.Builder(this)
             .setTitle("Надпись")
@@ -815,6 +825,67 @@ class BoardActivity : Activity(), BoardView.Host {
         board.callouts.removeAll { c -> sel.any { it === c } }
         view.clearSelection()
         changed()
+    }
+
+    // ---------------------------------------------------------------- надписи: склейка
+
+    /**
+     * Распознанное слово на доске (bb — рамка рукописи). Если рядом уже есть надпись — слово
+     * дописывается в неё: в той же строке сразу после неё — через пробел, под ней с того же края —
+     * новой строкой. Иначе — новая надпись. Так написанное подряд остаётся одним текстом.
+     */
+    internal fun placeText(bb: FloatArray, word: String): BoardText {
+        val h = max(bb[3] - bb[1], Ui.dpf(this, 12f) / board.camZ)
+        val size = h * 0.85f
+        val baseline = bb[1] + size * 0.85f
+        for (t in board.texts.asReversed()) {
+            if (size < t.size * 0.5f || size > t.size * 2f) continue // совсем другой размер — не склеиваем
+            val lh = t.size * BoardText.LINE
+            val lines = t.text.split('\n')
+            val lastBase = t.y + (lines.size - 1) * lh
+            val lastRight = t.x + view.lineWidth(t.size, lines.last())
+            // Та же строка: линия букв рядом, слово начинается сразу за концом строки.
+            if (kotlin.math.abs(baseline - lastBase) <= 0.6f * t.size &&
+                bb[0] >= lastRight - 0.8f * t.size && bb[0] <= lastRight + 3.5f * t.size
+            ) {
+                t.text = t.text.trimEnd() + " " + word
+                return t
+            }
+            // Строка ниже, с того же левого края.
+            val dy = baseline - lastBase
+            if (dy >= 0.7f * lh && dy <= 1.9f * lh && kotlin.math.abs(bb[0] - t.x) <= 2.5f * t.size) {
+                t.text = t.text + "\n" + word
+                return t
+            }
+        }
+        return BoardText(bb[0], baseline, size, word, Ui.INK).also { board.texts += it }
+    }
+
+    /** «Объединить»: выделенные надписи — в одну, по строкам сверху вниз, слова слева направо. */
+    private fun mergeSelectedTexts() {
+        val ts = view.selection.filterIsInstance<BoardText>()
+        if (ts.size < 2) return
+        class Item(val x: Float, val base: Float, val size: Float, val text: String, val color: Int)
+        val items = ts.flatMap { t ->
+            t.text.split('\n').mapIndexed { i, l -> Item(t.x, t.y + i * t.size * BoardText.LINE, t.size, l, t.color) }
+        }.filter { it.text.isNotBlank() }
+        if (items.isEmpty()) return
+        val med = items.map { it.size }.sorted()[items.size / 2]
+        val rows = ArrayList<ArrayList<Item>>()
+        for (it in items.sortedBy { it.base }) {
+            val row = rows.lastOrNull()
+            if (row != null && it.base - row[0].base <= 0.6f * med) row += it else rows += arrayListOf(it)
+        }
+        val text = rows.joinToString("\n") { r -> r.sortedBy { it.x }.joinToString(" ") { it.text.trim() } }
+        val first = rows[0].minByOrNull { it.x }!!
+        pushUndo()
+        val at = board.texts.indexOfFirst { t -> ts.any { it === t } }
+        board.texts.removeAll { t -> ts.any { it === t } }
+        val merged = BoardText(items.minOf { it.x }, rows[0][0].base, med, text, first.color)
+        board.texts.add(at.coerceIn(0, board.texts.size), merged)
+        changed()
+        view.select(listOf(merged))
+        hint("Надписи объединены")
     }
 
     // ---------------------------------------------------------------- заливки
@@ -1176,10 +1247,7 @@ class BoardActivity : Activity(), BoardView.Host {
             hint(g.error?.let { "Не распознано (${HandwritingEngine.shortError(it)}) — оставил рисунком" }
                 ?: "Не разобрал надпись — оставил её рисунком")
         } else {
-            val bb = NoteInkView.bounds(g.strokes)
-            val h = max(bb[3] - bb[1], Ui.dpf(this, 12f) / board.camZ)
-            val size = h * 0.85f
-            board.texts += BoardText(bb[0], bb[1] + size * 0.85f, size, best, Ui.INK)
+            placeText(NoteInkView.bounds(g.strokes), best)
             view.fade(g.strokes)
         }
         changed()

@@ -841,20 +841,33 @@ class ScreensSmokeTest {
         fun sx(x: Float) = (x - board().camX) * board().camZ
         fun sy(y: Float) = (y - board().camY) * board().camZ
         val m = board().images[0]
-        val cx = sx(m.x + m.w / 2); val cy = sy(m.y + m.h / 2)
-        tap(view, MotionEvent.TOOL_TYPE_FINGER, cx, cy)
+        val cx0 = sx(m.x + m.w / 2); val cy0 = sy(m.y + m.h / 2)
+        val x0 = m.x
+
+        // 0. Выделена не пальцем (как только что вставленная картинка) — ладонь её не тащит, только доску.
+        view.select(listOf(m))
+        drag(view, MotionEvent.TOOL_TYPE_FINGER, cx0, cy0, cx0 - 120f, cy0)
+        assertEquals("картинка не сдвинулась на доске", x0, m.x, 0.01f)
+        view.fitAll()
+        idle()
+        val cx2 = sx(m.x + m.w / 2); val cy2 = sy(m.y + m.h / 2)
+
+        tap(view, MotionEvent.TOOL_TYPE_FINGER, cx2, cy2)
         assertTrue("картинка выделена", view.selection.singleOrNull() === m)
-        val x0 = m.x; val camX0 = board().camX
+        val camX0 = board().camX
 
         // 1. Перо над экраном — ладонь по выделенной картинке её не двигает (и доску тоже).
-        hoverPen(view, cx + 200f, cy + 300f)
-        drag(view, MotionEvent.TOOL_TYPE_FINGER, cx, cy, cx - 150f, cy + 80f)
+        hoverPen(view, cx2 + 200f, cy2 + 300f)
+        drag(view, MotionEvent.TOOL_TYPE_FINGER, cx2, cy2, cx2 - 150f, cy2 + 80f)
         assertEquals("картинка на месте", x0, m.x, 0.01f)
         assertEquals("доска на месте", camX0, board().camX, 0.01f)
         assertTrue("выделение не сбито ладонью", view.selection.singleOrNull() === m)
 
         // 2. Ладонь легла раньше пера и потащила картинку, следом коснулось перо — картинка возвращается.
         afterPen()
+        tap(view, MotionEvent.TOOL_TYPE_FINGER, cx2, cy2) // коснулись пальцем — снова можно тащить
+        assertTrue(view.selection.singleOrNull() === m)
+        val cx = cx2; val cy = cy2
         val down = SystemClock.uptimeMillis()
         view.dispatchTouchEvent(event(down, down, MotionEvent.ACTION_DOWN, cx, cy, MotionEvent.TOOL_TYPE_FINGER))
         for (i in 1..6) view.dispatchTouchEvent(event(down, down + i * 10L, MotionEvent.ACTION_MOVE, cx - i * 15f, cy, MotionEvent.TOOL_TYPE_FINGER))
@@ -873,6 +886,58 @@ class ScreensSmokeTest {
         assertEquals(0, view.selection.size)
         controller.pause()
         assertEquals(x0, BoardStore(ctx).load(b0.id)!!.images[0].x, 0.01f)
+    }
+
+    // ------------------------------------------------------------------ 0.8.2: склейка надписей
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun board_textMerge() {
+        val b0 = Board.create("Надписи")
+        BoardStore(ctx).save(b0)
+        val controller = Robolectric.buildActivity(
+            BoardActivity::class.java,
+            Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b0.id),
+        ).setup()
+        val activity = controller.get()
+        val root = activity.window.decorView
+        idle()
+        val view = find(root, BoardView::class.java)
+        val board = { activity.board() }
+
+        // Слово за словом в одной строке и строкой ниже — один текст.
+        activity.placeText(floatArrayOf(100f, 100f, 260f, 140f), "Захватка")
+        val first = board().texts.single()
+        val right = first.x + view.lineWidth(first.size, first.text)
+        activity.placeText(floatArrayOf(right + 20f, 102f, right + 80f, 141f), "№1")
+        activity.placeText(floatArrayOf(104f, 150f, 300f, 190f), "от 11.09.26")
+        assertEquals(1, board().texts.size)
+        assertEquals("Захватка №1\nот 11.09.26", first.text)
+        // Далеко — отдельная надпись.
+        activity.placeText(floatArrayOf(900f, 600f, 1050f, 640f), "Колонны")
+        assertEquals(2, board().texts.size)
+        // Рамка — на обе строки; касание второй строки попадает в ту же надпись.
+        val r = view.boundsOf(first, android.graphics.RectF())
+        assertTrue("высота на две строки: ${r.height()}", r.height() > first.size * 2f)
+        assertTrue(view.selectableAt(110f, first.y + first.size * BoardText.LINE - 5f) === first)
+
+        // «Объединить»: две отдельные надписи → одна, слова по порядку.
+        val a = BoardText(100f, 400f, 30f, "Фундамент", Ui.INK)
+        val c = BoardText(400f, 402f, 30f, "сдан", Ui.INK)
+        val d = BoardText(102f, 440f, 30f, "схема есть", Ui.INK)
+        board().texts += c; board().texts += a; board().texts += d
+        view.select(listOf(a, c, d))
+        root.findViewWithTag<View>("sel_merge").performClick()
+        idle()
+        assertEquals(3, board().texts.size)
+        val merged = board().texts.first { it.text.startsWith("Фундамент") }
+        assertEquals("Фундамент сдан\nсхема есть", merged.text)
+        assertTrue(view.selection.singleOrNull() === merged)
+        view.fitAll()
+        idle()
+        screenshot(root, "board-text-merge.png")
+        controller.pause()
+        assertTrue(BoardStore(ctx).load(b0.id)!!.texts.any { it.text == "Захватка №1\nот 11.09.26" })
     }
 
     @Test

@@ -9,12 +9,20 @@ import java.util.UUID
 import android.graphics.RectF
 import kotlin.math.max
 
-/** Текст на доске: x — левый край, y — линия букв (baseline), size — размер шрифта в единицах доски. */
+/**
+ * Текст на доске: x — левый край, y — линия букв (baseline) первой строки, size — размер шрифта
+ * в единицах доски. Может быть в несколько строк (перевод строки в text); шаг строк — [LINE] × size.
+ */
 class BoardText(var x: Float, var y: Float, var size: Float, var text: String, var color: Int) {
-    // Ширина надписи считается один раз (пока не поменялись текст и размер) — для быстрой доски.
+    // Ширина и число строк считаются один раз (пока не поменялись текст и размер) — для быстрой доски.
     internal var wText: String? = null
     internal var wSize = 0f
     internal var w = 0f
+    internal var nLines = 1
+
+    companion object {
+        const val LINE = 1.25f
+    }
 }
 
 /** Картинка на доске (файл — в общей папке картинок). */
