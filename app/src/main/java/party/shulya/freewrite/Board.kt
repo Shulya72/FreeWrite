@@ -14,6 +14,9 @@ import kotlin.math.max
  * в единицах доски. Может быть в несколько строк (перевод строки в text); шаг строк — [LINE] × size.
  */
 class BoardText(var x: Float, var y: Float, var size: Float, var text: String, var color: Int) {
+    /** Номер предмета: по нему сливаются правки с доской коллеги (у каждого предмета доски свой). */
+    var id: String = Ids.next()
+
     // Ширина и число строк считаются один раз (пока не поменялись текст и размер) — для быстрой доски.
     internal var wText: String? = null
     internal var wSize = 0f
@@ -26,7 +29,9 @@ class BoardText(var x: Float, var y: Float, var size: Float, var text: String, v
 }
 
 /** Картинка на доске (файл — в общей папке картинок). */
-class BoardImage(val file: String, var x: Float, var y: Float, var w: Float, var h: Float, val pxW: Int, val pxH: Int)
+class BoardImage(val file: String, var x: Float, var y: Float, var w: Float, var h: Float, val pxW: Int, val pxH: Int) {
+    var id: String = Ids.next()
+}
 
 /**
  * Статус из списка доски (его настраивает Владимир: «Сдали опалубку», «Забетонировано»…).
@@ -36,6 +41,8 @@ class BoardStatus(val id: String, var name: String, var color: Int)
 
 /** Метка статуса. sid — id статуса из списка доски. scale — размер (метка ставится «в рост» текущего масштаба). */
 class BoardSticker(var x: Float, var y: Float, var sid: String, var scale: Float) {
+    var id: String = Ids.next()
+
     val h: Float get() = 36f * scale
 
     /** Ширина под подпись: не меньше 128, длинное название — шире. */
@@ -47,6 +54,8 @@ class BoardSticker(var x: Float, var y: Float, var sid: String, var scale: Float
  * Рисуется над картинками и под надписями — чертёж под заливкой виден.
  */
 class BoardFill(val pts: FloatArray, var color: Int, var alpha: Float = DEFAULT_ALPHA) {
+    var id: String = Ids.next()
+
     fun copy() = BoardFill(pts.copyOf(), color, alpha)
 
     /** Номер изменения точек: кто двигает точки — вызывает [changed]. */
@@ -86,10 +95,11 @@ class BoardFill(val pts: FloatArray, var color: Int, var alpha: Float = DEFAULT_
         var h = 1125899906842597L
         h = 31 * h + color
         h = 31 * h + alpha.toRawBits()
+        h = 31 * h + id.hashCode()
         for (v in pts) h = 31 * h + v.toRawBits()
         jsonCache?.let { if (h == jsonSum) return it }
-        val sb = StringBuilder(pts.size * 6 + 48)
-        sb.append("{\"color\":").append(color).append(",\"alpha\":").append(alpha.toDouble()).append(",\"pts\":")
+        val sb = StringBuilder(pts.size * 6 + 64)
+        sb.append("{\"id\":").append(JSONObject.quote(id)).append(",\"color\":").append(color).append(",\"alpha\":").append(alpha.toDouble()).append(",\"pts\":")
         JsonNum.array(sb, pts)
         sb.append('}')
         return sb.toString().also { jsonCache = it; jsonSum = h }
@@ -107,6 +117,7 @@ class BoardFill(val pts: FloatArray, var color: Int, var alpha: Float = DEFAULT_
  * указателей (x, y подряд).
  */
 class BoardCallout(var x: Float, var y: Float, var scale: Float, var title: String, var sid: String) {
+    var id: String = Ids.next()
     val leaders = ArrayList<Float>()
 
     // Ширина рамки считается один раз (пока не поменялись надпись, статус и размер).
@@ -138,6 +149,9 @@ class Board(
     var camY = 0f
     var camZ = 1f
 
+    /** Учёт правок для обмена с коллегами: когда менялся каждый предмет, что удалено. */
+    var sync = BoardSync()
+
     /** Статус по id (если такого уже нет — первый в списке). */
     fun status(id: String): BoardStatus {
         if (statuses.isEmpty()) statuses.addAll(defaultStatuses())
@@ -162,7 +176,14 @@ class Board(
      * Доска в JSON одной строкой. Тяжёлые части (рисунки, заливки) берутся готовыми строками —
      * поэтому сохранение и снимок для «Отменить» быстрые даже на большой доске.
      */
-    fun toJsonString(withCamera: Boolean = true): String {
+    fun toJsonString(withCamera: Boolean = true, stampDevice: String? = null, now: Long = System.currentTimeMillis()): String {
+        // stampDevice — заодно отметить правки ([stamp]) тем же проходом: строки предметов уже готовы.
+        val st = stampDevice?.let { Stamper(it, now) }
+        if (st != null) {
+            st.check(TITLE_ID, fingerprint(title))
+            st.check(ORDER_ID, fingerprint(statuses.joinToString(",") { it.id }))
+            for (s in statuses) st.check(s.id, fingerprint(s.name + "\u0001" + s.color))
+        }
         val sb = StringBuilder(64 * 1024)
         sb.append("{\"v\":2,\"kind\":\"board\",\"id\":").append(JSONObject.quote(id))
         sb.append(",\"title\":").append(JSONObject.quote(title))
@@ -172,19 +193,113 @@ class Board(
             sb.append(",\"camZ\":").append(camZ.toDouble())
         }
         sb.append(",\"statuses\":").append(statusesJson())
-        fun <T> list(name: String, items: List<T>, f: (T) -> String) {
+        fun <T> list(name: String, items: List<T>, id: (T) -> String, f: (T) -> String) {
             sb.append(",\"").append(name).append("\":[")
-            for ((i, it) in items.withIndex()) { if (i > 0) sb.append(','); sb.append(f(it)) }
+            for ((i, it) in items.withIndex()) {
+                if (i > 0) sb.append(',')
+                val j = f(it)
+                st?.check(id(it), fingerprint(j))
+                sb.append(j)
+            }
             sb.append(']')
         }
-        list("strokes", strokes) { it.json() }
-        list("texts", texts) { textJson(it) }
-        list("images", images) { imageJson(it) }
-        list("stickers", stickers) { stickerJson(it) }
-        list("fills", fills) { it.json() }
-        list("callouts", callouts) { calloutJson(it) }
+        list("strokes", strokes, { it.id }) { it.json() }
+        list("texts", texts, { it.id }) { textJson(it) }
+        list("images", images, { it.id }) { imageJson(it) }
+        list("stickers", stickers, { it.id }) { stickerJson(it) }
+        list("fills", fills, { it.id }) { it.json() }
+        list("callouts", callouts, { it.id }) { calloutJson(it) }
+        st?.finish()
+        sb.append(",\"sync\":")
+        sync.json(sb)
         sb.append('}')
         return sb.toString()
+    }
+
+    /**
+     * Все предметы доски одной строкой каждый: номер → «отпечаток» содержимого (меняется при любой
+     * правке). Сюда же входят статусы, их порядок («~order») и название доски («~title»).
+     */
+    fun forEachEntry(f: (String, Long) -> Unit) {
+        f(TITLE_ID, fingerprint(title))
+        f(ORDER_ID, fingerprint(statuses.joinToString(",") { it.id }))
+        for (st in statuses) f(st.id, fingerprint(st.name + "\u0001" + st.color))
+        for (d in strokes) f(d.id, fingerprint(d.json()))
+        for (t in texts) f(t.id, fingerprint(textJson(t)))
+        for (m in images) f(m.id, fingerprint(imageJson(m)))
+        for (s in stickers) f(s.id, fingerprint(stickerJson(s)))
+        for (fl in fills) f(fl.id, fingerprint(fl.json()))
+        for (c in callouts) f(c.id, fingerprint(calloutJson(c)))
+    }
+
+    fun entryHashes(): HashMap<String, Long> {
+        val m = HashMap<String, Long>(objectCount() * 2 + 16)
+        forEachEntry { id, h -> m[id] = h }
+        return m
+    }
+
+    fun objectCount() = strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + statuses.size
+
+    /**
+     * Отметить правки перед сохранением: у изменённых и новых предметов — новая отметка времени,
+     * пропавшие — в список удалённых. Возвращает, сколько отметок поставлено.
+     * Так ловится любая правка (перенос, цвет, отмена…), ничего не надо отмечать вручную.
+     */
+    fun stamp(device: String, now: Long = System.currentTimeMillis()): Int {
+        val st = Stamper(device, now)
+        forEachEntry(st::check)
+        return st.finish()
+    }
+
+    private inner class Stamper(val device: String, val now: Long) {
+        var n = 0
+        var present = 0
+
+        fun check(id: String, h: Long) {
+            present++
+            val e = sync.objs[id]
+            if (e == null || e.hash != h) {
+                sync.objs[id] = BoardSync.Entry(h, sync.next(device, now))
+                sync.tomb.remove(id)
+                n++
+            }
+        }
+
+        fun finish(): Int {
+            // Что-то удалили (записей больше, чем предметов) — найти что (редко, поэтому только тогда).
+            if (sync.objs.size > present) {
+                val seen = entryHashes().keys
+                val gone = sync.objs.keys.filter { it !in seen }
+                for (id in gone) {
+                    sync.objs.remove(id)
+                    sync.tomb[id] = sync.next(device, now)
+                    n++
+                }
+            }
+            return n
+        }
+    }
+
+    /**
+     * У каждого предмета — свой номер. Предметам старых досок (до 0.9) номер даётся по содержимому:
+     * одна и та же доска на двух планшетах получит одинаковые номера. Повтор номера — новый номер.
+     */
+    fun fixIds() {
+        val used = HashSet<String>(objectCount() * 2 + 16)
+        fun fix(id: String, content: () -> String): String? {
+            if (id.isNotEmpty() && used.add(id)) return null
+            var k = if (id.isEmpty()) "L" + java.lang.Long.toHexString(fingerprint(content())) else Ids.next()
+            var i = 1
+            while (!used.add(k)) k = k.substringBefore('-') + "-" + i++
+            return k
+        }
+        for (st in statuses) used += st.id
+        for (d in strokes) fix(d.id) { d.json() }?.let { d.id = it }
+        for (t in texts) fix(t.id) { textJson(t) }?.let { t.id = it }
+        for (m in images) fix(m.id) { imageJson(m) }?.let { m.id = it }
+        for (s in stickers) fix(s.id) { stickerJson(s) }?.let { s.id = it }
+        for (fl in fills) fix(fl.id) { fl.json() }?.let { fl.id = it }
+        for (c in callouts) fix(c.id) { calloutJson(c) }?.let { c.id = it }
     }
 
     fun toJson(withCamera: Boolean = true): JSONObject = JSONObject(toJsonString(withCamera))
@@ -217,6 +332,7 @@ class Board(
     fun restored(snap: BoardSnapshot): Board {
         val b = Board(id, snap.title, created, updated)
         b.camX = camX; b.camY = camY; b.camZ = camZ
+        b.sync = sync
         val sa = JSONArray(snap.statuses)
         for (i in 0 until sa.length()) b.statuses += parseStatus(sa.getJSONObject(i))
         if (b.statuses.isEmpty()) b.statuses.addAll(defaultStatuses())
@@ -234,6 +350,13 @@ class Board(
     }
 
     companion object {
+        /** Особые «предметы» для обмена: название доски и порядок статусов. */
+        const val TITLE_ID = "~title"
+        const val ORDER_ID = "~order"
+
+        /** Отпечаток строки: длина и hashCode (у готовых строк рисунков hashCode уже посчитан). */
+        fun fingerprint(s: String): Long = (s.length.toLong() shl 32) xor (s.hashCode().toLong() and 0xffffffffL)
+
         /** Статусы новой доски (Владимир добавляет свои в «Статусы»). id s0–s2 — как у старых меток 0, 1, 2. */
         fun defaultStatuses() = listOf(
             BoardStatus("s0", "Не сдано", Ui.BAD),
@@ -252,18 +375,20 @@ class Board(
 
         private fun f(v: Float): String { val sb = StringBuilder(); JsonNum.num(sb, v); return sb.toString() }
 
+        private fun q(id: String) = JSONObject.quote(id)
+
         fun textJson(t: BoardText): String =
-            "{\"x\":${f(t.x)},\"y\":${f(t.y)},\"size\":${t.size.toDouble()},\"text\":${JSONObject.quote(t.text)},\"color\":${t.color}}"
+            "{\"id\":${q(t.id)},\"x\":${f(t.x)},\"y\":${f(t.y)},\"size\":${t.size.toDouble()},\"text\":${JSONObject.quote(t.text)},\"color\":${t.color}}"
 
         fun imageJson(m: BoardImage): String =
-            "{\"file\":${JSONObject.quote(m.file)},\"x\":${f(m.x)},\"y\":${f(m.y)},\"w\":${m.w.toDouble()},\"h\":${m.h.toDouble()},\"pxW\":${m.pxW},\"pxH\":${m.pxH}}"
+            "{\"id\":${q(m.id)},\"file\":${JSONObject.quote(m.file)},\"x\":${f(m.x)},\"y\":${f(m.y)},\"w\":${m.w.toDouble()},\"h\":${m.h.toDouble()},\"pxW\":${m.pxW},\"pxH\":${m.pxH}}"
 
         fun stickerJson(s: BoardSticker): String =
-            "{\"x\":${f(s.x)},\"y\":${f(s.y)},\"sid\":${JSONObject.quote(s.sid)},\"scale\":${s.scale.toDouble()}}"
+            "{\"id\":${q(s.id)},\"x\":${f(s.x)},\"y\":${f(s.y)},\"sid\":${JSONObject.quote(s.sid)},\"scale\":${s.scale.toDouble()}}"
 
         fun calloutJson(c: BoardCallout): String {
             val sb = StringBuilder(96 + c.leaders.size * 6)
-            sb.append("{\"x\":${f(c.x)},\"y\":${f(c.y)},\"scale\":${c.scale.toDouble()},\"title\":${JSONObject.quote(c.title)}")
+            sb.append("{\"id\":${q(c.id)},\"x\":${f(c.x)},\"y\":${f(c.y)},\"scale\":${c.scale.toDouble()},\"title\":${JSONObject.quote(c.title)}")
             sb.append(",\"sid\":${JSONObject.quote(c.sid)},\"leaders\":")
             JsonNum.array(sb, c.leaders)
             sb.append('}')
@@ -272,30 +397,37 @@ class Board(
 
         fun parseStatus(j: JSONObject) = BoardStatus(j.optString("id", newStatusId()), j.optString("name", "Статус"), j.optInt("color", Ui.INK2))
 
+        /** Номер из JSON; у досок до 0.9 номера нет — пусто (номер по содержимому даст [fixIds]). */
+        private fun jid(j: JSONObject) = j.optString("id", "")
+
         fun parseDrawing(j: JSONObject) =
             Drawing(j.optString("kind", "pen"), j.optInt("color"), j.optDouble("w", 3.0).toFloat(), floats(j.optJSONArray("pts")))
+                .also { it.id = jid(j) }
 
         fun parseText(j: JSONObject) = BoardText(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(), j.optDouble("size", 24.0).toFloat(),
-            j.optString("text"), j.optInt("color", Ui.INK))
+            j.optString("text"), j.optInt("color", Ui.INK)).also { it.id = jid(j) }
 
         fun parseImage(j: JSONObject) = BoardImage(j.optString("file"), j.optDouble("x").toFloat(), j.optDouble("y").toFloat(),
-            j.optDouble("w").toFloat(), j.optDouble("h").toFloat(), j.optInt("pxW"), j.optInt("pxH"))
+            j.optDouble("w").toFloat(), j.optDouble("h").toFloat(), j.optInt("pxW"), j.optInt("pxH")).also { it.id = jid(j) }
 
         fun parseSticker(j: JSONObject): BoardSticker {
             // До 0.7.0 статус был числом 0/1/2 — это s0/s1/s2 списка по умолчанию.
             val sid = j.optString("sid", "").ifEmpty { "s" + j.optInt("status").coerceIn(0, 2) }
             return BoardSticker(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(), sid, j.optDouble("scale", 1.0).toFloat())
+                .also { it.id = jid(j) }
         }
 
         fun parseFill(j: JSONObject): BoardFill? {
             val p = floats(j.optJSONArray("pts"))
             if (p.size < 6) return null
             return BoardFill(p, j.optInt("color", Ui.INK), j.optDouble("alpha", BoardFill.DEFAULT_ALPHA.toDouble()).toFloat())
+                .also { it.id = jid(j) }
         }
 
         fun parseCallout(j: JSONObject, defaultSid: String): BoardCallout {
             val c = BoardCallout(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(), j.optDouble("scale", 1.0).toFloat(),
                 j.optString("title"), j.optString("sid", defaultSid))
+            c.id = jid(j)
             for (v in floats(j.optJSONArray("leaders"))) c.leaders += v
             return c
         }
@@ -313,6 +445,8 @@ class Board(
             o.optJSONArray("stickers")?.let { a -> for (i in 0 until a.length()) b.stickers += parseSticker(a.getJSONObject(i)) }
             o.optJSONArray("fills")?.let { a -> for (i in 0 until a.length()) parseFill(a.getJSONObject(i))?.let { b.fills += it } }
             o.optJSONArray("callouts")?.let { a -> for (i in 0 until a.length()) b.callouts += parseCallout(a.getJSONObject(i), b.statuses[0].id) }
+            b.sync = BoardSync.parse(o.optJSONObject("sync"))
+            b.fixIds()
             return b
         }
 
@@ -370,6 +504,11 @@ class BoardStore(context: Context) {
     private val dir = File(context.filesDir, "boards").apply { mkdirs() }
     private val imageDir = File(context.filesDir, "note_images").apply { mkdirs() }
 
+    /** Номер этого планшета для отметок правок. */
+    val device: String = BoardSync.device(context)
+
+    fun exists(id: String) = File(dir, "$id.json").exists()
+
     /** Список досок для Ежедневника — по сводкам; у старых досок сводка создаётся один раз. */
     fun list(): List<BoardMeta> = dir.listFiles { f -> f.name.endsWith(".json") }
         .orEmpty()
@@ -387,7 +526,17 @@ class BoardStore(context: Context) {
     /** Сохранить сейчас (в этом потоке). */
     fun save(board: Board) {
         board.updated = System.currentTimeMillis()
+        write(board.id, nextSeq(), board.toJsonString(stampDevice = device), board.metaJson())
+    }
+
+    /**
+     * Сохранить доску, в которую влили файл коллеги. Открытый экран этой доски заметит это
+     * ([importCount]) и перечитает доску, а не затрёт её своей старой копией.
+     */
+    fun saveImported(board: Board) {
+        board.updated = System.currentTimeMillis()
         write(board.id, nextSeq(), board.toJsonString(), board.metaJson())
+        synchronized(lock) { imports[board.id] = (imports[board.id] ?: 0) + 1 }
     }
 
     /** Записать готовые строки доски. seq — номер снимка: более старый, чем уже записанный, пропускается. */
@@ -421,7 +570,11 @@ class BoardStore(context: Context) {
     companion object {
         private val lock = Any()
         private val written = HashMap<String, Long>()
+        private val imports = HashMap<String, Int>()
         private val seq = java.util.concurrent.atomic.AtomicLong(0)
         fun nextSeq(): Long = seq.incrementAndGet()
+
+        /** Сколько раз в доску вливали файлы (пока приложение запущено). */
+        fun importCount(id: String): Int = synchronized(lock) { imports[id] ?: 0 }
     }
 }

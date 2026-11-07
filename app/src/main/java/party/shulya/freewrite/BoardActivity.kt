@@ -72,6 +72,8 @@ class BoardActivity : Activity(), BoardView.Host {
     }
     private var pauseMs = 1000L
     private val shapeTool = ShapeTool()
+    /** Сколько раз в эту доску вливали файлы к моменту загрузки — чтобы заметить новый файл коллеги. */
+    private var loadedImports = 0
 
     // ---------------------------------------------------------------- письмо в текст на месте
 
@@ -105,6 +107,7 @@ class BoardActivity : Activity(), BoardView.Host {
         noteStore = NoteStore(this)
         val id = intent.getStringExtra(EXTRA_ID)
         board = id?.let { store.load(it) } ?: Board.create("Доска").also { store.save(it) }
+        loadedImports = BoardStore.importCount(board.id)
         engine = HandwritingEngine { android.util.Log.i("FreeWrite", it) }
         engine.onChanged = { updateBanner() }
         buildUi()
@@ -124,6 +127,31 @@ class BoardActivity : Activity(), BoardView.Host {
         current?.let { commit(it) }
         saveNow(sync = true)
         super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (BoardStore.importCount(board.id) != loadedImports) reloadAfterImport()
+    }
+
+    /** Пока экран был свёрнут, в доску влили файл коллеги — перечитать (камера остаётся своя). */
+    private fun reloadAfterImport() {
+        val b = store.load(board.id) ?: return
+        loadedImports = BoardStore.importCount(b.id)
+        handler.removeCallbacks(saveRunnable)
+        b.camX = board.camX; b.camY = board.camY; b.camZ = board.camZ
+        board = b
+        undoStack.clear(); redoStack.clear()
+        titleView.text = b.title
+        view.clearSelection()
+        view.invalidate()
+        hint("Доска обновлена правками из файла")
+    }
+
+    /** «Поделиться»: доска файлом в Telegram, WhatsApp, почту — коллега откроет его в FreeWrite. */
+    private fun shareBoard() {
+        current?.let { commit(it) }
+        BoardShare.offer(this, board) { saveNow(sync = true) }
     }
 
     override fun onDestroy() {
@@ -193,6 +221,10 @@ class BoardActivity : Activity(), BoardView.Host {
         row.addView(Ui.ToolButton(this, R.drawable.ic_statuses, "Статусы").apply {
             tag = "board_statuses"
             setOnClickListener { statusesDialog() }
+        })
+        row.addView(Ui.ToolButton(this, R.drawable.ic_share, "Поделиться").apply {
+            tag = "board_share"
+            setOnClickListener { shareBoard() }
         })
         row.addView(Ui.separator(this))
         row.addView(CheckBox(this).apply {
@@ -420,7 +452,7 @@ class BoardActivity : Activity(), BoardView.Host {
         board.updated = System.currentTimeMillis()
         val seq = BoardStore.nextSeq()
         val id = board.id
-        val json = board.toJsonString()
+        val json = board.toJsonString(stampDevice = store.device) // с отметками правок — для обмена с коллегами
         val meta = board.metaJson()
         val write = Runnable {
             try {

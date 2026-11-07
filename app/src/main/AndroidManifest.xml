@@ -17,6 +17,14 @@
             <action android:name="android.intent.action.GET_CONTENT" />
             <data android:mimeType="image/*" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.GET_CONTENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="application/octet-stream" />
+        </intent>
     </queries>
 
     <application
@@ -59,7 +67,49 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|uiMode"
             android:windowSoftInputMode="adjustResize|stateHidden" />
 
-        <!-- Отдаёт скачанный APK системному установщику -->
+        <!--
+          Открыть файл доски (.freewrite) из Telegram, WhatsApp, почты, «Файлов»: новая доска
+          добавляется, знакомая — в неё вливаются правки коллеги.
+        -->
+        <activity
+            android:name=".ImportActivity"
+            android:exported="true"
+            android:label="Открыть в FreeWrite"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="application/x-freewrite" />
+            </intent-filter>
+            <!-- Файловые менеджеры, которые не знают тип файла: по окончанию имени .freewrite -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.freewrite" />
+                <data android:pathPattern=".*\\..*\\.freewrite" />
+                <data android:pathPattern=".*\\..*\\..*\\.freewrite" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="application/x-freewrite" />
+            </intent-filter>
+        </activity>
+
+        <!-- Отдаёт скачанный APK системному установщику и файлы досок — приложениям для отправки -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

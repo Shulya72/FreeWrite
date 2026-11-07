@@ -25,6 +25,9 @@ sealed class Block {
 
 /** Рисунок ручкой или маркером: точки в координатах листа (x, y, нажим). */
 class Drawing(val kind: String, var color: Int, var width: Float, val pts: FloatArray) {
+    /** Номер рисунка на доске — по нему сливаются правки с доской коллеги. Копия получает новый номер. */
+    var id: String = Ids.next()
+
     fun copy(): Drawing = Drawing(kind, color, width, pts.copyOf())
 
     // ---- для быстрой доски: рамка, готовый контур и JSON считаются один раз ----
@@ -80,10 +83,12 @@ class Drawing(val kind: String, var color: Int, var width: Float, val pts: Float
         h = 31 * h + color
         h = 31 * h + width.toRawBits()
         h = 31 * h + kind.hashCode()
+        h = 31 * h + id.hashCode()
         for (v in pts) h = 31 * h + v.toRawBits()
         jsonCache?.let { if (h == jsonSum) return it }
-        val sb = StringBuilder(pts.size * 6 + 64)
-        sb.append("{\"kind\":").append(JSONObject.quote(kind)).append(",\"color\":").append(color)
+        val sb = StringBuilder(pts.size * 6 + 80)
+        sb.append("{\"id\":").append(JSONObject.quote(id))
+        sb.append(",\"kind\":").append(JSONObject.quote(kind)).append(",\"color\":").append(color)
         sb.append(",\"w\":").append(width.toDouble()).append(",\"pts\":")
         JsonNum.array(sb, pts)
         sb.append('}')

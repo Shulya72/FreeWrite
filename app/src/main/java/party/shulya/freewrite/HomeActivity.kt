@@ -105,6 +105,10 @@ class HomeActivity : Activity() {
         foot.addView(Ui.ToolButton(this, R.drawable.ic_update, "Обновления").apply {
             setOnClickListener { checkUpdates(silent = false) }
         })
+        foot.addView(Ui.ToolButton(this, R.drawable.ic_open_file, "Открыть файл доски").apply {
+            tag = "home_open_file"
+            setOnClickListener { pickBoardFile() }
+        })
         foot.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         foot.addView(Ui.mono(this, "версия ${BuildConfig.VERSION_NAME}", 12f))
         col.addView(foot, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(26f) })
@@ -223,11 +227,37 @@ class HomeActivity : Activity() {
         edit.requestFocus()
     }
 
+    /** Файл доски от коллеги (сохранён из Telegram в «Загрузки» и т. п.) — выбрать и открыть. */
+    private fun pickBoardFile() {
+        val i = Intent(Intent.ACTION_GET_CONTENT).apply { type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE) }
+        try {
+            startActivityForResult(Intent.createChooser(i, "Файл доски (.freewrite)"), REQ_BOARD_FILE)
+        } catch (_: Throwable) {
+            Toast.makeText(this, "Не нашлось приложения для выбора файла", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    @Deprecated("Activity.onActivityResult")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        val uri = data?.data
+        if (requestCode == REQ_BOARD_FILE && resultCode == RESULT_OK && uri != null) {
+            startActivity(Intent(this, ImportActivity::class.java).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+        }
+    }
+
+    private fun shareBoard(id: String) {
+        val board = boards.load(id) ?: return
+        BoardShare.offer(this, board) { boards.save(board) }
+    }
+
     private fun boardMenu(b: BoardMeta) {
         AlertDialog.Builder(this)
             .setTitle(b.title)
-            .setItems(arrayOf("Переименовать", "Удалить")) { _, which ->
-                if (which == 0) {
+            .setItems(arrayOf("Переименовать", "Удалить", "Поделиться")) { _, which ->
+                if (which == 2) {
+                    shareBoard(b.id)
+                } else if (which == 0) {
                     val edit = EditText(this).apply { setText(b.title); setSelection(b.title.length); isSingleLine = true }
                     val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
                     AlertDialog.Builder(this)
@@ -377,5 +407,9 @@ class HomeActivity : Activity() {
         if (!Updater.install(this, file)) {
             Toast.makeText(this, "Разрешите FreeWrite устанавливать приложения, вернитесь и нажмите «Установить»", Toast.LENGTH_LONG).show()
         }
+    }
+
+    companion object {
+        private const val REQ_BOARD_FILE = 41
     }
 }

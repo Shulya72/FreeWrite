@@ -978,6 +978,115 @@ class ScreensSmokeTest {
 
     // ------------------------------------------------------------------ helpers
 
+    // ------------------------------------------------------------------ 0.9: общая доска через файл
+
+    /** Ждать, пока фоновый поток допишет и главный поток покажет результат. */
+    private fun waitUntil(what: String, timeoutMs: Long = 8000, cond: () -> Boolean) {
+        val end = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < end) {
+            idle()
+            if (cond()) return
+            Thread.sleep(20)
+        }
+        idle()
+        if (!cond()) {
+            for ((t, st) in Thread.getAllStackTraces()) if (t.name.startsWith("Thread-")) {
+                println("THREAD ${t.name} ${t.state}"); st.take(25).forEach { println("    at $it") }
+            }
+        }
+        assertTrue("не дождался: $what", cond())
+    }
+
+    @Test
+    @Config(qualifiers = "w1280dp-h800dp-land-xhdpi")
+    fun board_shareFileAndImportFromColleague() {
+        val store = BoardStore(ctx)
+        val img = BoardImages.importBitmap(ctx, Bitmap.createBitmap(120, 80, Bitmap.Config.ARGB_8888).apply { eraseColor(0xFFB0C4DE.toInt()) })
+        val b0 = Board.create("Секция 3")
+        b0.images += BoardImage(img.first, 0f, 0f, 480f, 320f, img.second, img.third)
+        b0.texts += BoardText(20f, 400f, 32f, "Захватка №1 от 11.09.26", Ui.INK)
+        store.save(b0)
+        val controller = Robolectric.buildActivity(
+            BoardActivity::class.java,
+            Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b0.id),
+        ).setup()
+        val activity = controller.get()
+        idle()
+        val root = activity.window.decorView
+        val sa = shadowOf(activity)
+
+        // 1. Первый раз — сразу «Поделиться» Android с файлом .freewrite.
+        root.findViewWithTag<View>("board_share").performClick()
+        waitUntil("выбор приложения") { sa.peekNextStartedActivity() != null }
+        val chooser = sa.nextStartedActivity
+        assertEquals(Intent.ACTION_CHOOSER, chooser.action)
+        @Suppress("DEPRECATION")
+        val send = chooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)!!
+        assertEquals(Intent.ACTION_SEND, send.action)
+        @Suppress("DEPRECATION")
+        val uri = send.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM)!!
+        assertTrue(uri.toString(), uri.toString().startsWith("content://party.shulya.freewrite") && uri.toString().endsWith(".freewrite"))
+
+        // 2. Второй раз картинка у коллеги уже есть — спрашиваем «целиком / только новое».
+        root.findViewWithTag<View>("board_share").performClick()
+        idle()
+        val dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+        assertTrue(dialog.isShowing)
+        assertEquals(2, dialog.listView.adapter.count)
+        assertTrue(dialog.listView.adapter.getItem(1).toString().startsWith("Только правки"))
+        screenshot(latestDialogRoot(), "board_share.png")
+        dialog.listView.performItemClick(null, 1, 1L)
+        waitUntil("выбор приложения 2") { sa.peekNextStartedActivity() != null }
+        assertEquals(Intent.ACTION_CHOOSER, sa.nextStartedActivity.action)
+
+        // 3. Коллега поправил надпись и прислал файл; экран доски свёрнут (Владимир в Telegram).
+        val colleague = store.load(b0.id)!!
+        colleague.texts[0].text = "Захватка №1 — забетонировано"
+        colleague.texts += BoardText(20f, 480f, 32f, "Захватка №2 — опалубка", Ui.PEN_BLUE)
+        colleague.stamp("kolya2", System.currentTimeMillis() + 60_000)
+        val file = BoardShare.write(ctx, BoardShare.prepare(colleague, onlyNew = true))
+        controller.pause()
+
+        val imp = Robolectric.buildActivity(
+            ImportActivity::class.java,
+            Intent(Intent.ACTION_VIEW).setDataAndType(android.net.Uri.fromFile(file), BoardShare.MIME),
+        ).setup().get()
+        val msg = imp.window.decorView.findViewWithTag<android.widget.TextView>("import_message")
+        waitUntil("приём файла") { msg.text.toString().let { it.contains("обновлена") || it.startsWith("Не удалось") || it.contains("изменений нет") } }
+        assertTrue(msg.text.toString(), msg.text.toString().contains("обновлена"))
+        assertTrue(msg.text.toString(), msg.text.toString().contains("новых — 1") && msg.text.toString().contains("изменено — 1"))
+        screenshot(imp.window.decorView, "import.png")
+
+        // 4. Вернулись на доску — она перечитана с правками коллеги.
+        controller.resume()
+        idle()
+        val board = field(activity, "board") as Board
+        assertEquals("Захватка №1 — забетонировано", board.texts[0].text)
+        assertEquals(2, board.texts.size)
+        screenshot(root, "board_after_import.png")
+
+        // 5. «Открыть доску» — Ежедневник и доска.
+        imp.window.decorView.findViewWithTag<View>("import_open").performClick()
+        assertTrue(shadowOf(imp).nextStartedActivity != null)
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun home_openBoardFileButton() {
+        val activity = Robolectric.buildActivity(HomeActivity::class.java).setup().get()
+        idle()
+        activity.window.decorView.findViewWithTag<View>("home_open_file").performClick()
+        val i = shadowOf(activity).nextStartedActivity
+        assertEquals(Intent.ACTION_CHOOSER, i.action)
+        // Не файл доски — понятная ошибка, а не падение.
+        val bad = File(ctx.cacheDir, "notes.freewrite").apply { writeText("не доска") }
+        val imp = Robolectric.buildActivity(ImportActivity::class.java, Intent(Intent.ACTION_VIEW, android.net.Uri.fromFile(bad))).setup().get()
+        val msg = imp.window.decorView.findViewWithTag<android.widget.TextView>("import_message")
+        waitUntil("ошибка") { msg.text.toString().startsWith("Не удалось открыть") }
+        assertTrue(msg.text.toString().contains(BoardShare.NOT_BOARD))
+        screenshot(imp.window.decorView, "import_error.png")
+    }
+
     private fun idle() {
         shadowOf(Looper.getMainLooper()).idle()
     }

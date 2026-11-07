@@ -102,7 +102,10 @@ class PerformanceTest {
         view.dispatchTouchEvent(ev(android.view.MotionEvent.ACTION_UP, 390f, 900f, 100))
         shadowOf(Looper.getMainLooper()).idle()
         val bd = controller.get().board()
-        t = System.nanoTime(); bd.toJsonString(); bd.metaJson(); println("BENCH save-on-screen ms=${ms(t)}")
+        bd.toJsonString(stampDevice = "bench1") // первый раз отмечаются все предметы
+        t = System.nanoTime(); bd.toJsonString(stampDevice = "bench1"); bd.metaJson(); println("BENCH save-on-screen ms=${ms(t)}")
+        t = System.nanoTime(); val marks = bd.stamp("bench1"); println("BENCH stamp ms=${ms(t)} marks=$marks")
+        assertEquals("без правок отмечать нечего", 0, marks)
         val board = controller.get().board()
         board.camZ = 1.5f; board.camX = 3000f; board.camY = 2000f
         view.invalidate()
