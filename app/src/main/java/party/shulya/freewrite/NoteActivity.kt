@@ -38,12 +38,13 @@ import kotlin.math.min
  *
  * Пишете пером в любом месте листа. После паузы (или когда начинаете писать в другом месте)
  * надпись распознаётся: слово серым появляется у курсора, затем становится текстом,
- * а рукопись исчезает. Ручка и маркер оставляют рисунок рисунком. Пальцем — прокрутка,
- * галочки задач и перенос курсора.
+ * а рукопись исчезает. Ручка и маркер оставляют рисунок рисунком, «Фигуры» делают из рисунка
+ * ровную фигуру. Пальцем — прокрутка, галочки задач, перенос курсора, выбор картинки
+ * (уголки — размер, сама картинка — сдвинуть или перенести по тексту).
  */
 class NoteActivity : Activity(), NoteInkView.Host {
 
-    enum class Tool { WRITE, PEN, MARKER, ERASER, HAND }
+    enum class Tool { WRITE, PEN, MARKER, SHAPE, ERASER, HAND }
 
     private lateinit var store: NoteStore
     private lateinit var note: Note
@@ -55,6 +56,11 @@ class NoteActivity : Activity(), NoteInkView.Host {
     private lateinit var sheet: RuledSheet
     private lateinit var ink: NoteInkView
     private lateinit var mini: LinearLayout
+    private lateinit var imageBar: LinearLayout
+    private var selectedImage: Block.Image? = null
+    // Пока палец тянет картинку, лист не перерисовываем (иначе жест оборвётся) — откладываем.
+    private var imageEditing = false
+    private var renderPending = false
     private lateinit var hintView: TextView
     private lateinit var banner: LinearLayout
     private lateinit var bannerText: TextView
@@ -78,6 +84,8 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     private var lineHeightPx = 0
     private var pauseMs = 1000L
+    private val shapeTool = ShapeTool()
+    private var shapeHintShown = false
 
     // ---------------------------------------------------------------- письмо в текст
 
@@ -194,6 +202,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         addTool(row, Tool.WRITE, R.drawable.ic_write, "В текст")
         addTool(row, Tool.PEN, R.drawable.ic_pen, "Ручка")
         addTool(row, Tool.MARKER, R.drawable.ic_marker, "Маркер")
+        addTool(row, Tool.SHAPE, R.drawable.ic_shapes, "Фигуры")
         addTool(row, Tool.ERASER, R.drawable.ic_eraser, "Ластик")
         addTool(row, Tool.HAND, R.drawable.ic_hand, "Указка")
         for (c in listOf(Ui.INK, Ui.PEN_BLUE, Ui.PEN_RED)) {
@@ -296,6 +305,19 @@ class NoteActivity : Activity(), NoteInkView.Host {
             gravity = Gravity.TOP or Gravity.END
             setMargins(0, dp(10f), dp(14f), 0)
         })
+        // Панель выбранной картинки (на месте мини-панели).
+        imageBar = Ui.floatingBar(
+            this, "Уголок — размер, картинку — сдвинуть",
+            Ui.pill(this, "Удалить", Ui.BAD, Ui.BAD_SOFT).apply { setOnClickListener { deleteSelectedImage() } },
+            Ui.pill(this, "Готово", Color.WHITE, Ui.ACCENT).apply { setOnClickListener { selectImage(null) } },
+        ).apply {
+            tag = "image_bar"
+            visibility = View.GONE
+        }
+        area.addView(imageBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+            gravity = Gravity.TOP or Gravity.END
+            setMargins(0, dp(10f), dp(14f), 0)
+        })
 
         hintView = Ui.text(this, "", 13f, Ui.PAPER).apply {
             background = Ui.rounded(this@NoteActivity, Ui.INK, null, 999f)
@@ -322,16 +344,23 @@ class NoteActivity : Activity(), NoteInkView.Host {
         if (t != Tool.WRITE) current?.let { commit(it) }
         tool = t
         for ((k, v) in toolButtons) v.selectedTool = k == t
-        mini.visibility = if (t == Tool.WRITE) View.VISIBLE else View.GONE
+        updateImageBar()
+        if (t != Tool.SHAPE) shapeTool.reset()
+        if (t == Tool.SHAPE && !shapeHintShown) {
+            shapeHintShown = true
+            hint("Нарисуйте линию, стрелку, квадрат, круг или треугольник — станет ровной фигурой", 3500)
+        }
         refreshColors()
     }
 
+    private fun colorTool(t: Tool) = t == Tool.PEN || t == Tool.MARKER || t == Tool.SHAPE
+
     private fun refreshColors() {
         for ((c, v) in colorViews) {
-            val selected = c == penColor && (tool == Tool.PEN || tool == Tool.MARKER)
+            val selected = c == penColor && colorTool(tool)
             v.scaleX = if (selected) 1.25f else 1f
             v.scaleY = v.scaleX
-            v.alpha = if (selected || tool == Tool.PEN || tool == Tool.MARKER) 1f else 0.55f
+            v.alpha = if (selected || colorTool(tool)) 1f else 0.55f
         }
     }
 
@@ -380,6 +409,8 @@ class NoteActivity : Activity(), NoteInkView.Host {
     }
 
     private fun renderBlocks() {
+        if (selectedImage != null && note.blocks.none { it === selectedImage }) selectedImage = null
+        updateImageBar()
         sheet.removeAllViews()
         blockViews.clear()
         caretTextView = null
@@ -398,7 +429,13 @@ class NoteActivity : Activity(), NoteInkView.Host {
                 is Block.Image -> imageView(b, i)
             }
             blockViews += v
-            sheet.addView(v, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            val lp = LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP)
+            if (v is NoteImageView) {
+                // Вид картинки чуть шире текста — уголки у края листа не обрезаются.
+                lp.leftMargin = -dp(NoteImageView.EDGE_DP)
+                lp.rightMargin = -dp(NoteImageView.EDGE_DP)
+            }
+            sheet.addView(v, lp)
         }
         // Пустое место ниже текста: здесь тоже можно писать; нажатие — курсор в конец.
         val spacer = View(this).apply {
@@ -447,25 +484,86 @@ class NoteActivity : Activity(), NoteInkView.Host {
     }
 
     private fun imageView(b: Block.Image, i: Int): View {
-        val maxW = min(sheet.width.takeIf { it > 0 }?.let { it - sheet.paddingLeft - sheet.paddingRight } ?: dp(600f), dp(560f))
-        val bmp = bitmapCache.getOrPut(b.file) { store.loadImage(b, maxW) ?: return emptyImage(i) }
-        return ImageView(this).apply {
-            setImageBitmap(bmp)
-            adjustViewBounds = true
-            maxWidth = maxW
-            scaleType = ImageView.ScaleType.FIT_START
-            setPadding(0, dp(8f), 0, dp(8f))
-            contentDescription = "Картинка"
-            setOnClickListener { setCaret(i) }
-            setOnLongClickListener {
-                AlertDialog.Builder(this@NoteActivity)
-                    .setMessage("Удалить картинку из записи?")
-                    .setPositiveButton("Удалить") { _, _ -> removeBlock(i) }
-                    .setNegativeButton("Отмена", null)
-                    .show()
-                true
+        // Картинку можно растянуть на всю ширину листа — загружаем с запасом по размеру.
+        val bmp = bitmapCache.getOrPut(b.file) { store.loadImage(b, dp(800f)) ?: return emptyImage(i) }
+        return NoteImageView(this, b, bmp, imageHost)
+    }
+
+    // ---------------------------------------------------------------- выбор и правка картинки
+
+    private val imageHost = object : NoteImageView.Host {
+        override fun isImageSelected(b: Block.Image) = b === selectedImage
+
+        override fun onImageTap(v: NoteImageView) {
+            runAfterCommit { selectImage(if (selectedImage === v.block) null else v.block) }
+        }
+
+        override fun onImageLongPress(v: NoteImageView) {
+            AlertDialog.Builder(this@NoteActivity)
+                .setMessage("Удалить картинку из записи?")
+                .setPositiveButton("Удалить") { _, _ ->
+                    val i = note.blocks.indexOfFirst { it === v.block }
+                    if (i >= 0) removeBlock(i)
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+        }
+
+        override fun onImageEditStart(v: NoteImageView) {
+            imageEditing = true
+            pushUndo()
+            if (selectedImage !== v.block) selectImage(v.block)
+        }
+
+        private fun editEnded(): Boolean {
+            imageEditing = false
+            val r = renderPending
+            renderPending = false
+            return r
+        }
+
+        override fun onImageResized(v: NoteImageView) {
+            changed(render = editEnded())
+            ink.invalidate()
+        }
+
+        override fun onImageDropped(v: NoteImageView) {
+            val needRender = editEnded()
+            // Новое место — между строками, ближайшими к середине картинки.
+            val from = note.blocks.indexOfFirst { it === v.block }
+            val cy = v.top + v.translationY + v.height / 2f
+            var pos = 0
+            for ((j, bv) in blockViews.withIndex()) if (j != from && bv.top + bv.height / 2f < cy) pos++
+            v.translationY = 0f
+            if (from >= 0 && pos != from) {
+                val caretBlock = note.blocks.getOrNull(note.caret)
+                note.blocks.removeAt(from)
+                note.blocks.add(pos.coerceIn(0, note.blocks.size), v.block)
+                note.caret = note.blocks.indexOfFirst { it === caretBlock }.coerceAtLeast(0)
+                changed()
+            } else {
+                v.invalidate()
+                changed(render = needRender)
             }
         }
+    }
+
+    private fun selectImage(b: Block.Image?) {
+        selectedImage = b
+        for (v in blockViews) if (v is NoteImageView) v.invalidate()
+        updateImageBar()
+    }
+
+    private fun updateImageBar() {
+        if (!::imageBar.isInitialized) return
+        imageBar.visibility = if (selectedImage != null) View.VISIBLE else View.GONE
+        mini.visibility = if (selectedImage == null && tool == Tool.WRITE) View.VISIBLE else View.GONE
+    }
+
+    private fun deleteSelectedImage() {
+        val i = note.blocks.indexOfFirst { it === selectedImage }
+        selectedImage = null
+        if (i >= 0) removeBlock(i) else updateImageBar()
     }
 
     private fun emptyImage(i: Int): View = Ui.text(this, "[картинка не найдена]", 14f, Ui.MUTED).apply {
@@ -506,6 +604,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
     /** Поставить курсор в строку i; offset — место внутри строки (-1 — в конец). */
     private fun setCaret(i: Int, offset: Int = -1) {
         runAfterCommit {
+            selectedImage = null
             note.caret = i.coerceIn(0, note.blocks.size - 1)
             val text = blockText(note.blocks[note.caret])
             note.caretOffset = if (text == null || offset < 0 || offset >= text.length) -1 else offset
@@ -813,7 +912,9 @@ class NoteActivity : Activity(), NoteInkView.Host {
     }
 
     private fun changed(render: Boolean = true) {
-        if (render) renderBlocks()
+        if (render) {
+            if (imageEditing) renderPending = true else renderBlocks()
+        }
         handler.removeCallbacks(saveRunnable)
         handler.postDelayed(saveRunnable, 400)
     }
@@ -859,6 +960,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
                     note.blocks.add(note.caret + 1, block)
                     note.blocks.add(note.caret + 2, Block.Para(""))
                     note.caret += 2
+                    selectedImage = block
                     changed()
                 }
             }
@@ -913,10 +1015,12 @@ class NoteActivity : Activity(), NoteInkView.Host {
     override fun strokeStyle(): NoteInkView.StrokeStyle = when (tool) {
         Tool.MARKER -> NoteInkView.StrokeStyle("marker", penColor, Ui.dpf(this, 16f))
         Tool.PEN -> NoteInkView.StrokeStyle("pen", penColor, Ui.dpf(this, 2.4f))
+        Tool.SHAPE -> NoteInkView.StrokeStyle("shape", penColor, Ui.dpf(this, 2.4f))
         else -> NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(this, 2.6f))
     }
 
     override fun onStrokeStart(x: Float, y: Float) {
+        if (selectedImage != null) selectImage(null)
         if (tool != Tool.WRITE) return
         handler.removeCallbacks(interimRunnable)
         handler.removeCallbacks(commitRunnable)
@@ -935,6 +1039,14 @@ class NoteActivity : Activity(), NoteInkView.Host {
             val g = current ?: Group(++groupSeq).also { current = it }
             g.strokes += stroke
             scheduleWrite()
+        } else if (style.kind == "shape") {
+            pushUndo()
+            val r = shapeTool.onStroke(
+                stroke, style, note.drawings, Ui.dpf(this, 24f), Ui.dpf(this, 4f), android.os.SystemClock.uptimeMillis(),
+            )
+            note.drawings.removeAll { d -> r.remove.any { it === d } }
+            note.drawings += r.add
+            changed(render = false)
         } else {
             pushUndo()
             note.drawings += NoteInkView.toDrawing(stroke, style)
@@ -1079,6 +1191,14 @@ class NoteActivity : Activity(), NoteInkView.Host {
     private fun applyGroup(g: Group) {
         val best = g.candidates?.firstOrNull()?.text?.trim().orEmpty()
         val style = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(this, 2.6f))
+        // Крупная стрелка, рамка, круг вокруг слова — это рисунок, а не буква: делаем ровную фигуру.
+        val textSize = if (wordHeights.isNotEmpty()) max(lineHeightPx.toFloat(), wordHeights.sorted()[wordHeights.size / 2]) else lineHeightPx.toFloat()
+        ShapeTool.fromWriting(g.strokes, best, textSize * 2.6f, Ui.dpf(this, 4f))?.let { shape ->
+            pushUndo()
+            note.drawings += ShapeTool.drawingOf(shape, NoteInkView.StrokeStyle("pen", Ui.INK, Ui.dpf(this, 2.4f)))
+            changed(render = false)
+            return
+        }
         if (best.isEmpty()) {
             pushUndo()
             for (s in g.strokes) note.drawings += NoteInkView.toDrawing(s, style)

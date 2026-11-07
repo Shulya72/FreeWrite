@@ -27,10 +27,11 @@ import kotlin.math.roundToInt
  * Экран «Доска»: бесконечное поле. Пером — писать (надпись становится текстом на том же месте),
  * рисовать, стирать, ставить метки статуса. Пальцем — двигать и масштабировать, касание метки
  * переключает статус, долгое нажатие на картинку — удалить. «Рука» — двигать предметы.
+ * Касание картинки пальцем — выбрать: уголки меняют размер, сама картинка двигается.
  */
 class BoardActivity : Activity(), BoardView.Host {
 
-    enum class Tool { WRITE, PEN, MARKER, ERASER, HAND, STATUS }
+    enum class Tool { WRITE, PEN, MARKER, SHAPE, ERASER, HAND, STATUS }
 
     private lateinit var store: BoardStore
     private lateinit var noteStore: NoteStore
@@ -47,6 +48,7 @@ class BoardActivity : Activity(), BoardView.Host {
     private lateinit var banner: LinearLayout
     private lateinit var bannerText: TextView
     private lateinit var bannerButton: TextView
+    private lateinit var imageBar: LinearLayout
     private val toolButtons = HashMap<Tool, Ui.ToolButton>()
     private val colorViews = ArrayList<Pair<Int, View>>()
 
@@ -57,6 +59,7 @@ class BoardActivity : Activity(), BoardView.Host {
     private val undoStack = ArrayDeque<String>()
     private val redoStack = ArrayDeque<String>()
     private var pauseMs = 1000L
+    private val shapeTool = ShapeTool()
 
     // ---------------------------------------------------------------- письмо в текст на месте
 
@@ -144,6 +147,7 @@ class BoardActivity : Activity(), BoardView.Host {
         addTool(row, Tool.WRITE, R.drawable.ic_write, "В текст")
         addTool(row, Tool.PEN, R.drawable.ic_pen, "Ручка")
         addTool(row, Tool.MARKER, R.drawable.ic_marker, "Маркер")
+        addTool(row, Tool.SHAPE, R.drawable.ic_shapes, "Фигуры")
         addTool(row, Tool.ERASER, R.drawable.ic_eraser, "Ластик")
         addTool(row, Tool.HAND, R.drawable.ic_hand, "Рука")
         addTool(row, Tool.STATUS, R.drawable.ic_status, "Статус")
@@ -155,7 +159,7 @@ class BoardActivity : Activity(), BoardView.Host {
                 contentDescription = "Цвет"
                 setOnClickListener {
                     penColor = c
-                    if (tool != Tool.PEN && tool != Tool.MARKER) setTool(Tool.PEN) else refreshColors()
+                    if (!colorTool(tool)) setTool(Tool.PEN) else refreshColors()
                 }
             }
             row.addView(v, LinearLayout.LayoutParams(dp(24f), dp(24f)).apply { setMargins(dp(5f), 0, dp(5f), 0) })
@@ -210,6 +214,18 @@ class BoardActivity : Activity(), BoardView.Host {
         area.addView(hintView, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(18f)
         })
+        // Панель выбранной картинки.
+        imageBar = Ui.floatingBar(
+            this, "Уголок — размер, картинку — двигать",
+            Ui.pill(this, "Удалить", Ui.BAD, Ui.BAD_SOFT).apply { setOnClickListener { confirmDeleteImage(view.selected) } },
+            Ui.pill(this, "Готово", Color.WHITE, Ui.ACCENT).apply { setOnClickListener { view.select(-1) } },
+        ).apply {
+            tag = "image_bar"
+            visibility = View.GONE
+        }
+        area.addView(imageBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = dp(10f)
+        })
         root.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
         handler.postDelayed({ hint("Пальцем — двигать и масштабировать, пером — писать и рисовать", 3500) }, 300)
     }
@@ -226,15 +242,19 @@ class BoardActivity : Activity(), BoardView.Host {
         tool = t
         for ((k, v) in toolButtons) v.selectedTool = k == t
         refreshColors()
+        if (t != Tool.SHAPE) shapeTool.reset()
         if (t == Tool.STATUS) hint("Коснитесь пером: метка «Не сдано». Пальцем по метке — следующий статус")
         if (t == Tool.HAND) hint("Перетаскивайте метки, надписи и картинки")
+        if (t == Tool.SHAPE) hint("Нарисуйте линию, стрелку, квадрат, круг или треугольник — станет ровной фигурой", 3500)
     }
+
+    private fun colorTool(t: Tool) = t == Tool.PEN || t == Tool.MARKER || t == Tool.SHAPE
 
     private fun refreshColors() {
         for ((c, v) in colorViews) {
-            val sel = c == penColor && (tool == Tool.PEN || tool == Tool.MARKER)
+            val sel = c == penColor && colorTool(tool)
             v.scaleX = if (sel) 1.25f else 1f; v.scaleY = v.scaleX
-            v.alpha = if (tool == Tool.PEN || tool == Tool.MARKER) 1f else 0.55f
+            v.alpha = if (colorTool(tool)) 1f else 0.55f
         }
     }
 
@@ -300,6 +320,7 @@ class BoardActivity : Activity(), BoardView.Host {
         board = Board.fromJson(JSONObject(json))
         board.camX = cam.first; board.camY = cam.second; board.camZ = cam.third
         titleView.text = board.title
+        view.select(-1)
         changed()
     }
 
@@ -373,7 +394,7 @@ class BoardActivity : Activity(), BoardView.Host {
                 pushUndo()
                 board.images += BoardImage(block.file, cx - w / 2f, cy - h / 2f, w, h, block.width, block.height)
                 changed()
-                hint("Картинку можно двигать инструментом «Рука», удалить — долгим нажатием пальцем")
+                view.select(board.images.lastIndex)
             }
         }
     }
@@ -382,7 +403,12 @@ class BoardActivity : Activity(), BoardView.Host {
         AlertDialog.Builder(this)
             .setMessage("Удалить картинку с доски?")
             .setPositiveButton("Удалить") { _, _ ->
-                if (i in board.images.indices) { pushUndo(); board.images.removeAt(i); changed() }
+                if (i in board.images.indices) {
+                    pushUndo()
+                    board.images.removeAt(i)
+                    view.select(-1)
+                    changed()
+                }
             }
             .setNegativeButton("Отмена", null)
             .show()
@@ -397,6 +423,7 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun strokeStyle(): NoteInkView.StrokeStyle = when (tool) {
         Tool.MARKER -> NoteInkView.StrokeStyle("marker", penColor, Ui.dpf(this, 16f))
         Tool.WRITE -> NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(this, 2.6f))
+        Tool.SHAPE -> NoteInkView.StrokeStyle("shape", penColor, Ui.dpf(this, 2.4f))
         else -> NoteInkView.StrokeStyle("pen", penColor, Ui.dpf(this, 2.4f))
     }
 
@@ -417,6 +444,15 @@ class BoardActivity : Activity(), BoardView.Host {
             handler.removeCallbacks(interimRunnable); handler.removeCallbacks(commitRunnable)
             handler.postDelayed(interimRunnable, 180)
             handler.postDelayed(commitRunnable, pauseMs)
+        } else if (style.kind == "shape") {
+            pushUndo()
+            val z = board.camZ
+            val r = shapeTool.onStroke(
+                stroke, style, board.strokes, Ui.dpf(this, 24f) / z, Ui.dpf(this, 4f) / z, android.os.SystemClock.uptimeMillis(),
+            )
+            board.strokes.removeAll { d -> r.remove.any { it === d } }
+            board.strokes += r.add
+            changed()
         } else {
             pushUndo()
             board.strokes += NoteInkView.toDrawing(stroke, style)
@@ -481,6 +517,10 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onDragStart() { pushUndo() }
     override fun onDragEnd() { changed() }
     override fun onImageLongPress(index: Int) { confirmDeleteImage(index) }
+
+    override fun onSelectionChanged() {
+        if (::imageBar.isInitialized) imageBar.visibility = if (view.selected >= 0) View.VISIBLE else View.GONE
+    }
 
     override fun onCameraChanged() {
         updateZoom()
@@ -556,6 +596,14 @@ class BoardActivity : Activity(), BoardView.Host {
         if (!committing.remove(g)) return
         val best = g.candidates?.firstOrNull()?.text?.trim().orEmpty()
         pushUndo()
+        // Крупная стрелка, рамка или круг — это рисунок, а не буква: делаем ровную фигуру.
+        val z = board.camZ
+        val shape = ShapeTool.fromWriting(g.strokes, best, Ui.dpf(this, 150f) / z, Ui.dpf(this, 4f) / z)
+        if (shape != null) {
+            board.strokes += ShapeTool.drawingOf(shape, NoteInkView.StrokeStyle("pen", Ui.INK, Ui.dpf(this, 2.4f) / z))
+            changed()
+            return
+        }
         if (best.isEmpty()) {
             val style = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(this, 2.6f) / board.camZ)
             for (s in g.strokes) board.strokes += NoteInkView.toDrawing(s, style)

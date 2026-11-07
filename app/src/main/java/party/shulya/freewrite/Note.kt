@@ -15,7 +15,12 @@ import kotlin.math.roundToInt
 sealed class Block {
     class Para(var text: String) : Block()
     class Task(var text: String, var done: Boolean) : Block()
-    class Image(val file: String, val width: Int, val height: Int) : Block()
+    /**
+     * Картинка. width/height — размер файла в пикселях.
+     * wf — ширина на листе в долях ширины текста (0 — как вставлена: не шире 560 dp);
+     * xa — где стоит по горизонтали: 0 — у левого края, 0,5 — по центру, 1 — у правого.
+     */
+    class Image(val file: String, val width: Int, val height: Int, var wf: Float = 0f, var xa: Float = 0f) : Block()
 }
 
 /** Рисунок ручкой или маркером: точки в координатах листа (x, y, нажим). */
@@ -62,7 +67,11 @@ class Note(
             when (b) {
                 is Block.Para -> { j.put("t", "p"); j.put("text", b.text) }
                 is Block.Task -> { j.put("t", "task"); j.put("text", b.text); j.put("done", b.done) }
-                is Block.Image -> { j.put("t", "img"); j.put("file", b.file); j.put("w", b.width); j.put("h", b.height) }
+                is Block.Image -> {
+                    j.put("t", "img"); j.put("file", b.file); j.put("w", b.width); j.put("h", b.height)
+                    if (b.wf > 0f) j.put("wf", b.wf.toDouble())
+                    if (b.xa > 0f) j.put("xa", b.xa.toDouble())
+                }
             }
             bl.put(j)
         }
@@ -97,7 +106,10 @@ class Note(
                 val j = bl.getJSONObject(i)
                 when (j.optString("t")) {
                     "task" -> blocks += Block.Task(j.optString("text"), j.optBoolean("done"))
-                    "img" -> blocks += Block.Image(j.optString("file"), j.optInt("w"), j.optInt("h"))
+                    "img" -> blocks += Block.Image(
+                        j.optString("file"), j.optInt("w"), j.optInt("h"),
+                        j.optDouble("wf", 0.0).toFloat(), j.optDouble("xa", 0.0).toFloat(),
+                    )
                     else -> blocks += Block.Para(j.optString("text"))
                 }
             }

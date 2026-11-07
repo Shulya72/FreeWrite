@@ -22,6 +22,8 @@ import kotlin.math.min
  * Перо (и мышь) — инструмент: писать, рисовать, стирать, ставить метки.
  * Палец — навигация: один палец двигает доску, два — масштабируют; короткое касание метки
  * переключает её статус; долгое нажатие на картинку — удалить. Инструмент «Рука» двигает предметы.
+ * Касание картинки пальцем выбирает её: рамка с уголками. Тянуть за уголок — размер (пропорции
+ * сохраняются), за саму картинку — двигать, двумя пальцами на ней — масштаб.
  * Если сначала легла ладонь, а потом коснулось перо, — работает перо.
  */
 @SuppressLint("ViewConstructor")
@@ -41,6 +43,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onDragStart()
         fun onDragEnd()
         fun onImageLongPress(index: Int)
+        fun onSelectionChanged()
         fun onCameraChanged()
         fun pendingStrokes(): List<InkStroke>
         /** Серое промежуточное слово над недописанной надписью: рамка [l, t, r, b] и текст. */
@@ -51,7 +54,26 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     enum class Kind { STICKER, TEXT, IMAGE }
     class Hit(val kind: Kind, val index: Int)
 
-    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, DRAG, STATUS }
+    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, DRAG, STATUS, RESIZE, PINCH_IMAGE }
+
+    /** Выбранная картинка (индекс в board.images) или -1. */
+    var selected = -1
+        private set
+
+    fun select(i: Int) {
+        val v = if (i in b.images.indices) i else -1
+        if (v == selected) return
+        selected = v
+        host.onSelectionChanged()
+        invalidate()
+    }
+
+    // Правка картинки: угол, за который тянут, противоположный угол (опора), исходный размер.
+    private var editStarted = false
+    private var resizeCorner = PointF()
+    private var resizeAnchor = PointF()
+    private val editStart = RectF()
+    private var pinchMid0 = PointF()
 
     private var mode = Mode.NONE
     private var activePointer = MotionEvent.INVALID_POINTER_ID
@@ -88,10 +110,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private val rect = RectF()
 
     private val longPress = Runnable {
-        if (mode == Mode.PAN && !moved) {
+        if ((mode == Mode.PAN || mode == Mode.DRAG) && !moved) {
             val h = hitAt(wx(downX), wy(downY))
             if (h?.kind == Kind.IMAGE) {
+                if (mode == Mode.DRAG && editStarted) host.onDragEnd()
                 mode = Mode.NONE
+                drag = null
                 host.onImageLongPress(h.index)
             }
         }
@@ -179,15 +203,22 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 val tool = ev.getToolType(idx)
                 if (isPen(tool) && (mode == Mode.PAN || mode == Mode.PINCH || mode == Mode.NONE)) {
                     begin(ev, idx) // ладонь или пальцы лежали — работает перо
+                } else if (!penLike(tool) && mode == Mode.DRAG && drag?.kind == Kind.IMAGE && drag?.index == selected) {
+                    startImagePinch(ev) // два пальца на выбранной картинке — меняем её размер
                 } else if (!penLike(tool) && (mode == Mode.PAN || mode == Mode.DRAG)) {
-                    if (mode == Mode.DRAG) host.onDragEnd()
+                    if (mode == Mode.DRAG && editStarted) host.onDragEnd()
                     startPinch(ev)
                 }
             }
             MotionEvent.ACTION_MOVE -> move(ev)
             MotionEvent.ACTION_POINTER_UP -> {
                 val id = ev.getPointerId(ev.actionIndex)
-                if (mode == Mode.PINCH && (id == pinchA || id == pinchB)) {
+                if (mode == Mode.PINCH_IMAGE && (id == pinchA || id == pinchB)) {
+                    if (editStarted) host.onDragEnd()
+                    editStarted = false
+                    mode = Mode.NONE
+                    drag = null
+                } else if (mode == Mode.PINCH && (id == pinchA || id == pinchB)) {
                     val other = if (id == pinchA) pinchB else pinchA
                     val oi = ev.findPointerIndex(other)
                     mode = if (oi >= 0) Mode.PAN else Mode.NONE
@@ -204,7 +235,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 removeCallbacks(longPress)
             }
             MotionEvent.ACTION_CANCEL -> {
-                if (mode == Mode.DRAG) host.onDragEnd()
+                if ((mode == Mode.DRAG || mode == Mode.RESIZE || mode == Mode.PINCH_IMAGE) && editStarted) host.onDragEnd()
+                editStarted = false
                 live = null
                 mode = Mode.NONE
                 removeCallbacks(longPress)
@@ -226,13 +258,33 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         val x = wx(downX)
         val y = wy(downY)
         val t = host.tool()
+        editStarted = false
+        val sel = b.images.getOrNull(selected)
+        if (sel != null) {
+            // Уголок выбранной картинки — пером или пальцем, при любом инструменте.
+            val corner = handleAt(sel, downX, downY)
+            if (corner != null) {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                mode = Mode.RESIZE
+                editStart.set(sel.x, sel.y, sel.x + sel.w, sel.y + sel.h)
+                resizeCorner.set(corner.x, corner.y)
+                resizeAnchor.set(sel.x + sel.x + sel.w - corner.x, sel.y + sel.y + sel.h - corner.y)
+                return
+            }
+            if (!penLike(tool) && x >= sel.x && x <= sel.x + sel.w && y >= sel.y && y <= sel.y + sel.h) {
+                mode = Mode.DRAG
+                drag = Hit(Kind.IMAGE, selected)
+                dragLast.set(x, y)
+                postDelayed(longPress, 550)
+                return
+            }
+        }
         if (t == BoardActivity.Tool.HAND || !penLike(tool)) {
             val h = if (t == BoardActivity.Tool.HAND) hitAt(x, y) else null
             if (h != null) {
                 mode = Mode.DRAG
                 drag = h
                 dragLast.set(x, y)
-                host.onDragStart()
             } else {
                 mode = Mode.PAN
             }
@@ -267,6 +319,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     private fun move(ev: MotionEvent) {
         if (mode == Mode.PINCH) { pinch(ev); return }
+        if (mode == Mode.PINCH_IMAGE) { pinchImage(ev); return }
         val idx = ev.findPointerIndex(activePointer)
         if (idx < 0) return
         val sx = ev.getX(idx)
@@ -284,6 +337,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 invalidate()
             }
             Mode.DRAG -> {
+                if (!moved) return
+                if (!editStarted) { editStarted = true; host.onDragStart() }
                 val x = wx(sx); val y = wy(sy)
                 val dx = x - dragLast.x; val dy = y - dragLast.y
                 dragLast.set(x, y)
@@ -295,6 +350,11 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                     }
                 }
                 invalidate()
+            }
+            Mode.RESIZE -> {
+                if (!moved) return
+                if (!editStarted) { editStarted = true; host.onDragStart() }
+                resize(wx(sx), wy(sy))
             }
             Mode.ERASE -> {
                 for (h in 0 until ev.historySize) host.onErase(wx(ev.getHistoricalX(idx, h)), wy(ev.getHistoricalY(idx, h)), false)
@@ -335,13 +395,91 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             Mode.STATUS -> if (quick) host.onStatusTap(wx(sx), wy(sy))
             Mode.PAN -> if (quick && !moved) {
                 val h = hitAt(wx(sx), wy(sy))
-                if (h?.kind == Kind.STICKER) host.onStickerTap(h.index)
+                when (h?.kind) {
+                    Kind.STICKER -> { select(-1); host.onStickerTap(h.index) }
+                    Kind.IMAGE -> select(h.index)
+                    else -> select(-1)
+                }
             }
-            Mode.DRAG -> host.onDragEnd()
+            Mode.DRAG, Mode.RESIZE -> {
+                if (editStarted) host.onDragEnd()
+                else if (quick && mode == Mode.DRAG && drag?.kind == Kind.IMAGE) {
+                    val i = drag?.index ?: -1
+                    select(if (i == selected && host.tool() != BoardActivity.Tool.HAND) -1 else i)
+                }
+            }
             else -> Unit
         }
+        editStarted = false
         mode = Mode.NONE
         drag = null
+        invalidate()
+    }
+
+    /** Уголок выбранной картинки под точкой экрана (sx, sy) — его координаты на доске. */
+    private fun handleAt(m: BoardImage, sx: Float, sy: Float): PointF? {
+        val r = Ui.dpf(context, 26f)
+        var best: PointF? = null
+        var bestD = r
+        for (cx in floatArrayOf(m.x, m.x + m.w)) for (cy in floatArrayOf(m.y, m.y + m.h)) {
+            val d = hypot((cx - b.camX) * b.camZ - sx, (cy - b.camY) * b.camZ - sy)
+            if (d <= bestD) { bestD = d; best = PointF(cx, cy) }
+        }
+        return best
+    }
+
+    /** Тянут за уголок: картинка растёт/уменьшается от противоположного угла, пропорции те же. */
+    private fun resize(x: Float, y: Float) {
+        val m = b.images.getOrNull(selected) ?: return
+        val dx = resizeCorner.x - resizeAnchor.x
+        val dy = resizeCorner.y - resizeAnchor.y
+        val l2 = dx * dx + dy * dy
+        if (l2 <= 0f) return
+        val w0 = editStart.width(); val h0 = editStart.height()
+        val minW = Ui.dpf(context, 48f) / b.camZ
+        val s = (((x - resizeAnchor.x) * dx + (y - resizeAnchor.y) * dy) / l2).coerceAtLeast(minW / w0)
+        m.w = w0 * s
+        m.h = h0 * s
+        m.x = if (dx >= 0) resizeAnchor.x else resizeAnchor.x - m.w
+        m.y = if (dy >= 0) resizeAnchor.y else resizeAnchor.y - m.h
+        invalidate()
+    }
+
+    private fun startImagePinch(ev: MotionEvent) {
+        removeCallbacks(longPress)
+        val m = b.images.getOrNull(selected) ?: return
+        var a = -1
+        var c = -1
+        for (i in 0 until ev.pointerCount) {
+            if (isPen(ev.getToolType(i))) continue
+            if (a < 0) a = i else if (c < 0) c = i
+        }
+        if (a < 0 || c < 0) return
+        pinchA = ev.getPointerId(a)
+        pinchB = ev.getPointerId(c)
+        pinchD0 = max(1f, hypot(ev.getX(a) - ev.getX(c), ev.getY(a) - ev.getY(c)))
+        pinchMid0.set(wx((ev.getX(a) + ev.getX(c)) / 2f), wy((ev.getY(a) + ev.getY(c)) / 2f))
+        editStart.set(m.x, m.y, m.x + m.w, m.y + m.h)
+        if (!editStarted) { editStarted = true; host.onDragStart() }
+        mode = Mode.PINCH_IMAGE
+        moved = true
+    }
+
+    private fun pinchImage(ev: MotionEvent) {
+        val m = b.images.getOrNull(selected) ?: return
+        val a = ev.findPointerIndex(pinchA)
+        val c = ev.findPointerIndex(pinchB)
+        if (a < 0 || c < 0) return
+        val d = max(1f, hypot(ev.getX(a) - ev.getX(c), ev.getY(a) - ev.getY(c)))
+        val w0 = editStart.width(); val h0 = editStart.height()
+        val minW = Ui.dpf(context, 48f) / b.camZ
+        val k = (d / pinchD0).coerceAtLeast(minW / w0)
+        val mx = wx((ev.getX(a) + ev.getX(c)) / 2f)
+        val my = wy((ev.getY(a) + ev.getY(c)) / 2f)
+        m.w = w0 * k
+        m.h = h0 * k
+        m.x = editStart.centerX() + (mx - pinchMid0.x) - m.w / 2f
+        m.y = editStart.centerY() + (my - pinchMid0.y) - m.h / 2f
         invalidate()
     }
 
@@ -424,6 +562,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawText(t.text, t.x, t.y, textPaint)
         }
         for (s in b.stickers) drawSticker(canvas, s)
+        b.images.getOrNull(selected)?.let { drawSelection(canvas, it, z) }
         val pendingStyle = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z)
         for (s in host.pendingStrokes()) painter.stroke(canvas, s, pendingStyle, 255)
         live?.let { painter.stroke(canvas, it, liveStyle ?: pendingStyle, 255) }
@@ -478,6 +617,21 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         } else {
             fillPaint.color = Ui.DESK
             canvas.drawRect(rect, fillPaint)
+        }
+    }
+
+    /** Рамка выбранной картинки и уголки, за которые меняют размер. */
+    private fun drawSelection(canvas: Canvas, m: BoardImage, z: Float) {
+        val pad = Ui.dpf(context, 3f) / z
+        rect.set(m.x - pad, m.y - pad, m.x + m.w + pad, m.y + m.h + pad)
+        linePaint.color = Ui.ACCENT
+        linePaint.strokeWidth = Ui.dpf(context, 2f) / z
+        canvas.drawRect(rect, linePaint)
+        val r = Ui.dpf(context, 8f) / z
+        for (cx in floatArrayOf(m.x, m.x + m.w)) for (cy in floatArrayOf(m.y, m.y + m.h)) {
+            fillPaint.color = Color.WHITE
+            canvas.drawCircle(cx, cy, r, fillPaint)
+            canvas.drawCircle(cx, cy, r, linePaint)
         }
     }
 

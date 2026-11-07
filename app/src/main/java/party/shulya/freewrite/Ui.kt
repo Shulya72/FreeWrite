@@ -111,6 +111,28 @@ object Ui {
         addView(row, ViewGroup.LayoutParams(WRAP, WRAP))
     }
 
+    /** Кнопка-«таблетка» с текстом (для плавающих панелей). */
+    fun pill(ctx: Context, value: String, fg: Int, bg: Int): TextView = text(ctx, value, 14f, fg, bold = true).apply {
+        background = rounded(ctx, bg, null, 999f)
+        setPadding(dp(ctx, 14f), dp(ctx, 8f), dp(ctx, 14f), dp(ctx, 8f))
+        isClickable = true
+        isFocusable = true
+    }
+
+    /**
+     * Плавающая панель над листом/доской (например, когда выбрана картинка):
+     * подсказка слева, кнопки справа.
+     */
+    fun floatingBar(ctx: Context, label: String, vararg buttons: TextView): LinearLayout = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        background = rounded(ctx, PAPER, RULE, 14f)
+        elevation = dpf(ctx, 6f)
+        setPadding(dp(ctx, 14f), dp(ctx, 6f), dp(ctx, 6f), dp(ctx, 6f))
+        addView(text(ctx, label, 13f, INK2).apply { setPadding(0, 0, dp(ctx, 10f), 0) })
+        for (b in buttons) addView(b, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(ctx, 6f) })
+    }
+
     fun chip(ctx: Context, value: String, fg: Int, bg: Int): TextView = text(ctx, value, 12f, fg).apply {
         background = rounded(ctx, bg, null, 999f)
         setPadding(dp(ctx, 8f), dp(ctx, 2f), dp(ctx, 8f), dp(ctx, 2f))

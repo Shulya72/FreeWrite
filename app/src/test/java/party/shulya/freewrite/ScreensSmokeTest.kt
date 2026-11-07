@@ -306,6 +306,202 @@ class ScreensSmokeTest {
         screenshot(activity.window.decorView, "diagnostics.png")
     }
 
+    // ------------------------------------------------------------------ фигуры и картинки (0.5.0)
+
+    private fun openNote(n: Note) = Robolectric.buildActivity(
+        NoteActivity::class.java,
+        Intent(ctx, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, n.id),
+    ).setup()
+
+    private fun noteOf(activity: NoteActivity): Note =
+        NoteActivity::class.java.getDeclaredField("note").apply { isAccessible = true }.get(activity) as Note
+
+    /** Рамка рисунка: [l, t, r, b]. */
+    private fun bounds(d: Drawing): FloatArray {
+        var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
+        var i = 0
+        while (i + 1 < d.pts.size) { l = minOf(l, d.pts[i]); t = minOf(t, d.pts[i + 1]); r = maxOf(r, d.pts[i]); b = maxOf(b, d.pts[i + 1]); i += 3 }
+        return floatArrayOf(l, t, r, b)
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun note_shapesToolAndBigShapeInWriting() {
+        val n = Note.create("Схема")
+        n.blocks.clear()
+        n.blocks += Block.Para("Поставка → монтаж → приёмка")
+        NoteStore(ctx).save(n)
+        val controller = openNote(n)
+        val activity = controller.get()
+        idle()
+        val root = activity.window.decorView
+        val ink = find(root, NoteInkView::class.java)
+        root.findViewWithTag<View>("tool_shape").performClick()
+
+        // Прямоугольник от руки (с перехлёстом) → ровный прямоугольник.
+        drawPath(ink, MotionEvent.TOOL_TYPE_STYLUS, wobbly(poly(260f, 300f, 700f, 304f, 696f, 520f, 120f, 516f, 124f, 298f, 300f, 306f)))
+        var note = noteOf(activity)
+        assertEquals(1, note.drawings.size)
+        val rb = bounds(note.drawings[0])
+        assertEquals("ровный прямоугольник: ширина", 580f, rb[2] - rb[0], 25f)
+        assertEquals("все точки одной толщины", 0.5f, note.drawings[0].pts[2], 0.001f)
+
+        // Древко, потом наконечник отдельным штрихом → одна стрелка.
+        drawPath(ink, MotionEvent.TOOL_TYPE_STYLUS, wobbly(poly(760f, 420f, 1180f, 410f)))
+        drawPath(ink, MotionEvent.TOOL_TYPE_STYLUS, poly(1120f, 360f, 1184f, 410f, 1118f, 462f))
+        note = noteOf(activity)
+        assertEquals("древко и наконечник стали одной стрелкой", 2, note.drawings.size)
+
+        // Круг.
+        val circle = (0..80).flatMap { i ->
+            val t = 0.4 + (2 * Math.PI + 0.3) * i / 80
+            listOf((420 + 150 * Math.cos(t)).toFloat(), (800 + 140 * Math.sin(t)).toFloat())
+        }
+        drawPath(ink, MotionEvent.TOOL_TYPE_STYLUS, circle.chunked(2).map { it[0] to it[1] })
+        assertEquals(3, noteOf(activity).drawings.size)
+
+        // «В текст»: крупная рамка — это не буква, а фигура (без модели распознавания тоже).
+        root.findViewWithTag<View>("tool_write").performClick()
+        drawPath(ink, MotionEvent.TOOL_TYPE_STYLUS, wobbly(poly(800f, 700f, 1300f, 700f, 1300f, 980f, 800f, 980f, 800f, 702f)))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1600))
+        note = noteOf(activity)
+        assertEquals(4, note.drawings.size)
+        val wb = bounds(note.drawings[3])
+        assertEquals("рамка ровная", 500f, wb[2] - wb[0], 20f)
+        assertEquals(0.5f, note.drawings[3].pts[2], 0.001f)
+        screenshot(root, "note-shapes.png")
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun note_imageSelectResizeMove() {
+        photo("note-photo.jpg")
+        val n = Note.create("Фото с объекта")
+        n.blocks.clear()
+        n.blocks += Block.Para("Первая строка")
+        n.blocks += Block.Image("note-photo.jpg", 640, 440)
+        n.blocks += Block.Para("Вторая строка")
+        n.blocks += Block.Para("Третья строка")
+        n.caret = 0
+        NoteStore(ctx).save(n)
+        val controller = openNote(n)
+        val activity = controller.get()
+        idle()
+        val root = activity.window.decorView
+        val ink = find(root, NoteInkView::class.java)
+        val img = find(root, NoteImageView::class.java)
+        fun rectInInk(): android.graphics.RectF {
+            val a = IntArray(2); val o = IntArray(2)
+            img.getLocationInWindow(a); ink.getLocationInWindow(o)
+            val r = android.graphics.RectF(img.imageRect())
+            r.offset((a[0] - o[0]).toFloat(), (a[1] - o[1]).toFloat())
+            return r
+        }
+
+        // Касание пальцем — картинка выбрана, появилась панель.
+        val r0 = rectInInk()
+        tap(ink, MotionEvent.TOOL_TYPE_FINGER, r0.centerX(), r0.centerY())
+        assertEquals(View.VISIBLE, root.findViewWithTag<View>("image_bar").visibility)
+        screenshot(root, "note-image-selected.png")
+
+        // Правый нижний уголок влево-вверх — картинка меньше, левый край на месте.
+        val w0 = r0.width()
+        drag(ink, MotionEvent.TOOL_TYPE_FINGER, r0.right, r0.bottom, r0.right - 300f, r0.bottom - 206f)
+        idle()
+        val r1 = rectInInk()
+        assertTrue("стала уже: ${r1.width()} < $w0", r1.width() < w0 - 200f)
+        assertEquals("левый край на месте", r0.left, r1.left, 2f)
+
+        // Саму картинку — вправо: сдвинулась вбок.
+        drag(ink, MotionEvent.TOOL_TYPE_FINGER, r1.centerX(), r1.centerY(), r1.centerX() + 250f, r1.centerY())
+        idle()
+        assertTrue("сдвинута вправо", noteOf(activity).blocks.filterIsInstance<Block.Image>()[0].xa > 0.2f)
+
+        // И вниз, за «Третью строку»: встала после неё.
+        val third = findAll(root) { it is android.widget.TextView && it.text.toString().startsWith("Третья") }.first()
+        val t = IntArray(2); val o = IntArray(2)
+        third.getLocationInWindow(t); ink.getLocationInWindow(o)
+        val r2 = rectInInk()
+        val targetY = (t[1] - o[1]) + third.height + 10f
+        drag(ink, MotionEvent.TOOL_TYPE_FINGER, r2.centerX(), r2.centerY(), r2.centerX(), targetY + (r2.centerY() - r2.top))
+        idle()
+        controller.pause()
+        val saved = NoteStore(ctx).load(n.id)!!
+        assertTrue("картинка в конце: ${saved.blocks.map { it.javaClass.simpleName }}", saved.blocks.last() is Block.Image)
+        val im = saved.blocks.last() as Block.Image
+        assertTrue("ширина сохранена: ${im.wf}", im.wf in 0.05f..0.6f)
+        assertTrue(im.xa > 0.2f)
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun board_imageSelectResizeMoveAndShapes() {
+        val b0 = sampleBoard()
+        val controller = Robolectric.buildActivity(
+            BoardActivity::class.java,
+            Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b0.id),
+        ).setup()
+        val activity = controller.get()
+        val root = activity.window.decorView
+        idle()
+        val view = find(root, BoardView::class.java)
+        view.fitAll()
+        idle()
+        val board = { activity.board() }
+        fun sx(x: Float) = (x - board().camX) * board().camZ
+        fun sy(y: Float) = (y - board().camY) * board().camZ
+        val m = board().images[0]
+
+        // Палец по картинке — выбрана.
+        tap(view, MotionEvent.TOOL_TYPE_FINGER, sx(m.x + m.w / 2), sy(m.y + m.h / 2))
+        assertEquals(0, view.selected)
+        assertEquals(View.VISIBLE, root.findViewWithTag<View>("image_bar").visibility)
+
+        // Правый нижний уголок наружу — больше, пропорции те же, левый верхний угол на месте.
+        val (x0, y0, w0, h0) = listOf(m.x, m.y, m.w, m.h)
+        drag(view, MotionEvent.TOOL_TYPE_FINGER, sx(m.x + m.w), sy(m.y + m.h), sx(m.x + m.w) + 80f, sy(m.y + m.h) + 55f)
+        assertTrue("стала больше: ${m.w} > $w0", m.w > w0 * 1.1f)
+        assertEquals("пропорции", w0 / h0, m.w / m.h, 0.01f)
+        assertEquals(x0, m.x, 0.5f)
+        assertEquals(y0, m.y, 0.5f)
+
+        // Пальцем по выбранной картинке — двигается (а не доска).
+        val camX = board().camX
+        drag(view, MotionEvent.TOOL_TYPE_FINGER, sx(m.x + m.w / 2), sy(m.y + m.h / 2), sx(m.x + m.w / 2) - 120f, sy(m.y + m.h / 2) + 60f)
+        assertTrue("картинка сдвинулась", m.x < x0 - 10f)
+        assertEquals("доска на месте", camX, board().camX, 0.01f)
+
+        // Фигуры на доске: круг пером.
+        root.findViewWithTag<View>("board_tool_shape").performClick()
+        val n0 = board().strokes.size
+        val circle = (0..80).map { i ->
+            val t = 0.2 + (2 * Math.PI + 0.3) * i / 80
+            (view.width * 0.3f + 110 * Math.cos(t)).toFloat() to (view.height * 0.8f + 100 * Math.sin(t)).toFloat()
+        }
+        drawPath(view, MotionEvent.TOOL_TYPE_STYLUS, circle)
+        assertEquals(n0 + 1, board().strokes.size)
+        val c = board().strokes.last()
+        assertEquals("круг ровный: начало = конец", c.pts[0], c.pts[c.pts.size - 3], 0.5f)
+        screenshot(root, "board-image-selected.png")
+
+        controller.pause()
+        val saved = BoardStore(ctx).load(b0.id)!!
+        assertEquals(w0 / h0, saved.images[0].w / saved.images[0].h, 0.01f)
+        assertEquals(n0 + 1, saved.strokes.size)
+    }
+
+    /** Фото для записи — нарисовано прямо в тесте. */
+    private fun photo(name: String) {
+        val bmp = Bitmap.createBitmap(640, 440, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).apply {
+            drawColor(android.graphics.Color.rgb(157, 185, 214))
+            drawRect(0f, 300f, 640f, 440f, android.graphics.Paint().apply { color = android.graphics.Color.rgb(139, 129, 114) })
+            drawRect(50f, 150f, 590f, 172f, android.graphics.Paint().apply { color = android.graphics.Color.rgb(201, 161, 90) })
+        }
+        val dir = File(ctx.filesDir, "note_images").apply { mkdirs() }
+        FileOutputStream(File(dir, name)).use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private fun idle() {
@@ -328,6 +524,46 @@ class ScreensSmokeTest {
             )
         }
         view.dispatchTouchEvent(event(down, down + (n + 1) * 8L, MotionEvent.ACTION_UP, x0 + w, y0, tool))
+        idle()
+    }
+
+    /** Ломаная с частыми точками (как идут события пера). */
+    private fun poly(vararg p: Float): List<Pair<Float, Float>> {
+        val out = ArrayList<Pair<Float, Float>>()
+        out += p[0] to p[1]
+        var i = 2
+        while (i + 1 < p.size) {
+            val ax = p[i - 2]; val ay = p[i - 1]; val bx = p[i]; val by = p[i + 1]
+            val n = maxOf(1, (Math.hypot((bx - ax).toDouble(), (by - ay).toDouble()) / 6).toInt())
+            for (k in 1..n) out += (ax + (bx - ax) * k / n) to (ay + (by - ay) * k / n)
+            i += 2
+        }
+        return out
+    }
+
+    /** Дрожание руки. */
+    private fun wobbly(p: List<Pair<Float, Float>>): List<Pair<Float, Float>> =
+        p.mapIndexed { i, (x, y) -> (x + 3f * kotlin.math.sin(i / 7f)) to (y + 3f * kotlin.math.cos(i / 5f)) }
+
+    private fun drawPath(view: View, tool: Int, pts: List<Pair<Float, Float>>) {
+        val down = SystemClock.uptimeMillis()
+        view.dispatchTouchEvent(event(down, down, MotionEvent.ACTION_DOWN, pts[0].first, pts[0].second, tool))
+        for (i in 1 until pts.size) {
+            view.dispatchTouchEvent(event(down, down + i * 4L, MotionEvent.ACTION_MOVE, pts[i].first, pts[i].second, tool))
+        }
+        view.dispatchTouchEvent(event(down, down + pts.size * 4L, MotionEvent.ACTION_UP, pts.last().first, pts.last().second, tool))
+        idle()
+    }
+
+    /** Перетащить: нажать, плавно провести, отпустить. */
+    private fun drag(view: View, tool: Int, x0: Float, y0: Float, x1: Float, y1: Float) {
+        val down = SystemClock.uptimeMillis()
+        view.dispatchTouchEvent(event(down, down, MotionEvent.ACTION_DOWN, x0, y0, tool))
+        val n = 16
+        for (i in 1..n) {
+            view.dispatchTouchEvent(event(down, down + i * 12L, MotionEvent.ACTION_MOVE, x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n, tool))
+        }
+        view.dispatchTouchEvent(event(down, down + (n + 1) * 12L, MotionEvent.ACTION_UP, x1, y1, tool))
         idle()
     }
 

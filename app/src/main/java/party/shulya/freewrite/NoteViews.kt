@@ -43,6 +43,7 @@ class RuledSheet(context: Context) : LinearLayout(context) {
     init {
         orientation = VERTICAL
         setWillNotDraw(false)
+        clipToPadding = false // уголки выбранной картинки заходят на поле листа
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -325,7 +326,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
             s.points.forEachIndexed { i, p ->
                 arr[i * 3] = p.x; arr[i * 3 + 1] = p.y; arr[i * 3 + 2] = p.pressure
             }
-            val kind = if (style.kind == "write") "pen" else style.kind
+            val kind = if (style.kind == "write" || style.kind == "shape") "pen" else style.kind
             return Drawing(kind, style.color, style.width, arr)
         }
 
@@ -335,5 +336,216 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
             for (s in strokes) for (p in s.points) { l = min(l, p.x); t = min(t, p.y); r = max(r, p.x); b = max(b, p.y) }
             return floatArrayOf(l, t, r, b)
         }
+    }
+}
+
+/**
+ * Картинка в записи.
+ *
+ * Касание пальцем — выбрать: рамка с уголками. Тянуть за уголок — размер (пропорции сохраняются,
+ * противоположный край стоит на месте), за саму картинку — сдвинуть вбок или перенести выше/ниже
+ * по тексту (место выбирается, когда отпустили). Долгое нажатие — удалить.
+ * Вид шире текста на EDGE_DP с каждой стороны (отрицательные поля), чтобы уголки у края листа
+ * были видны и за них было удобно браться; картинка внутри стоит по block.xa и шириной block.wf.
+ */
+@SuppressLint("ViewConstructor")
+class NoteImageView(
+    context: Context,
+    val block: Block.Image,
+    private val bitmap: android.graphics.Bitmap?,
+    private val host: Host,
+) : View(context) {
+
+    interface Host {
+        fun isImageSelected(b: Block.Image): Boolean
+        fun onImageTap(v: NoteImageView)
+        fun onImageLongPress(v: NoteImageView)
+        /** Начали менять размер или двигать — запомнить для «Отменить». */
+        fun onImageEditStart(v: NoteImageView)
+        fun onImageResized(v: NoteImageView)
+        /** Отпустили после перетаскивания: translationY — на сколько сдвинута по вертикали. */
+        fun onImageDropped(v: NoteImageView)
+    }
+
+    private enum class Mode { NONE, TAP, RESIZE, MOVE }
+
+    private val pad = Ui.dpf(context, 8f)
+    private val edge = Ui.dpf(context, EDGE_DP)
+    private val autoMax = Ui.dpf(context, 560f)
+    private val minW = Ui.dpf(context, 80f)
+    private val grab = Ui.dpf(context, 28f)
+    private val slop = Ui.dpf(context, 8f)
+    private val aspect = if (block.width > 0 && block.height > 0) block.height.toFloat() / block.width else 0.75f
+    private val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG or android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val frame = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        color = Ui.ACCENT
+        strokeWidth = Ui.dpf(context, 2f)
+    }
+    private val r = android.graphics.RectF()
+
+    private var mode = Mode.NONE
+    private var downRawX = 0f
+    private var downRawY = 0f
+    private var startW = 0f
+    private var startLeft = 0f
+    private var cornerRight = true
+    private var cornerBottom = true
+    private var edited = false
+    private val longPress = Runnable {
+        if (mode == Mode.TAP || (mode == Mode.MOVE && !edited)) {
+            mode = Mode.NONE
+            parent?.requestDisallowInterceptTouchEvent(false)
+            host.onImageLongPress(this)
+        }
+    }
+
+    init {
+        contentDescription = "Картинка"
+    }
+
+    /** Ширина картинки на листе (px) при ширине текста W. */
+    fun imageWidth(W: Int): Float {
+        if (W <= 0) return 0f
+        return if (block.wf > 0f) (block.wf * W).coerceIn(min(minW, W.toFloat()), W.toFloat())
+        else min(W.toFloat(), min(autoMax, if (block.width > 0) block.width.toFloat() else autoMax))
+    }
+
+    /** Ширина текста (без запаса по краям). */
+    private fun textWidth(viewWidth: Int = width): Int = (viewWidth - 2 * edge).toInt().coerceAtLeast(0)
+
+    /** Где картинка внутри вида. */
+    fun imageRect(out: android.graphics.RectF = r): android.graphics.RectF {
+        val tw = textWidth()
+        val w = imageWidth(tw)
+        val left = edge + block.xa.coerceIn(0f, 1f) * (tw - w)
+        out.set(left, pad, left + w, pad + w * aspect)
+        return out
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val w = MeasureSpec.getSize(widthMeasureSpec)
+        setMeasuredDimension(w, (imageWidth(textWidth(w)) * aspect + 2 * pad).toInt())
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val rect = imageRect()
+        if (bitmap != null) {
+            canvas.drawBitmap(bitmap, null, rect, paint)
+        } else {
+            fill.color = Ui.DESK
+            canvas.drawRect(rect, fill)
+        }
+        if (host.isImageSelected(block)) {
+            val p = Ui.dpf(context, 2f)
+            canvas.drawRect(rect.left - p, rect.top - p, rect.right + p, rect.bottom + p, frame)
+            val hr = Ui.dpf(context, 8f)
+            for (x in floatArrayOf(rect.left, rect.right)) for (y in floatArrayOf(rect.top, rect.bottom)) {
+                fill.color = Color.WHITE
+                canvas.drawCircle(x, y, hr, fill)
+                canvas.drawCircle(x, y, hr, frame)
+            }
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val rect = imageRect()
+                downRawX = ev.rawX
+                downRawY = ev.rawY
+                edited = false
+                startW = rect.width()
+                startLeft = rect.left
+                if (host.isImageSelected(block)) {
+                    var corner = false
+                    for (x in floatArrayOf(rect.left, rect.right)) for (y in floatArrayOf(rect.top, rect.bottom)) {
+                        if (!corner && hypot(ev.x - x, ev.y - y) <= grab) {
+                            corner = true
+                            cornerRight = x == rect.right
+                            cornerBottom = y == rect.bottom
+                        }
+                    }
+                    if (corner) {
+                        mode = Mode.RESIZE
+                    } else if (rect.contains(ev.x, ev.y)) {
+                        mode = Mode.MOVE
+                        postDelayed(longPress, 550)
+                    } else {
+                        return false
+                    }
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    return true
+                }
+                if (!rect.contains(ev.x, ev.y)) return false
+                mode = Mode.TAP
+                postDelayed(longPress, 550)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dx = ev.rawX - downRawX
+                val dy = ev.rawY - downRawY
+                val far = hypot(dx, dy) > slop
+                when (mode) {
+                    Mode.TAP -> if (far) removeCallbacks(longPress)
+                    Mode.RESIZE -> if (far || edited) {
+                        if (!edited) { edited = true; host.onImageEditStart(this) }
+                        resizeBy(dx, dy)
+                    }
+                    Mode.MOVE -> if (far || edited) {
+                        removeCallbacks(longPress)
+                        if (!edited) { edited = true; host.onImageEditStart(this); elevation = Ui.dpf(context, 8f) }
+                        val w = imageWidth(textWidth())
+                        val free = textWidth() - w
+                        val left = (startLeft - edge + dx).coerceIn(0f, max(0f, free))
+                        block.xa = if (free > 0.5f) left / free else 0f
+                        translationY = dy
+                        invalidate()
+                    }
+                    Mode.NONE -> Unit
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(longPress)
+                parent?.requestDisallowInterceptTouchEvent(false)
+                val wasTap = mode == Mode.TAP && ev.actionMasked == MotionEvent.ACTION_UP &&
+                    hypot(ev.rawX - downRawX, ev.rawY - downRawY) <= slop
+                val m = mode
+                mode = Mode.NONE
+                elevation = 0f
+                when {
+                    wasTap -> host.onImageTap(this)
+                    m == Mode.MOVE && !edited && ev.actionMasked == MotionEvent.ACTION_UP -> host.onImageTap(this)
+                    m == Mode.RESIZE && edited -> host.onImageResized(this)
+                    m == Mode.MOVE && edited -> host.onImageDropped(this)
+                }
+            }
+        }
+        return true
+    }
+
+    /** Уголок сдвинули на (dx, dy): ширина меняется вдоль диагонали, противоположный край на месте. */
+    private fun resizeBy(dx: Float, dy: Float) {
+        val W = textWidth().toFloat()
+        if (W <= 0f) return
+        val sx = if (cornerRight) 1f else -1f
+        val sy = if (cornerBottom) 1f else -1f
+        val h = startW * aspect
+        val diag = hypot(startW, h)
+        val t = (dx * sx * startW + dy * sy * h) / diag // насколько угол ушёл наружу по диагонали
+        val newW = (startW + t * startW / diag).coerceIn(min(minW, W), W)
+        val l0 = startLeft - edge // левый край относительно текста
+        val left = if (cornerRight) min(l0, W - newW) else (l0 + startW - newW).coerceAtLeast(0f)
+        block.wf = newW / W
+        block.xa = if (W - newW > 0.5f) (left / (W - newW)).coerceIn(0f, 1f) else 0f
+        requestLayout()
+        invalidate()
+    }
+
+    companion object {
+        /** Запас по краям вида картинки (dp) — для уголков у края листа. */
+        const val EDGE_DP = 14f
     }
 }
