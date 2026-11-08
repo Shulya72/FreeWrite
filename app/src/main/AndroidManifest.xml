@@ -92,7 +92,7 @@
                 <data android:mimeType="application/x-zip-compressed" />
                 <data android:mimeType="application/x-freewrite" />
             </intent-filter>
-            <!-- Файловые менеджеры, которые не знают тип файла: по окончанию имени .freewrite -->
+            <!-- Файловые менеджеры, которые не знают тип файла: по окончанию имени .freewrite / .nebo -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -103,6 +103,10 @@
                 <data android:pathPattern=".*\\.freewrite" />
                 <data android:pathPattern=".*\\..*\\.freewrite" />
                 <data android:pathPattern=".*\\..*\\..*\\.freewrite" />
+                <!-- Доска из MyScript Nebo / Notes (FW-007) -->
+                <data android:pathPattern=".*\\.nebo" />
+                <data android:pathPattern=".*\\..*\\.nebo" />
+                <data android:pathPattern=".*\\..*\\..*\\.nebo" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

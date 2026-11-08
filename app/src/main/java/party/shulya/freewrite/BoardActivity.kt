@@ -136,7 +136,7 @@ class BoardActivity : Activity(), BoardView.Host {
         setTool(if (stylus) Tool.PEN else Tool.HAND, quiet = true)
         updateBanner()
         updateZoom()
-        if (board.isEmpty && board.camX == 0f && board.camY == 0f) view.post { view.fitAll() }
+        if ((board.isEmpty && board.camX == 0f && board.camY == 0f) || intent.getBooleanExtra(EXTRA_FIT, false)) view.post { view.fitAll() }
         // Прислали PDF или картинки через «Поделиться → FreeWrite» и выбрали эту доску.
         intent.getStringArrayListExtra(EXTRA_INSERT)?.let { paths -> view.post { insertFiles(paths) } }
         if (intent.getBooleanExtra(EXTRA_SHOW_SPEED, false)) {
@@ -1944,6 +1944,9 @@ class BoardActivity : Activity(), BoardView.Host {
         const val EXTRA_SHOW_SPEED = "show_speed"
         /** Присланные файлы (пути копий в кэше), которые положить на доску. */
         const val EXTRA_INSERT = "insert_files"
+
+        /** Показать доску целиком при открытии (только что перенесённая из Nebo). */
+        const val EXTRA_FIT = "fit_all"
         /** Имя присланного файла, как его видит человек. */
         const val EXTRA_INSERT_NAME = "insert_name"
         private const val REQ_IMAGE = 42

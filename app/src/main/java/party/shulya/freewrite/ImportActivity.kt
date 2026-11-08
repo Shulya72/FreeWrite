@@ -16,7 +16,8 @@ import java.io.File
 /**
  * Присланное в FreeWrite — из Telegram, WhatsApp, «Файлов» или кнопкой в Ежедневнике:
  *  - файл доски (`.freewrite`): новая доска добавляется, в знакомую вливаются правки коллеги;
- *  - PDF или картинки («Поделиться → FreeWrite»): спрашиваем, на какую доску положить, и открываем её.
+ *  - PDF или картинки («Поделиться → FreeWrite»): спрашиваем, на какую доску положить, и открываем её;
+ *  - доска MyScript Nebo / Notes (`.nebo`): переносится новой доской целиком ([NeboImport]).
  */
 class ImportActivity : Activity() {
 
@@ -32,6 +33,7 @@ class ImportActivity : Activity() {
     private sealed class Received {
         class Board(val result: BoardShare.Result) : Received()
         class Insert(val files: List<File>, val name: String?, val pdf: Boolean) : Received()
+        class Nebo(val result: NeboImport.Result) : Received()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,7 +41,7 @@ class ImportActivity : Activity() {
         setContentView(buildUi())
         val uris = sourceUris(intent)
         if (uris.isEmpty()) {
-            showError("Не нашёл файл. Откройте файл доски (.freewrite) ещё раз.")
+            showError("Не нашёл файл. Откройте файл доски (.freewrite или .nebo) ещё раз.")
             return
         }
         if (started) return
@@ -53,6 +55,7 @@ class ImportActivity : Activity() {
                     when (got) {
                         is Received.Board -> done(got.result)
                         is Received.Insert -> chooseBoard(got)
+                        is Received.Nebo -> doneNebo(got.result)
                     }
                 }.onFailure { t ->
                     android.util.Log.w("FreeWrite", "import", t)
@@ -95,6 +98,13 @@ class ImportActivity : Activity() {
                 return Received.Insert(keep, name, kinds.any { it == BoardPdf.Kind.PDF })
             }
             if (looksLikeInsert(intent)) throw IllegalArgumentException("это не PDF и не картинка")
+            if (files.size == 1 && NeboImport.isNebo(files[0])) {
+                // Доска из Nebo: тысячи штрихов и картинки — показываем, что идёт.
+                runOnUiThread { heading.text = "Доска из Nebo"; message.text = "Переношу доску Nebo…" }
+                val r = NeboImport.import(this, files[0]) { step -> runOnUiThread { if (!isDestroyed) message.text = step } }
+                files.forEach { it.delete() }
+                return Received.Nebo(r)
+            }
             val r = files[0].inputStream().use { BoardShare.import(this, it) }
             files.forEach { it.delete() }
             return Received.Board(r)
@@ -155,6 +165,13 @@ class ImportActivity : Activity() {
         addButton(button("Открыть доску", true, "import_open") { openBoard(r.boardId) })
     }
 
+    private fun doneNebo(r: NeboImport.Result) {
+        message.text = r.message()
+        buttons.removeAllViews()
+        addButton(button("Закрыть", false, "import_close") { finish() })
+        addButton(button("Открыть доску", true, "import_open") { openBoard(r.boardIds[0], fit = true) })
+    }
+
     private fun showError(text: String) {
         message.text = text
         message.setTextColor(Ui.BAD)
@@ -207,9 +224,10 @@ class ImportActivity : Activity() {
         }
 
     /** Открыть доску в FreeWrite «с чистого листа»: Ежедневник, поверх — доска (старый экран доски закрывается). */
-    private fun openBoard(id: String, insert: Received.Insert? = null) {
+    private fun openBoard(id: String, insert: Received.Insert? = null, fit: Boolean = false) {
         val home = Intent(this, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         val board = Intent(this, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, id)
+        if (fit) board.putExtra(BoardActivity.EXTRA_FIT, true)
         if (insert != null) {
             board.putStringArrayListExtra(BoardActivity.EXTRA_INSERT, ArrayList(insert.files.map { it.path }))
             insert.name?.let { board.putExtra(BoardActivity.EXTRA_INSERT_NAME, it) }
