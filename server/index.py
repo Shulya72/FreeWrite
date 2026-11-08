@@ -21,7 +21,7 @@ import re
 import secrets
 import time
 
-from errors import ApiError, forbidden, not_found
+from fw_errors import ApiError, forbidden, not_found
 
 API_VERSION = 1
 CHUNK = 1 << 20                     # часть картинки до base64
@@ -52,7 +52,7 @@ def store():
     """База (YDB). Создаётся один раз на экземпляр функции; в тестах подменяется."""
     global _store
     if _store is None:
-        from store_ydb import YdbStore
+        from fw_store import YdbStore
         _store = YdbStore(os.environ["YDB_ENDPOINT"], os.environ["YDB_DATABASE"])
     return _store
 
@@ -60,7 +60,7 @@ def store():
 def blob():
     global _blob
     if _blob is None:
-        from blob import Blob
+        from fw_blob import Blob
         _blob = Blob(os.environ["BUCKET"])
     return _blob
 

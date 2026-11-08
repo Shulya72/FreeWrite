@@ -17,7 +17,7 @@ import ydb
 import ydb.iam
 import ydb.retries
 
-from errors import ApiError, busy, forbidden, not_found
+from fw_errors import ApiError, busy, forbidden, not_found
 
 TABLES = [
     ("boards", """
