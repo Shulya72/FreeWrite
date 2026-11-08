@@ -189,7 +189,7 @@ class NeboTest {
         )
     }
 
-    private fun neboFile(name: String = "План ИГС.nebo"): File {
+    private fun neboFile(name: String = "plan-igs.nebo"): File { // имя латиницей: JVM проверок без русской локали
         val f = File(ctx.cacheDir, name)
         val jpg = ByteArrayOutputStream().also { Bitmap.createBitmap(200, 100, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.rgb(200, 220, 240)) }.compress(Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
         ZipOutputStream(f.outputStream()).use { z ->
@@ -240,7 +240,7 @@ class NeboTest {
         assertEquals(1.25f, s2.widthMm, 1e-4f)
         near(floatArrayOf(20f, 30f, 40f, 30f), line.pts, "линия")
         val l = 0.625f * 8; val c = cos(Math.toRadians(30.0)).toFloat() * l; val s = sin(Math.toRadians(30.0)).toFloat() * l
-        near(floatArrayOf(40f - c, 30f + s, 40f, 30f, 40f - c, 30f - s), head.pts, "стрелка")
+        near(floatArrayOf(40f - c, 30f - s, 40f, 30f, 40f - c, 30f + s), head.pts, "стрелка")
         // Хвост стёрт: видны точки 0…4, лежат на одной прямой — остаются концы.
         near(floatArrayOf(0f, 100f, 4f, 100f), s4.pts, "обрезанный штрих")
     }
@@ -302,10 +302,21 @@ class NeboTest {
             Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b.id).putExtra(BoardActivity.EXTRA_FIT, true)).setup().get()
         idle()
         val v = a.window.decorView
+        shot(v, "nebo_real.png") // первая отрисовка заказывает картинки — грузятся в фоне
         val waitEnd = System.currentTimeMillis() + 20_000
-        while (System.currentTimeMillis() < waitEnd) { idle(); Thread.sleep(50) } // картинки грузятся в фоне
+        while (System.currentTimeMillis() < waitEnd) { idle(); Thread.sleep(50) }
         shot(v, "nebo_real.png")
+        // Крупно — кусок со схемой и стрелками (как в PDF): мм Nebo → единицы доски.
+        val bv = (field(a, "view") as BoardView)
+        val U = NeboImport.U
+        bv.fitRect(1100 * U, 1950 * U, 1900 * U, 2700 * U)
+        shot(v, "nebo_real_zoom.png")
+        val waitEnd2 = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < waitEnd2) { idle(); Thread.sleep(50) }
+        shot(v, "nebo_real_zoom.png")
     }
+
+    private fun field(o: Any, name: String): Any? = o.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(o)
 
     private fun shot(v: View, name: String) {
         val bmp = Bitmap.createBitmap(v.width, v.height, Bitmap.Config.ARGB_8888)
