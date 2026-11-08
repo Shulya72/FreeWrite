@@ -76,8 +76,42 @@ class BoardImage(val file: String, var x: Float, var y: Float, var w: Float, var
 /**
  * Статус из списка доски (его настраивает Владимир: «Сдали опалубку», «Забетонировано»…).
  * Порядок в списке — порядок переключения касанием.
+ *
+ * Списков два (0.18, FW-011): [ID] — исполнительная документация (кнопки-метки и ИГС в строке ИД),
+ * [CON] — конструкции (выноски). У старых досок все статусы — ИД.
  */
-class BoardStatus(val id: String, var name: String, var color: Int)
+class BoardStatus(val id: String, var name: String, var color: Int, val group: String = ID) {
+    companion object {
+        const val ID = "id"
+        const val CON = "con"
+    }
+}
+
+/**
+ * Строка ИД у захватки (0.18, FW-011): «Захватка 1 — Опалубка: Чек-лист ✓/✗, DWG ✓/✗, ИГС [статус]».
+ * Касание галочки — отметить/снять, касание ИГС — следующий статус (список ИД), удержание — поднять и тащить.
+ * Размер — scale (как у метки), раздел — по рамке раздела, в которой стоит.
+ */
+class BoardRow(var x: Float, var y: Float, var scale: Float, var title: String, var check: Boolean, var dwg: Boolean, var sid: String) {
+    var id: String = Ids.next()
+
+    val h: Float get() = 40f * scale
+
+    // Ширины частей считает BoardView (по шрифту), пока не поменялись название, статус и размер.
+    internal var wKey: String? = null
+    internal val parts = FloatArray(5) // границы: начало, конец названия, Чек-лист, DWG, ИГС (конец)
+
+    fun copy(): BoardRow = BoardRow(x, y, scale, title, check, dwg, sid)
+
+    companion object {
+        /** Следующая захватка: первое число в названии +1 («Захватка 1 — Опалубка» → «Захватка 2 — Опалубка»). */
+        fun nextTitle(t: String): String {
+            val m = Regex("\\d+").find(t) ?: return t
+            val n = m.value.toLongOrNull() ?: return t
+            return t.substring(0, m.range.first) + (n + 1) + t.substring(m.range.last + 1)
+        }
+    }
+}
 
 /** Метка статуса. sid — id статуса из списка доски. scale — размер (метка ставится «в рост» текущего масштаба). */
 class BoardSticker(var x: Float, var y: Float, var sid: String, var scale: Float) {
@@ -193,6 +227,7 @@ class Board(
     val fills = ArrayList<BoardFill>()
     val callouts = ArrayList<BoardCallout>()
     val frames = ArrayList<BoardFrame>()
+    val rows = ArrayList<BoardRow>()
     val statuses = ArrayList<BoardStatus>()
     var camX = 0f
     var camY = 0f
@@ -207,19 +242,78 @@ class Board(
         return statuses.firstOrNull { it.id == id } ?: statuses[0]
     }
 
-    /** Следующий статус по порядку списка (после последнего — снова первый). */
-    fun nextStatus(id: String): String {
+    /** Статусы одного списка ([BoardStatus.ID] или [BoardStatus.CON]) по порядку. */
+    fun statuses(group: String): List<BoardStatus> {
         if (statuses.isEmpty()) statuses.addAll(defaultStatuses())
-        val i = statuses.indexOfFirst { it.id == id }
-        return statuses[(i + 1).mod(statuses.size)].id
+        return statuses.filter { it.group == group }
     }
 
-    /** Сколько меток и выносок с этим статусом. */
-    fun countStatus(id: String) = stickers.count { it.sid == id } + callouts.count { it.sid == id }
+    /** Первый статус списка (новая метка, строка, выноска). Пустой список — первый вообще. */
+    fun firstStatus(group: String): String = statuses(group).firstOrNull()?.id ?: status("").id
+
+    /**
+     * Следующий статус по порядку своего списка (после последнего — снова первый). Метка и ИГС строки ходят
+     * по списку ИД, выноска — по списку конструкций; статус из чужого списка (старая доска) — первый своего.
+     */
+    fun nextStatus(id: String, group: String): String {
+        val list = statuses(group).ifEmpty { statuses }
+        val i = list.indexOfFirst { it.id == id }
+        return list[(i + 1).mod(list.size)].id
+    }
+
+    /** Сколько меток, строк ИД и выносок с этим статусом (в разделе fr — только внутри него). */
+    fun countStatus(id: String, fr: BoardFrame? = null): Int {
+        if (fr == null) return stickers.count { it.sid == id } + callouts.count { it.sid == id } + rows.count { it.sid == id }
+        return stickers.count { it.sid == id && sectionOf(it) === fr } + callouts.count { it.sid == id && sectionOf(it) === fr } +
+            rows.count { it.sid == id && sectionOf(it) === fr }
+    }
+
+    /**
+     * Раздел, в котором стоит предмет: самая маленькая рамка раздела, внутри которой его середина
+     * (у выноски — куда указывает первый указатель). null — вне разделов.
+     */
+    fun sectionOf(o: Any): BoardFrame? {
+        val (x, y) = when (o) {
+            is BoardSticker -> (o.x + 64f * o.scale) to (o.y + o.h / 2f)
+            is BoardRow -> (o.x + 20f * o.scale) to (o.y + o.h / 2f)
+            is BoardCallout -> if (o.leaders.size >= 2) o.leaders[0] to o.leaders[1] else o.x to o.y
+            is BoardText -> o.x to o.y
+            is BoardImage -> (o.x + o.w / 2f) to (o.y + o.h / 2f)
+            else -> return null
+        }
+        return sectionAt(x, y)
+    }
+
+    fun sectionAt(x: Float, y: Float): BoardFrame? {
+        var best: BoardFrame? = null
+        for (fr in frames) {
+            if (x < fr.x || x > fr.x + fr.w || y < fr.y || y > fr.y + fr.h) continue
+            if (best == null || fr.w * fr.h < best.w * best.h) best = fr
+        }
+        return best
+    }
+
+    /**
+     * Статусы старой доски (до 0.18): список становится списком ИД; нетронутый старый список по умолчанию
+     * («Не сдано / В работе / Сдано», ни одна метка его не использует) заменяется новым списком ИД; список
+     * конструкций добавляется. Номера у статусов по умолчанию одинаковые на всех планшетах (i0…, c0…) —
+     * общая доска сходится.
+     */
+    fun upgradeStatuses() {
+        if (statuses.any { it.group == BoardStatus.CON }) return
+        val old = listOf("s0" to "Не сдано", "s1" to "В работе", "s2" to "Сдано")
+        val untouched = statuses.size == 3 && statuses.zip(old).all { (st, o) -> st.id == o.first && st.name == o.second }
+        val used = HashSet<String>().apply { stickers.forEach { add(it.sid) }; callouts.forEach { add(it.sid) }; rows.forEach { add(it.sid) } }
+        if (statuses.isEmpty() || (untouched && statuses.none { it.id in used })) {
+            statuses.clear()
+            statuses.addAll(idStatuses())
+        }
+        statuses.addAll(conStatuses())
+    }
 
     val isEmpty: Boolean
         get() = strokes.isEmpty() && texts.isEmpty() && images.isEmpty() && stickers.isEmpty() &&
-            fills.isEmpty() && callouts.isEmpty() && frames.isEmpty()
+            fills.isEmpty() && callouts.isEmpty() && frames.isEmpty() && rows.isEmpty()
 
     /**
      * Доска в JSON одной строкой. Тяжёлые части (рисунки, заливки) берутся готовыми строками —
@@ -244,7 +338,7 @@ class Board(
         if (st != null) {
             st.check(TITLE_ID, fingerprint(title))
             st.check(ORDER_ID, fingerprint(statuses.joinToString(",") { it.id }))
-            for (s in statuses) st.check(s.id, fingerprint(s.name + "\u0001" + s.color))
+            for (s in statuses) st.check(s.id, statusPrint(s))
         }
         val out = ArrayList<String>(objectCount() * 2 + 32)
         val sb = StringBuilder(1024)
@@ -274,6 +368,7 @@ class Board(
         list("fills", fills, { it.id }) { it.json() }
         list("callouts", callouts, { it.id }) { calloutJson(it) }
         if (frames.isNotEmpty()) list("frames", frames, { it.id }) { frameJson(it) }
+        if (rows.isNotEmpty()) list("rows", rows, { it.id }) { rowJson(it) }
         st?.finish()
         val tail = StringBuilder(sync.objs.size * 48 + 64)
         tail.append(",\"sync\":")
@@ -290,7 +385,7 @@ class Board(
     fun forEachEntry(f: (String, Long) -> Unit) {
         f(TITLE_ID, fingerprint(title))
         f(ORDER_ID, fingerprint(statuses.joinToString(",") { it.id }))
-        for (st in statuses) f(st.id, fingerprint(st.name + "\u0001" + st.color))
+        for (st in statuses) f(st.id, statusPrint(st))
         for (d in strokes) f(d.id, fingerprint(d.json()))
         for (t in texts) f(t.id, fingerprint(textJson(t)))
         for (m in images) f(m.id, fingerprint(imageJson(m)))
@@ -298,6 +393,7 @@ class Board(
         for (fl in fills) f(fl.id, fingerprint(fl.json()))
         for (c in callouts) f(c.id, fingerprint(calloutJson(c)))
         for (fr in frames) f(fr.id, fingerprint(frameJson(fr)))
+        for (r in rows) f(r.id, fingerprint(rowJson(r)))
     }
 
     fun entryHashes(): HashMap<String, Long> {
@@ -306,7 +402,7 @@ class Board(
         return m
     }
 
-    fun objectCount() = strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + frames.size + statuses.size
+    fun objectCount() = strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + frames.size + rows.size + statuses.size
 
     /**
      * Отметить правки перед сохранением: у изменённых и новых предметов — новая отметка времени,
@@ -369,18 +465,22 @@ class Board(
         for (fl in fills) fix(fl.id) { fl.json() }?.let { fl.id = it }
         for (c in callouts) fix(c.id) { calloutJson(c) }?.let { c.id = it }
         for (fr in frames) fix(fr.id) { frameJson(fr) }?.let { fr.id = it }
+        for (r in rows) fix(r.id) { rowJson(r) }?.let { r.id = it }
     }
 
     fun toJson(withCamera: Boolean = true): JSONObject = JSONObject(toJsonString(withCamera))
 
     fun statusesJson(): String = JSONArray().apply {
-        for (s in statuses) put(JSONObject().apply { put("id", s.id); put("name", s.name); put("color", s.color) })
+        for (s in statuses) put(JSONObject().apply {
+            put("id", s.id); put("name", s.name); put("color", s.color)
+            if (s.group != BoardStatus.ID) put("g", s.group) // у статусов ИД — как до 0.18
+        })
     }.toString()
 
     /** Краткая сводка для Ежедневника (чтобы не читать всю доску ради списка). */
     fun metaJson(): String = JSONObject().apply {
         put("id", id); put("title", title); put("created", created); put("updated", updated)
-        put("items", strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size)
+        put("items", strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + rows.size)
         if (sync.isShared) put("shared", true)
         put("statuses", JSONArray().apply {
             for (st in statuses) put(JSONObject().apply { put("name", st.name); put("color", st.color); put("n", countStatus(st.id)) })
@@ -397,6 +497,7 @@ class Board(
         Array(fills.size) { fills[it].json() },
         Array(callouts.size) { calloutJson(callouts[it]) },
         Array(frames.size) { frameJson(frames[it]) },
+        Array(rows.size) { rowJson(rows[it]) },
     )
 
     /** Вернуть доску к снимку. Неизменённые рисунки и заливки берутся как есть, без разбора JSON. */
@@ -416,8 +517,9 @@ class Board(
         for (j in snap.texts) b.texts += parseText(JSONObject(j))
         for (j in snap.images) b.images += parseImage(JSONObject(j))
         for (j in snap.stickers) b.stickers += parseSticker(JSONObject(j))
-        for (j in snap.callouts) b.callouts += parseCallout(JSONObject(j), b.statuses[0].id)
+        for (j in snap.callouts) b.callouts += parseCallout(JSONObject(j), b.firstStatus(BoardStatus.CON))
         for (j in snap.frames) b.frames += parseFrame(JSONObject(j))
+        for (j in snap.rows) b.rows += parseRow(JSONObject(j), b.firstStatus(BoardStatus.ID))
         return b
     }
 
@@ -429,12 +531,30 @@ class Board(
         /** Отпечаток строки: длина и hashCode (у готовых строк рисунков hashCode уже посчитан). */
         fun fingerprint(s: String): Long = (s.length.toLong() shl 32) xor (s.hashCode().toLong() and 0xffffffffL)
 
-        /** Статусы новой доски (Владимир добавляет свои в «Статусы»). id s0–s2 — как у старых меток 0, 1, 2. */
-        fun defaultStatuses() = listOf(
-            BoardStatus("s0", "Не сдано", Ui.BAD),
-            BoardStatus("s1", "В работе", Ui.WARN),
-            BoardStatus("s2", "Сдано", Ui.OK),
+        /** Статусы новой доски: список ИД и список конструкций (Владимир правит их в «Статусы»). */
+        fun defaultStatuses() = idStatuses() + conStatuses()
+
+        /** Исполнительная документация (FW-011, список Владимира 08.11.2026). Номера одинаковые на всех планшетах. */
+        fun idStatuses() = listOf(
+            BoardStatus("i0", "Конструкция не принята", Ui.BAD),
+            BoardStatus("i1", "В оформлении", Color.rgb(230, 126, 34)),
+            BoardStatus("i2", "На подписи у Заказчика", Color.rgb(214, 170, 0)),
+            BoardStatus("i3", "Передано в ПТО", Color.rgb(41, 121, 255)),
+            BoardStatus("i4", "Скан в архиве", Ui.OK),
         )
+
+        /** Конструкции (выноски) — для начала; Владимир поправит под себя. */
+        fun conStatuses() = listOf(
+            BoardStatus("c0", "Не начато", Color.rgb(140, 140, 140), BoardStatus.CON),
+            BoardStatus("c1", "Опалубка", Color.rgb(230, 126, 34), BoardStatus.CON),
+            BoardStatus("c2", "Армирование", Color.rgb(214, 170, 0), BoardStatus.CON),
+            BoardStatus("c3", "Бетонирование", Color.rgb(41, 121, 255), BoardStatus.CON),
+            BoardStatus("c4", "Принято", Ui.OK, BoardStatus.CON),
+        )
+
+        /** Отпечаток статуса для обмена (у статусов ИД — как до 0.18). */
+        fun statusPrint(s: BoardStatus): Long =
+            fingerprint(s.name + "\u0001" + s.color + if (s.group != BoardStatus.ID) "\u0001" + s.group else "")
 
         fun newStatusId(): String = "s" + UUID.randomUUID().toString().replace("-", "").take(10)
 
@@ -484,7 +604,16 @@ class Board(
             j.optDouble("w", 400.0).toFloat().coerceAtLeast(1f), j.optDouble("h", 300.0).toFloat().coerceAtLeast(1f),
             j.optString("title", "Раздел")).also { it.id = jid(j) }
 
-        fun parseStatus(j: JSONObject) = BoardStatus(j.optString("id", newStatusId()), j.optString("name", "Статус"), j.optInt("color", Ui.INK2))
+        fun parseStatus(j: JSONObject) = BoardStatus(j.optString("id", newStatusId()), j.optString("name", "Статус"), j.optInt("color", Ui.INK2),
+            if (j.optString("g") == BoardStatus.CON) BoardStatus.CON else BoardStatus.ID)
+
+        fun rowJson(r: BoardRow): String =
+            "{\"id\":${q(r.id)},\"x\":${f(r.x)},\"y\":${f(r.y)},\"scale\":${r.scale.toDouble()},\"title\":${JSONObject.quote(r.title)}" +
+                ",\"ck\":${if (r.check) 1 else 0},\"dwg\":${if (r.dwg) 1 else 0},\"sid\":${JSONObject.quote(r.sid)}}"
+
+        fun parseRow(j: JSONObject, defaultSid: String) = BoardRow(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(),
+            j.optDouble("scale", 1.0).toFloat(), j.optString("title"), j.optInt("ck") == 1, j.optInt("dwg") == 1,
+            j.optString("sid", defaultSid)).also { it.id = jid(j) }
 
         /** Номер из JSON; у досок до 0.9 номера нет — пусто (номер по содержимому даст [fixIds]). */
         private fun jid(j: JSONObject) = j.optString("id", "")
@@ -547,6 +676,8 @@ class Board(
             o.optJSONArray("fills")?.let { a -> for (i in 0 until a.length()) parseFill(a.getJSONObject(i))?.let { b.fills += it } }
             o.optJSONArray("callouts")?.let { a -> for (i in 0 until a.length()) b.callouts += parseCallout(a.getJSONObject(i), b.statuses[0].id) }
             o.optJSONArray("frames")?.let { a -> for (i in 0 until a.length()) b.frames += parseFrame(a.getJSONObject(i)) }
+            o.optJSONArray("rows")?.let { a -> for (i in 0 until a.length()) b.rows += parseRow(a.getJSONObject(i), b.statuses[0].id) }
+            b.upgradeStatuses()
             b.sync = BoardSync.parse(o.optJSONObject("sync"))
             b.fixIds()
             return b
@@ -577,6 +708,7 @@ class BoardSnapshot(
     val fills: Array<String>,
     val callouts: Array<String>,
     val frames: Array<String> = emptyArray(),
+    val rows: Array<String> = emptyArray(),
 )
 
 /** Сводка доски для Ежедневника: название, даты, сколько предметов, счётчики статусов. */

@@ -78,6 +78,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onPenSeen() {}
         /** Нажали булавку закреплённой картинки. */
         fun onPinTap(img: BoardImage) {}
+        /** Касание части строки ИД ([RowPart]): галочка — отметить/снять, ИГС — следующий статус. */
+        fun onRowTap(row: BoardRow, part: Int) {}
         /** «Заливка» по точкам: уже поставленные точки (x, y, x, y…) для показа; null — точек нет. */
         fun fillDraft(): FloatArray? = null
         /** «Раздел»: провели рамку от угла до угла (рамка на доске). */
@@ -86,7 +88,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onFillPoint(x: Float, y: Float) {}
     }
 
-    enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL }
+    enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL, ROW }
+
+    /** Части строки ИД: название, «Чек-лист», «DWG», «ИГС» (статус). */
+    object RowPart { const val TITLE = 0; const val CHECK = 1; const val DWG = 2; const val STATUS = 3 }
     class Hit(val kind: Kind, val index: Int)
 
     private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP, FRAME_DRAG, POINT }
@@ -181,6 +186,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         b.images.forEach { inside(it) }; b.fills.forEach { inside(it) }; b.strokes.forEach { inside(it) }
         b.texts.forEach { inside(it) }; b.stickers.forEach { inside(it) }; b.callouts.forEach { inside(it) }
         b.frames.forEach { if (it !== f) inside(it) }
+        // Строка ИД — по левому краю (там название): длинная строка может выходить за рамку справа.
+        for (r in b.rows) { val ax = r.x + 20f * r.scale; val ay = r.y + r.h / 2f; if (ax >= f.x && ax <= f.x + f.w && ay >= f.y && ay <= f.y + f.h) out += r }
         return out
     }
 
@@ -345,6 +352,23 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         if ((mode == Mode.PAN || mode == Mode.MOVE_SEL) && !moved) {
             val x = wx(downX); val y = wy(downY)
             val h = hitAt(x, y)
+            // Метку и строку ИД подержали — «поднялась»: тянется за пальцем, уголки — размер, два пальца — масштаб.
+            // Отпустили, не двигая, — на статусе список статусов (как раньше).
+            val lift: Any? = when (h?.kind) { Kind.STICKER -> b.stickers.getOrNull(h.index); Kind.ROW -> b.rows.getOrNull(h.index); else -> null }
+            if (lift != null) {
+                if (mode == Mode.PAN || !(selection.size == 1 && selection[0] === lift)) {
+                    select(listOf(lift))
+                    captureOrigs()
+                    dragStart.set(x, y)
+                    editStarted = false
+                    mode = Mode.MOVE_SEL
+                }
+                fingerArmed = true
+                liftMenu = if (lift is BoardSticker || (lift is BoardRow && rowPartAt(lift, x) == RowPart.STATUS)) lift else null
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                invalidate()
+                return@Runnable
+            }
             val status: Any? = when {
                 h?.kind == Kind.STICKER -> b.stickers.getOrNull(h.index)
                 h?.kind == Kind.CALLOUT && inStatusRow(b.callouts[h.index], x, y) -> b.callouts[h.index]
@@ -378,6 +402,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
          */
         const val MIN_ZOOM = 0.01f
         const val MAX_ZOOM = 5f
+
+        /** Строка ИД: шрифт и галочка при размере 1 (высота строки — 40). */
+        const val ROW_FONT = 15f
+        const val ROW_BOX = 22f
     }
 
     /** Загрузчик картинок (уровни, фон, память) — задаёт экран доски. */
@@ -425,6 +453,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (m in b.images) { add(m.x, m.y); add(m.x + m.w, m.y + m.h) }
         for (fr in b.frames) { add(fr.x, fr.y); add(fr.x + fr.w, fr.y + fr.h) }
         for (s in b.stickers) { add(s.x, s.y); add(s.x + stickerW(s), s.y + s.h) }
+        for (r in b.rows) { add(r.x, r.y); add(r.x + rowW(r), r.y + r.h) }
         for (f in b.fills) { var i = 0; while (i + 1 < f.pts.size) { add(f.pts[i], f.pts[i + 1]); i += 2 } }
         for (c in b.callouts) {
             calloutRect(c, rect2); add(rect2.left, rect2.top); add(rect2.right, rect2.bottom)
@@ -542,6 +571,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     /** Что лежит в точке доски (сверху вниз: метки, выноски, тексты, картинки). Штрихи — см. [selectableAt]. */
     fun hitAt(x: Float, y: Float): Hit? {
+        for (i in b.rows.indices.reversed()) {
+            val r = b.rows[i]
+            if (x >= r.x && x <= r.x + rowW(r) && y >= r.y && y <= r.y + r.h) return Hit(Kind.ROW, i)
+        }
         for (i in b.stickers.indices.reversed()) {
             val s = b.stickers[i]
             if (x >= s.x && x <= s.x + stickerW(s) && y >= s.y && y <= s.y + s.h) return Hit(Kind.STICKER, i)
@@ -610,6 +643,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         Kind.STROKE -> b.strokes.getOrNull(h.index)
         Kind.CALLOUT -> b.callouts.getOrNull(h.index)
         Kind.FILL -> b.fills.getOrNull(h.index)
+        Kind.ROW -> b.rows.getOrNull(h.index)
     }
 
     // ---------------------------------------------------------------- выделение
@@ -652,6 +686,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         is BoardFill -> b.fills.any { it === o }
         is BoardCallout -> b.callouts.any { it === o }
         is BoardFrame -> b.frames.any { it === o }
+        is BoardRow -> b.rows.any { it === o }
         else -> false
     }
 
@@ -664,6 +699,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             is BoardFill -> out.set(o.bounds())
             is Drawing -> out.set(o.bounds())
             is BoardFrame -> out.set(o.x, o.y, o.x + o.w, o.y + o.h)
+            is BoardRow -> out.set(o.x, o.y, o.x + rowW(o), o.y + o.h)
             else -> out.setEmpty()
         }
         return out
@@ -689,6 +725,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private val corner = PointF()
     private val dragStart = PointF()
     private val pinchMid0 = PointF()
+    /** Подняли удержанием метку или ИГС строки: отпустили, не двигая, — список статусов. */
+    private var liftMenu: Any? = null
 
     /** withContents — раздел переносится вместе со всем, что внутри (при переносе, не при изменении размера). */
     private fun captureOrigs(withContents: Boolean = false) {
@@ -704,6 +742,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 is BoardText -> Orig(o, floatArrayOf(o.x, o.y, o.size), 0f)
                 is BoardImage -> Orig(o, floatArrayOf(o.x, o.y, o.w, o.h), 0f)
                 is BoardSticker -> Orig(o, floatArrayOf(o.x, o.y, o.scale), 0f)
+                is BoardRow -> Orig(o, floatArrayOf(o.x, o.y, o.scale), 0f)
                 is Drawing -> Orig(o, o.pts.copyOf(), o.width)
                 is BoardFill -> Orig(o, o.pts.copyOf(), 0f)
                 is BoardCallout -> Orig(o, floatArrayOf(o.x, o.y, o.scale) + o.leaders.toFloatArray(), 0f)
@@ -725,6 +764,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 is BoardImage -> { o.x = tx(a[0]); o.y = ty(a[1]); o.w = a[2] * s; o.h = a[3] * s }
                 is BoardFrame -> { o.x = tx(a[0]); o.y = ty(a[1]); o.w = a[2] * s; o.h = a[3] * s }
                 is BoardSticker -> { o.x = tx(a[0]); o.y = ty(a[1]); o.scale = a[2] * s }
+                is BoardRow -> { o.x = tx(a[0]); o.y = ty(a[1]); o.scale = a[2] * s }
                 is Drawing -> {
                     var i = 0
                     while (i + 1 < a.size && i + 1 < o.pts.size) {
@@ -815,6 +855,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (o in b.texts) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.stickers) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.frames) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
+        for (o in b.rows) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         select(out)
     }
 
@@ -1035,8 +1076,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             host.onErase(x, y, true)
             return
         }
-        if (t == BoardActivity.Tool.STATUS || t == BoardActivity.Tool.TEXT) {
-            mode = Mode.STATUS // касание: метка или надпись
+        if (t == BoardActivity.Tool.STATUS || t == BoardActivity.Tool.TEXT || t == BoardActivity.Tool.ROW) {
+            mode = Mode.STATUS // касание: метка, строка ИД или надпись
             return
         }
         mode = Mode.INK
@@ -1203,6 +1244,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             Mode.MOVE_SEL, Mode.RESIZE -> {
                 if (editStarted) {
                     host.onDragEnd()
+                } else if (liftMenu != null && mode == Mode.MOVE_SEL) {
+                    host.onStatusMenu(liftMenu!!)
                 } else if (quick && mode == Mode.MOVE_SEL) {
                     // Касание по выделенному: «Выделить» — выбрать то, что под пером; палец — снять выделение.
                     val x = wx(sxp); val y = wy(syp)
@@ -1265,6 +1308,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             else -> Unit
         }
         editStarted = false
+        liftMenu = null
         mode = Mode.NONE
         sceneValid = false
         origs.clear() // исходные положения нужны только во время жеста
@@ -1281,6 +1325,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         if (h?.kind == Kind.STICKER && host.tool() != BoardActivity.Tool.SELECT) {
             clearSelection()
             host.onStickerTap(h.index)
+            return
+        }
+        if (h?.kind == Kind.ROW && host.tool() != BoardActivity.Tool.SELECT) {
+            val r = b.rows[h.index]
+            clearSelection()
+            host.onRowTap(r, rowPartAt(r, x))
             return
         }
         if (h?.kind == Kind.CALLOUT && host.tool() != BoardActivity.Tool.SELECT) {
@@ -1561,6 +1611,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         for (c in b.callouts) if (calloutVisible(c)) { drawCallout(canvas, c, z); drawn++ }
         for (s in b.stickers) if (visible(s.x, s.y, s.x + stickerW(s), s.y + s.h)) { drawSticker(canvas, s); drawn++ }
+        for (r in b.rows) if (visible(r.x, r.y, r.x + rowW(r), r.y + r.h)) { drawRow(canvas, r, z); drawn++ }
         highlight?.let { sid ->
             // Подсветка статуса: всё притушить, метки и выноски этого статуса — поверх.
             fillPaint.color = Ui.PAPER
@@ -1569,6 +1620,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             fillPaint.alpha = 255
             for (c in b.callouts) if (c.sid == sid && calloutVisible(c)) drawCallout(canvas, c, z)
             for (s in b.stickers) if (s.sid == sid && visible(s.x, s.y, s.x + stickerW(s), s.y + s.h)) drawSticker(canvas, s)
+            for (r in b.rows) if (r.sid == sid && visible(r.x, r.y, r.x + rowW(r), r.y + r.h)) drawRow(canvas, r, z)
         }
         if (mode == Mode.CALLOUT_DRAG && hypot(calloutNow.x - calloutDown.x, calloutNow.y - calloutDown.y) * z > slop) {
             dashPaint.strokeWidth = Ui.dpf(context, 1.5f) / z
@@ -1617,7 +1669,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         if (fading.isNotEmpty()) postInvalidateOnAnimation()
         drawnCount = drawn
-        totalCount = b.images.size + b.fills.size + b.strokes.size + b.texts.size + b.callouts.size + b.stickers.size
+        totalCount = b.images.size + b.fills.size + b.strokes.size + b.texts.size + b.callouts.size + b.stickers.size + b.rows.size
         val ms = (System.nanoTime() - t0) / 1e6f
         frameMs = if (frameMs == 0f) ms else frameMs * 0.8f + ms * 0.2f
         if (!plain && !gestureActive()) requestDetails()
@@ -1999,6 +2051,122 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 canvas.drawCircle(c.leaders[i * 2], c.leaders[i * 2 + 1], hr, linePaint)
             }
         }
+    }
+
+    // ---------------------------------------------------------------- строка ИД (0.18, FW-011)
+
+    private val rowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    /**
+     * Части строки ИД (в единицах при размере 1, от левого края): конец названия, «Чек-лист», «DWG», «ИГС».
+     * Считаются по шрифту один раз, пока не поменялись название и статус.
+     */
+    private fun rowLayout(r: BoardRow): FloatArray {
+        val st = b.status(r.sid).name
+        val key = r.title + "\u0001" + st
+        if (r.wKey == key) return r.parts
+        rowPaint.textSize = ROW_FONT
+        rowPaint.isFakeBoldText = true
+        val pad = 12f
+        var x = 0f
+        r.parts[0] = 0f
+        x += if (r.title.isEmpty()) 0f else pad + rowPaint.measureText(r.title) + pad
+        r.parts[1] = x
+        rowPaint.isFakeBoldText = false
+        x += pad + rowPaint.measureText("Чек-лист") + 8f + ROW_BOX + pad
+        r.parts[2] = x
+        x += pad + rowPaint.measureText("DWG") + 8f + ROW_BOX + pad
+        r.parts[3] = x
+        rowPaint.isFakeBoldText = true
+        x += pad + rowPaint.measureText("ИГС") + 8f + rowPaint.measureText(st) + 28f + pad
+        rowPaint.isFakeBoldText = false
+        r.parts[4] = x
+        r.wKey = key
+        return r.parts
+    }
+
+    fun rowW(r: BoardRow): Float = rowLayout(r)[4] * r.scale
+
+    /** Какая часть строки под точкой доски ([RowPart]). */
+    fun rowPartAt(r: BoardRow, x: Float): Int {
+        val p = rowLayout(r)
+        val u = (x - r.x) / r.scale
+        return when {
+            u < p[1] -> RowPart.TITLE
+            u < p[2] -> RowPart.CHECK
+            u < p[3] -> RowPart.DWG
+            else -> RowPart.STATUS
+        }
+    }
+
+    private fun drawRow(canvas: Canvas, r: BoardRow, z: Float) {
+        val p = rowLayout(r)
+        val k = r.scale
+        val h = r.h
+        val x0 = r.x; val y0 = r.y
+        val cy = y0 + h / 2f
+        rect.set(x0, y0, x0 + p[4] * k, y0 + h)
+        fillPaint.color = Color.WHITE
+        canvas.drawRoundRect(rect, 8f * k, 8f * k, fillPaint)
+        linePaint.color = Ui.RULE
+        linePaint.strokeWidth = 1.5f * k
+        canvas.drawRoundRect(rect, 8f * k, 8f * k, linePaint)
+        if (ROW_FONT * k * z < 3f) return // издалека — только рамка
+        rowPaint.textSize = ROW_FONT * k
+        val base = cy + rowPaint.textSize * 0.36f
+        // Название.
+        if (p[1] > 0f) {
+            rowPaint.color = Ui.INK
+            rowPaint.isFakeBoldText = true
+            canvas.drawText(r.title, x0 + 12f * k, base, rowPaint)
+            rowPaint.isFakeBoldText = false
+            linePaint.color = Ui.RULE
+            canvas.drawLine(x0 + p[1] * k, y0 + 6f * k, x0 + p[1] * k, y0 + h - 6f * k, linePaint)
+        }
+        // Галочки «Чек-лист» и «DWG»: зелёная ✓ — есть, красный ✗ — нет.
+        fun check(from: Float, label: String, on: Boolean) {
+            rowPaint.color = Ui.INK2
+            canvas.drawText(label, x0 + (from + 12f) * k, base, rowPaint)
+            val bx = x0 + (from + 12f + rowPaint.measureText(label) / k + 8f) * k
+            val s = ROW_BOX * k
+            rect.set(bx, cy - s / 2f, bx + s, cy + s / 2f)
+            val c = if (on) Ui.OK else Ui.BAD
+            fillPaint.color = Board.statusBg(c)
+            canvas.drawRoundRect(rect, 5f * k, 5f * k, fillPaint)
+            linePaint.color = c
+            linePaint.strokeWidth = 1.5f * k
+            canvas.drawRoundRect(rect, 5f * k, 5f * k, linePaint)
+            linePaint.strokeWidth = 2.6f * k
+            linePaint.strokeCap = Paint.Cap.ROUND
+            if (on) {
+                canvas.drawLine(bx + s * 0.22f, cy, bx + s * 0.42f, cy + s * 0.22f, linePaint)
+                canvas.drawLine(bx + s * 0.42f, cy + s * 0.22f, bx + s * 0.8f, cy - s * 0.24f, linePaint)
+            } else {
+                canvas.drawLine(bx + s * 0.28f, cy - s * 0.22f, bx + s * 0.72f, cy + s * 0.22f, linePaint)
+                canvas.drawLine(bx + s * 0.72f, cy - s * 0.22f, bx + s * 0.28f, cy + s * 0.22f, linePaint)
+            }
+            linePaint.strokeCap = Paint.Cap.BUTT
+        }
+        check(p[1], "Чек-лист", r.check)
+        check(p[2], "DWG", r.dwg)
+        // ИГС — статус из списка ИД, цветной «таблеткой».
+        val st = b.status(r.sid)
+        rowPaint.color = Ui.INK2
+        rowPaint.isFakeBoldText = true
+        val lx = x0 + (p[3] + 12f) * k
+        canvas.drawText("ИГС", lx, base, rowPaint)
+        val px = lx + rowPaint.measureText("ИГС") + 8f * k
+        val pw = rowPaint.measureText(st.name) + 28f * k
+        rect.set(px, y0 + 6f * k, px + pw, y0 + h - 6f * k)
+        val fg = Board.statusFg(st.color)
+        fillPaint.color = Board.statusBg(st.color)
+        canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, fillPaint)
+        linePaint.color = fg
+        linePaint.strokeWidth = 1.5f * k
+        canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, linePaint)
+        rowPaint.color = fg
+        canvas.drawText(st.name, px + 14f * k, base, rowPaint)
+        rowPaint.isFakeBoldText = false
     }
 
     private fun drawSticker(canvas: Canvas, s: BoardSticker) {
