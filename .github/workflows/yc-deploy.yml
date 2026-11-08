@@ -57,12 +57,12 @@ jobs:
       - name: New function version
         run: |
           cd server
-          zip -q ../server.zip main.py store_ydb.py blob.py errors.py requirements.txt
+          zip -q ../server.zip index.py store_ydb.py blob.py errors.py requirements.txt
           cd ..
           yc serverless function version create \
             --function-name freewrite-sync \
             --runtime python312 \
-            --entrypoint main.handler \
+            --entrypoint index.handler \
             --memory 256m \
             --execution-timeout 20s \
             --service-account-id "$SA_ID" \
@@ -73,3 +73,7 @@ jobs:
 
       - name: Live check
         run: python3 server/deploy/smoke.py
+
+      - name: Function log (only if something failed)
+        if: failure()
+        run: yc serverless function logs --name freewrite-sync --limit 40 2>&1 | tail -60 || true
