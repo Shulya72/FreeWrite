@@ -314,6 +314,15 @@ class NeboTest {
         val waitEnd2 = System.currentTimeMillis() + 10_000
         while (System.currentTimeMillis() < waitEnd2) { idle(); Thread.sleep(50) }
         shot(v, "nebo_real_zoom.png")
+        // Издалека (2 %): доска — небольшой прямоугольник, вокруг свободное поле (FW-010).
+        val bd = a.board()
+        val cx = bd.camX + bv.width / 2f / bd.camZ; val cy = bd.camY + bv.height / 2f / bd.camZ
+        bd.camZ = 0.02f; bd.camX = cx - bv.width / 2f / bd.camZ; bd.camY = cy - bv.height / 2f / bd.camZ
+        bv.invalidate()
+        shot(v, "nebo_far.png")
+        val waitEnd3 = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < waitEnd3) { idle(); Thread.sleep(50) }
+        shot(v, "nebo_far.png")
     }
 
     /** Замеры скорости на настоящей доске (только с NEBO_FILE): открытие, сохранение, кадр издалека и вблизи. */

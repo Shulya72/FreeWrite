@@ -312,7 +312,7 @@ object NeboImport {
         for (m in b.images) { l = min(l, m.x); t = min(t, m.y); r = max(r, m.x + m.w); bt = max(bt, m.y + m.h) }
         for (d in b.strokes) { val bb = d.bounds(); l = min(l, bb.left); t = min(t, bb.top); r = max(r, bb.right); bt = max(bt, bb.bottom) }
         if (r <= l || bt <= t) return
-        val z = min(1500f / (r - l), 2300f / (bt - t)).coerceIn(0.1f, 2f)
+        val z = min(1500f / (r - l), 2300f / (bt - t)).coerceIn(BoardView.MIN_ZOOM, 2f)
         b.camZ = z
         b.camX = (l + r) / 2f - 800f / z
         b.camY = (t + bt) / 2f - 1200f / z

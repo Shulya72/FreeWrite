@@ -46,6 +46,9 @@ class BoardTiles(private val onReady: () -> Unit) {
         /** Сколько плиток с картинками держать в памяти (по 1 МБ). Видимых — до ~50. */
         const val MAX_BITMAPS = 110
 
+        /** Самый тонкий штрих на экране, пикселей: издалека написанное не пропадает. */
+        const val MIN_PX = 0.8f
+
         /** Сколько всего записей о плитках (пустые — без картинки — почти ничего не весят). */
         private const val MAX_TILES = 3000
 
@@ -312,7 +315,9 @@ class BoardTiles(private val onReady: () -> Unit) {
         val sc = scale(k)
         val s = SIZE / sc
         val x0 = ix * s; val y0 = iy * s; val x1 = x0 + s; val y1 = y0 + s
-        val tiny = 1.5f / sc
+        // Издалека штрих не тоньше ~0,8 пикселя экрана (плитка показывается при масштабе от 0,71 до 1 своего):
+        // написанное видно узором, а не пропадает. Мелкие штрихи не выбрасываем — та же причина.
+        val minW = MIN_PX / (sc * 0.85f)
         val fast = sc < 0.6f
         var bmp: Bitmap? = null
         var canvas: Canvas? = null
@@ -320,12 +325,11 @@ class BoardTiles(private val onReady: () -> Unit) {
         for (it in items) {
             if (closed) return null
             if (!it.hits(x0, y0, x1, y1)) continue
-            if (it.r - it.l < tiny && it.b - it.t < tiny) continue
             if (canvas == null) {
                 bmp = Bitmap.createBitmap(SIZE, SIZE, Bitmap.Config.ARGB_8888)
                 canvas = Canvas(bmp).apply { scale(sc, sc); translate(-x0, -y0) }
             }
-            painter.drawRaw(canvas, it.kind, it.color, it.width, it.pts, it.uniform, fast)
+            painter.drawRaw(canvas, it.kind, it.color, it.width, it.pts, it.uniform, fast, minW)
         }
         return bmp
     }
