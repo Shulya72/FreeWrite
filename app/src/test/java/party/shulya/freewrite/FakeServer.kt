@@ -10,7 +10,7 @@ import org.json.JSONObject
  */
 class FakeServer : SyncTransport {
     class Obj(val id: String, val rev: String, val kind: String, val deleted: Boolean, val body: String, val seq: Long)
-    class B(val id: String, val key: String, var title: String, val invite: String) {
+    class B(val id: String, val key: String, var title: String, val invite: String, val owner: String = "") {
         var seq = 0L
         val objs = HashMap<String, Obj>()
     }
@@ -38,9 +38,14 @@ class FakeServer : SyncTransport {
             "ping" -> JSONObject().put("ok", true).put("api", 1)
             "create" -> {
                 val id = r.getString("board")
-                if (boards.containsKey(id)) err(409, "exists", "Доска уже есть на сервере")
+                val dev = r.optString("device")
+                boards[id]?.let { old ->
+                    if (dev.isNotEmpty() && old.owner == dev)
+                        return JSONObject().put("board", id).put("key", old.key).put("invite", old.invite).put("seq", old.seq).put("again", true)
+                    err(409, "exists", "Доска уже есть на сервере")
+                }
                 val invite = "WXYZ" + "%04d".format(boards.size).map { "ABCDEFGHJK"[it - '0'] }.joinToString("")
-                val b = B(id, "key-" + id.take(8), r.optString("title"), invite)
+                val b = B(id, "key-" + id.take(8), r.optString("title"), invite, dev)
                 boards[id] = b
                 invites[invite] = id
                 JSONObject().put("board", id).put("key", b.key).put("invite", invite).put("seq", 0)

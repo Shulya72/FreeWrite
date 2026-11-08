@@ -159,8 +159,14 @@ def op_create(req, ctx):
     """Выложить доску на сервер: ключ доски и код-приглашение для коллег."""
     b = _str(req, "board", BOARD_RE)
     title = _str(req, "title", required=False, limit=200)
+    device = _device(req)
     st = store()
-    if st.get_board(b) is not None:
+    existing = st.get_board(b)
+    if existing is not None:
+        # Тот же планшет, что выкладывал доску (ответ мог потеряться), — вернуть его же ключ и код.
+        if device != "-" and existing.get("owner") == device:
+            return {"board": b, "key": existing["secret"], "invite": existing["invite"],
+                    "seq": existing["seq"], "again": True}
         raise ApiError(409, "exists", "Доска уже есть на сервере")
     if st.count_boards() >= MAX_BOARDS:
         raise ApiError(507, "full", "На сервере нет места для новых досок")
@@ -171,7 +177,7 @@ def op_create(req, ctx):
             break
     else:
         raise ApiError(500, "invite", "Не удалось придумать код-приглашение")
-    if not st.create_board(b, key, title, invite, _device(req), now_ms()):
+    if not st.create_board(b, key, title, invite, device, now_ms()):
         raise ApiError(409, "exists", "Доска уже есть на сервере")
     return {"board": b, "key": key, "invite": invite, "seq": 0}
 

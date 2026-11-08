@@ -35,6 +35,9 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
     private val device = BoardSync.device(context)
 
     private var started = false
+    /** Доска сейчас выкладывается на сервер (второй раз не начинать). */
+    var publishing = false
+        private set
     private var running = false
     private var again = false
     private var imagesRunning = false
@@ -232,6 +235,8 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
 
     /** Сделать доску общей: выложить на сервер, получить код-приглашение (done в главном потоке). */
     fun publish(done: (invite: String?, error: String?) -> Unit) {
+        if (publishing) return
+        publishing = true
         host.saveBoard()
         val b = host.board()
         Remote.ensureRevs(b, device)
@@ -241,6 +246,7 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         net.execute {
             val r = runCatching { Remote.create(transport, boardId, title, device) }
             main.post {
+                publishing = false
                 if (closed) return@post
                 r.onSuccess { (key, invite) ->
                     val cur = host.board()

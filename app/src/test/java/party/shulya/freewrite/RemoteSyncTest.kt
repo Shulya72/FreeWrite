@@ -173,6 +173,16 @@ class RemoteSyncTest {
     }
 
     @Test
+    fun publishAgainFromSameTabletReturnsSameCode() {
+        val t = FakeServer()
+        val id = UUID.randomUUID().toString()
+        val first = Remote.create(t, id, "Секция", "vlad01")
+        assertEquals(first, Remote.create(t, id, "Секция", "vlad01"))
+        val e = runCatching { Remote.create(t, id, "Секция", "kolya2") }.exceptionOrNull() as SyncException
+        assertEquals("exists", e.code)
+    }
+
+    @Test
     fun wrongCodeAndNoNetwork() {
         val t = FakeServer()
         val e = runCatching { Remote.join(t, "QQQQ-QQQQ") }.exceptionOrNull() as SyncException
@@ -263,7 +273,13 @@ class RemoteSyncTest {
         val field = BoardActivity::class.java.getDeclaredField("board").apply { isAccessible = true }
         waitFor("правка коллеги") { (field.get(activity) as Board).texts[0].text.contains("забетонировано") }
         val sub = root.findViewWithTag<android.widget.TextView>("board_subtitle").text.toString()
-        assertTrue(sub, sub.startsWith("общая доска"))
+        assertTrue(sub, sub.startsWith("общая доска · код " + code))
+        // Нажать на строку под названием — окно с кодом.
+        root.findViewWithTag<android.view.View>("board_subtitle").performClick()
+        idle()
+        assertEquals(code, org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
+            .findViewWithTag<android.widget.TextView>("invite_code").text.toString())
+        org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().dismiss()
         shot(root, "board_shared.png")
         controller.pause().stop().destroy()
     }

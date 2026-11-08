@@ -186,7 +186,8 @@ class BoardActivity : Activity(), BoardView.Host {
             subtitleView.setTextColor(Ui.MUTED)
             return
         }
-        subtitleView.text = "общая доска · " + (st?.text ?: "подключаюсь…")
+        val code = board.sync.remoteInvite.takeIf { it.isNotEmpty() }?.let { " · код " + Remote.prettyInvite(it) } ?: ""
+        subtitleView.text = "общая доска$code · " + (st?.text ?: "подключаюсь…")
         subtitleView.setTextColor(if (st?.error == true) Ui.BAD else if (st?.busy == true) Ui.WARN else Ui.OK)
     }
 
@@ -199,6 +200,10 @@ class BoardActivity : Activity(), BoardView.Host {
                 .setPositiveButton("Понятно", null).show()
             return
         }
+        if (r.publishing) {
+            hint("Доска выкладывается на сервер — подождите")
+            return
+        }
         if (!board.sync.isShared) {
             AlertDialog.Builder(this)
                 .setTitle("Совместная работа")
@@ -206,10 +211,17 @@ class BoardActivity : Activity(), BoardView.Host {
                     "по коду и видят правки друг друга через несколько секунд — пока доска открыта и есть интернет. " +
                     "Картинки тоже уйдут на сервер.")
                 .setPositiveButton("Сделать общей") { _, _ ->
-                    hint("Выкладываю доску на сервер…")
+                    val wait = AlertDialog.Builder(this)
+                        .setTitle("Выкладываю доску на сервер…")
+                        .setMessage("Обычно несколько секунд. Сейчас появится код для коллег.")
+                        .setCancelable(false)
+                        .show()
                     r.publish { invite, error ->
+                        wait.dismiss()
+                        updateSubtitle()
                         if (invite != null) showInvite(invite, first = true)
-                        else AlertDialog.Builder(this).setMessage(error).setPositiveButton("Понятно", null).show()
+                        else AlertDialog.Builder(this).setTitle("Не получилось").setMessage(error)
+                            .setPositiveButton("Понятно", null).show()
                     }
                 }
                 .setNegativeButton("Отмена", null)
@@ -290,6 +302,8 @@ class BoardActivity : Activity(), BoardView.Host {
                 setPadding(dp(4f), 0, dp(10f), 0)
                 tag = "board_subtitle"
                 isSingleLine = true
+                // У общей доски — код для коллег; нажать — окно с кодом и «Поделиться кодом».
+                setOnClickListener { if (board.sync.isShared) showInvite(board.sync.remoteInvite, first = false) else rename() }
             }
             addView(subtitleView)
             setOnClickListener { rename() }

@@ -46,7 +46,7 @@ TABLES = [
 
 Q_BOARD = """
 DECLARE $b AS Utf8;
-SELECT board_id, secret, title, invite, seq, n_objects FROM boards WHERE board_id = $b;
+SELECT board_id, secret, title, invite, seq, n_objects, owner FROM boards WHERE board_id = $b;
 """
 Q_COUNT_BOARDS = "SELECT COUNT(*) AS n FROM boards;"
 Q_INVITE = """
@@ -162,7 +162,7 @@ class YdbStore:
     @staticmethod
     def _board_row(r):
         return {"board_id": r.board_id, "secret": r.secret, "title": r.title or "", "invite": r.invite,
-                "seq": r.seq or 0, "n_objects": r.n_objects or 0}
+                "seq": r.seq or 0, "n_objects": r.n_objects or 0, "owner": r.owner or ""}
 
     # ------------------------------------------------------------ доски
 

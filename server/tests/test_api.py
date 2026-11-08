@@ -46,7 +46,7 @@ class MemoryStore:
         if board_id in self.boards:
             return False
         self.boards[board_id] = {"board_id": board_id, "secret": secret, "title": title, "invite": invite,
-                                 "seq": 0, "n_objects": 0}
+                                 "seq": 0, "n_objects": 0, "owner": owner}
         self.invites[invite] = board_id
         return True
 
@@ -160,9 +160,16 @@ class ApiTest(unittest.TestCase):
     def test_create_join_info(self):
         c = self.create()
         self.assertEqual(8, len(c["invite"]))
-        status, body = self.call("create", board=BOARD, title="ещё раз")
+        # Тот же планшет выкладывает ещё раз (ответ потерялся) — тот же ключ и код.
+        again = self.ok("create", board=BOARD, title="ещё раз", device="vlad01")
+        self.assertEqual((c["key"], c["invite"]), (again["key"], again["invite"]))
+        # Другой планшет — «уже есть», ключ не выдаётся.
+        status, body = self.call("create", board=BOARD, title="чужой", device="kolya2")
         self.assertEqual(409, status)
         self.assertEqual("exists", body["error"])
+        self.assertNotIn("key", body)
+        status, body = self.call("create", board=BOARD, title="без устройства")
+        self.assertEqual(409, status)
         # Код можно ввести маленькими буквами и с дефисом посередине.
         code = c["invite"].lower()[:4] + "-" + c["invite"].lower()[4:]
         j = self.ok("join", invite=code)

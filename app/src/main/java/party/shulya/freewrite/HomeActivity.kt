@@ -324,11 +324,32 @@ class HomeActivity : Activity() {
         BoardShare.offer(this, board) { boards.save(board) }
     }
 
+    /** Код общей доски для коллег — с кнопкой «Поделиться кодом». */
+    private fun showCode(id: String) {
+        val b = boards.load(id) ?: return
+        val code = Remote.prettyInvite(b.sync.remoteInvite)
+        AlertDialog.Builder(this)
+            .setTitle("Код для коллег")
+            .setMessage("Доска «${b.title}»\n\n$code\n\nКоллега: Ежедневник → «Подключиться по коду» → ввести код.")
+            .setPositiveButton("Поделиться кодом") { _, _ ->
+                val text = "Подключись к доске «${b.title}» в FreeWrite: Ежедневник → «Подключиться по коду» → $code"
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text)
+                }, "Отправить код"))
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
     private fun boardMenu(b: BoardMeta) {
+        val items = if (b.shared) arrayOf("Переименовать", "Удалить", "Поделиться файлом", "Код для коллег")
+        else arrayOf("Переименовать", "Удалить", "Поделиться файлом")
         AlertDialog.Builder(this)
             .setTitle(b.title)
-            .setItems(arrayOf("Переименовать", "Удалить", "Поделиться")) { _, which ->
-                if (which == 2) {
+            .setItems(items) { _, which ->
+                if (which == 3) {
+                    showCode(b.id)
+                } else if (which == 2) {
                     shareBoard(b.id)
                 } else if (which == 0) {
                     val edit = EditText(this).apply { setText(b.title); setSelection(b.title.length); isSingleLine = true }
