@@ -316,6 +316,58 @@ class NeboTest {
         shot(v, "nebo_real_zoom.png")
     }
 
+    /** Замеры скорости на настоящей доске (только с NEBO_FILE): открытие, сохранение, кадр издалека и вблизи. */
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun realNeboSpeed() {
+        val path = System.getenv("NEBO_FILE")
+        assumeTrue("NEBO_FILE не задан", path != null && File(path).exists())
+        val r = NeboImport.import(ctx, File(path!!))
+        val store = BoardStore(ctx)
+        fun ms(t: Long) = (System.nanoTime() - t) / 1_000_000
+        var t = System.nanoTime(); val b = store.load(r.boardIds[0])!!; println("BENCH nebo load ms=${ms(t)}")
+        b.toJsonString(stampDevice = "bench")
+        t = System.nanoTime(); b.toJsonString(stampDevice = "bench"); b.metaJson(); println("BENCH nebo save-string ms=${ms(t)}")
+        repeat(3) { t = System.nanoTime(); b.toJsonParts(stampDevice = "bench"); b.metaJson(); println("BENCH nebo save-main-thread ms=${ms(t)}") }
+        assertEquals("по частям — то же самое", b.toJsonString(), b.toJsonParts().joinToString(""))
+        t = System.nanoTime(); b.snapshot(); println("BENCH nebo undo-snapshot ms=${ms(t)}")
+        t = System.nanoTime(); var hh = 0; for (d in b.strokes) hh += d.json().length; println("BENCH nebo json-check ms=${ms(t)} $hh")
+        t = System.nanoTime(); val sbx = StringBuilder(); b.sync.json(sbx); println("BENCH nebo sync-json ms=${ms(t)} KB=${sbx.length / 1024}")
+        t = System.nanoTime(); b.toJsonString(); println("BENCH nebo save-string-nostamp ms=${ms(t)}")
+        val a = Robolectric.buildActivity(BoardActivity::class.java,
+            Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b.id).putExtra(BoardActivity.EXTRA_FIT, true)).setup().get()
+        idle()
+        val bv = field(a, "view") as BoardView
+        val bmp = Bitmap.createBitmap(bv.width, bv.height, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        fun frames(name: String, move: (Int) -> Unit) {
+            for (tiles in listOf(false, true)) {
+                bv.useTiles = tiles
+                repeat(30) { bv.draw(c); Thread.sleep(30); idle() } // картинки и плитки догружаются
+                var w = 0
+                while (bv.tilesBusy && w++ < 200) { bv.draw(c); Thread.sleep(20); idle() }
+                t = System.nanoTime()
+                for (i in 0 until 10) { move(i); bv.draw(c) }
+                val soft = ms(t) / 10
+                // Запись кадра (как на планшете: основной поток записывает команды, рисует видеочип).
+                val pic = android.graphics.Picture()
+                t = System.nanoTime()
+                for (i in 0 until 10) { move(i); val pc = pic.beginRecording(bv.width, bv.height); bv.draw(pc); pic.endRecording() }
+                val rec = (System.nanoTime() - t) / 10_000
+                println("BENCH nebo $name tiles=$tiles soft-ms=$soft record-us=$rec drawn=${bv.drawnCount}/${bv.totalCount}")
+            }
+        }
+        val bd = a.board()
+        frames("pan-overview") { i -> bd.camX += if (i % 2 == 0) 40f else -40f; bv.invalidate() }
+        val U = NeboImport.U
+        bv.fitRect(1100 * U, 1950 * U, 1500 * U, 2300 * U)
+        frames("pan-medium z=${"%.2f".format(bd.camZ)}") { i -> bd.camX += if (i % 2 == 0) 20f else -20f; bv.invalidate() }
+        bd.camZ = 1f; bd.camX = 1350 * U; bd.camY = 2050 * U
+        frames("pan-z1") { i -> bd.camX += if (i % 2 == 0) 20f else -20f; bv.invalidate() }
+        File("build/screenshots").mkdirs()
+        FileOutputStream(File("build/screenshots/nebo_speed_z1.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
     private fun field(o: Any, name: String): Any? = o.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(o)
 
     private fun shot(v: View, name: String) {

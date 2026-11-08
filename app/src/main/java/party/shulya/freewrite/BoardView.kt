@@ -1428,6 +1428,44 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         return true
     }
 
+    /** Плитки штрихов (FW-009): штрихи рисуются заранее в картинки, кадр собирается из них. */
+    private val tiles = BoardTiles { invalidate() }
+    private val selDrawings = HashSet<Drawing>()
+    private val liveClip = RectF()
+
+    /** Штрихи прямоугольника r напрямую (плитка там ещё не готова) — с обрезкой по r. */
+    private fun drawStrokesIn(canvas: Canvas, r: RectF, fast: Boolean, tiny: Float) {
+        liveClip.set(max(r.left, vis.left), max(r.top, vis.top), min(r.right, vis.right), min(r.bottom, vis.bottom))
+        if (liveClip.isEmpty) return
+        canvas.save()
+        canvas.clipRect(liveClip)
+        for (d in b.strokes) {
+            if (selDrawings.isNotEmpty() && d in selDrawings) continue
+            val bb = d.bounds()
+            if (bb.right < liveClip.left || bb.left > liveClip.right || bb.bottom < liveClip.top || bb.top > liveClip.bottom) continue
+            if (bb.width() < tiny && bb.height() < tiny) continue
+            painter.drawing(canvas, d, 255, fast)
+            liveCount++
+        }
+        canvas.restore()
+    }
+
+    /** Плитки включены (выключаются только в замерах — сравнить с прежней отрисовкой). */
+    var useTiles = true
+
+    /** Для проверок: рисовать в картинку так же, как на экране планшета (не готовые плитки — не ждать). */
+    var asyncTiles = false
+
+    /** Сколько штрихов в последнем кадре нарисовано напрямую, мимо плиток (для проверок). */
+    var liveCount = 0
+        private set
+
+    /** Экран доски закрывается — остановить фоновую отрисовку плиток. */
+    fun release() = tiles.close()
+
+    /** Плитки ещё рисуются (для проверок — дождаться). */
+    val tilesBusy: Boolean get() = tiles.busy
+
     override fun onDraw(canvas: Canvas) {
         val t0 = System.nanoTime()
         val z = b.camZ
@@ -1477,12 +1515,29 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         // Издалека ручка рисуется одним контуром ровной толщины — на глаз не отличить, а в разы быстрее.
         val fast = z < 0.6f
         val tiny = 1.5f / z // меньше полутора пикселей — рисовать нечего
-        for (d in b.strokes) {
+        // Штрихи — готовыми плитками (FW-009): кадр не зависит от числа штрихов. Выделенные — поверх, напрямую.
+        selDrawings.clear()
+        liveCount = 0
+        for (o in selection) if (o is Drawing) selDrawings += o
+        if (useTiles) {
+            val seen = tiles.sync(b.strokes, selDrawings, vis)
+            drawn += seen
+            if ((capturing || plain) && seen < 600) {
+                // Снимок (кадр под пером, пипетка) при немногих штрихах — напрямую быстрее, чем из плиток.
+                drawStrokesIn(canvas, vis, fast, tiny)
+            } else {
+                val complete = capturing || plain || (!canvas.isHardwareAccelerated && !asyncTiles)
+                tiles.draw(canvas, vis, z, complete) { r -> drawStrokesIn(canvas, r, fast, tiny) }
+            }
+        } else {
+            drawStrokesIn(canvas, vis, fast, tiny)
+            drawn += b.strokes.size
+        }
+        if (selDrawings.isNotEmpty()) for (d in b.strokes) {
+            if (d !in selDrawings) continue
             val r = d.bounds()
             if (!visible(r.left, r.top, r.right, r.bottom)) continue
-            if (r.width() < tiny && r.height() < tiny) continue
             painter.drawing(canvas, d, 255, fast)
-            drawn++
         }
         for (t in b.texts) {
             if (t.size * z < 2f) continue // буквы меньше 2 пикселей не видны

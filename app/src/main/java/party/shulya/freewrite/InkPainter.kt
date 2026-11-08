@@ -53,33 +53,50 @@ class InkPainter {
      * разной толщины; fast = true (доска издалека) — одним контуром ровной толщины, это намного быстрее.
      */
     fun drawing(canvas: Canvas, d: Drawing, alpha: Int = 255, fast: Boolean = false) {
-        val pts = d.pts
+        paint(canvas, d.kind, d.color, d.width, d.pts, d.uniform, fast, alpha) {
+            d.path ?: buildPath(d.kind, d.pts, d.uniform, Path()).also { d.path = it }
+        }
+    }
+
+    /**
+     * Рисунок по готовой копии (плитки доски рисуются в фоне): контур строится заново в свой [path],
+     * в рисунке ничего не запоминается. У каждого фонового потока — свой InkPainter.
+     */
+    fun drawRaw(canvas: Canvas, kind: String, color: Int, width: Float, pts: FloatArray, uniform: Boolean, fast: Boolean) {
+        paint(canvas, kind, color, width, pts, uniform, fast, 255) {
+            path.reset()
+            buildPath(kind, pts, uniform, path)
+        }
+    }
+
+    private inline fun paint(
+        canvas: Canvas, kind: String, color: Int, width: Float, pts: FloatArray, uniform: Boolean, fast: Boolean, alpha: Int,
+        contour: () -> Path,
+    ) {
         val n = pts.size / 3
         if (n == 0) return
-        paint.color = d.color
-        paint.alpha = if (d.kind == "marker") alpha * 80 / 255 else alpha
+        paint.color = color
+        paint.alpha = if (kind == "marker") alpha * 80 / 255 else alpha
         if (n == 1) {
-            dot(canvas, pts[0], pts[1], d.width)
+            dot(canvas, pts[0], pts[1], width)
             return
         }
-        if (d.kind == "pen" && !fast && !d.uniform) {
+        if (kind == "pen" && !fast && !uniform) {
             for (i in 1 until n) {
-                paint.strokeWidth = d.width * (0.45f + 1.1f * (pts[i * 3 - 1] + pts[i * 3 + 2]) / 2f)
+                paint.strokeWidth = width * (0.45f + 1.1f * (pts[i * 3 - 1] + pts[i * 3 + 2]) / 2f)
                 canvas.drawLine(pts[i * 3 - 3], pts[i * 3 - 2], pts[i * 3], pts[i * 3 + 1], paint)
             }
             return
         }
-        val p = d.path ?: buildPath(d).also { d.path = it }
-        paint.strokeWidth = if (d.kind == "pen" && d.uniform) d.width * (0.45f + 1.1f * pts[2]) else d.width
+        val p = contour()
+        paint.strokeWidth = if (kind == "pen" && uniform) width * (0.45f + 1.1f * pts[2]) else width
         canvas.drawPath(p, paint)
     }
 
-    private fun buildPath(d: Drawing): Path {
-        val pts = d.pts
+    private fun buildPath(kind: String, pts: FloatArray, uniform: Boolean, p: Path): Path {
         val n = pts.size / 3
-        val p = Path()
         p.moveTo(pts[0], pts[1])
-        if (d.kind == "pen" && d.uniform) {
+        if (kind == "pen" && uniform) {
             // Ровные фигуры — прямые отрезки, углы остаются углами.
             for (i in 1 until n) p.lineTo(pts[i * 3], pts[i * 3 + 1])
             return p
