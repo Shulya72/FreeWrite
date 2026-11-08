@@ -57,12 +57,17 @@ fi
 out BUCKET "$BUCKET"
 
 # 4. Группа журналов по умолчанию (туда пишет функция; бесплатно до 5 ГБ в месяц, хранение 3 дня).
-if ! yc logging group get --name default > /dev/null 2>&1; then
-  yc logging group create --name default --retention-period 72h > /dev/null
+# Если сервис журналов недоступен (у Яндекса бывает) — функция работает без журнала.
+LOGGING=1
+if yc logging group get --name default > /dev/null 2>&1; then
+  echo "Группа журналов default: есть"
+elif yc logging group create --name default --retention-period 72h > /dev/null 2>&1; then
   echo "Создана группа журналов default"
 else
-  echo "Группа журналов default: есть"
+  LOGGING=0
+  echo "::warning::Сервис журналов Яндекса недоступен — функция без журнала"
 fi
+out LOGGING "$LOGGING"
 
 # 5. Функция-сервер, открытая для вызова из приложения (доступ к доскам — по ключам досок).
 if ! yc serverless function get --name freewrite-sync --format json > /dev/null 2>&1; then

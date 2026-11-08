@@ -59,7 +59,9 @@ jobs:
           cd server
           zip -q ../server.zip index.py store_ydb.py blob.py errors.py requirements.txt
           cd ..
-          yc serverless function version create \
+          LOGOPT="--min-log-level warn"
+          [ "${LOGGING:-1}" = "1" ] || LOGOPT="--no-logging"
+          yc serverless function version create $LOGOPT \
             --function-name freewrite-sync \
             --runtime python312 \
             --entrypoint index.handler \
