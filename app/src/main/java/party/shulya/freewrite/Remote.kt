@@ -72,6 +72,12 @@ object Remote {
 
     // ---------------------------------------------------------------- что отправить
 
+    /** Ссылка на сайт просмотра доски (FW-003): адрес сервера + код. null — адреса нет (сборка без сервера). */
+    fun siteLink(base: String, invite: String): String? {
+        if (!base.startsWith("https://") || invite.length != 8) return null
+        return base.substringBefore('?').trimEnd('/') + "?v=" + prettyInvite(invite)
+    }
+
     fun statusJson(s: BoardStatus): String =
         JSONObject().put("id", s.id).put("name", s.name).put("color", s.color)
             .also { if (s.group != BoardStatus.ID) it.put("g", s.group) }.toString()

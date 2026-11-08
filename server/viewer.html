@@ -1,0 +1,956 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>FreeWrite — доска</title>
+<style>
+  :root {
+    --desk: #e6eaf0; --paper: #fcfdfe; --ink: #16223a; --ink2: #4b5873; --muted: #8592a8;
+    --rule: #d3dae5; --accent: #d4470c; --accent-soft: #fbe6dc; --ok: #23803a; --bad: #be2a2a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--desk); color: var(--ink);
+    font: 15px/1.4 Roboto, "Segoe UI", system-ui, -apple-system, Arial, sans-serif; }
+  button { font: inherit; cursor: pointer; border: 1px solid var(--rule); background: var(--paper); color: var(--ink);
+    border-radius: 10px; padding: 7px 12px; font-weight: 600; }
+  button:hover { border-color: var(--ink2); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.icon { padding: 7px 11px; min-width: 38px; }
+  [hidden] { display: none !important; }
+
+  /* Вход */
+  #login { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .card { background: var(--paper); border: 1px solid var(--rule); border-radius: 16px; padding: 24px; width: 100%; max-width: 420px;
+    box-shadow: 0 8px 30px rgba(22, 34, 58, .08); }
+  .card h1 { margin: 0 0 4px; font-size: 22px; }
+  .card p { margin: 6px 0 16px; color: var(--ink2); }
+  #code { width: 100%; font: 600 26px/1.2 ui-monospace, Consolas, monospace; letter-spacing: 3px; text-align: center;
+    padding: 12px; border: 1.5px solid var(--rule); border-radius: 12px; text-transform: uppercase; color: var(--ink); background: #fff; }
+  #code:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .err { color: var(--bad); min-height: 22px; margin-top: 10px; font-size: 14px; }
+  .small { color: var(--muted); font-size: 13px; }
+
+  /* Доска */
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--paper); border-bottom: 1px solid var(--rule);
+    flex-wrap: wrap; }
+  header .title { font-weight: 700; font-size: 17px; margin-right: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
+  header .state { color: var(--ink2); font-size: 13px; margin-right: auto; white-space: nowrap; }
+  header .zoom { font: 12px ui-monospace, Consolas, monospace; color: var(--ink2); min-width: 46px; text-align: center; }
+  #stage { position: relative; flex: 1; overflow: hidden; background: var(--paper); touch-action: none; }
+  #c { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+  #c.drag { cursor: grabbing; }
+  #progress { position: absolute; left: 12px; bottom: 12px; background: var(--paper); border: 1px solid var(--rule); border-radius: 8px;
+    padding: 4px 9px; font-size: 13px; color: var(--ink2); }
+
+  /* Легенда */
+  #legend { position: absolute; right: 12px; top: 12px; width: 300px; max-width: calc(100% - 24px); max-height: calc(100% - 24px); overflow: auto;
+    background: var(--paper); border: 1px solid var(--rule); border-radius: 14px; padding: 12px; box-shadow: 0 6px 24px rgba(22, 34, 58, .10); }
+  #legend h3 { margin: 0; font-size: 15px; flex: 1; }
+  #legend select { width: 100%; margin: 8px 0 4px; font: inherit; font-weight: 600; color: var(--accent); background: var(--accent-soft);
+    border: 0; border-radius: 8px; padding: 6px 8px; }
+  .group { font-size: 13px; font-weight: 700; color: var(--ink2); margin: 10px 0 2px; }
+  .st { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; }
+  .st:hover { background: var(--desk); }
+  .st.on { background: var(--accent-soft); border-color: var(--accent); }
+  .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+  .st .n { margin-left: auto; font-weight: 700; color: var(--ink2); }
+  .checks { font-size: 13px; color: var(--ink2); padding: 4px 8px; }
+
+  /* Окна */
+  .modal { position: fixed; inset: 0; background: rgba(22, 34, 58, .35); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 10; }
+  .modal .card { max-width: 760px; max-height: calc(100% - 32px); display: flex; flex-direction: column; }
+  .modal .body { overflow: auto; margin: 8px 0 12px; }
+  .sec { border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; cursor: pointer; }
+  .sec:hover { border-color: var(--ink2); }
+  .sec b { font-size: 16px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chip { font-size: 12px; padding: 3px 9px; border-radius: 12px; }
+  .link { font: 15px ui-monospace, Consolas, monospace; padding: 10px; background: var(--desk); border-radius: 8px; word-break: break-all; user-select: all; }
+  @media (max-width: 700px) {
+    header .title { max-width: 60vw; }
+    #legend { top: auto; bottom: 12px; max-height: 45%; }
+  }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="card">
+    <h1>FreeWrite</h1>
+    <p>Доска с планшета — для просмотра с компьютера. Введите код доски.</p>
+    <form id="loginForm" autocomplete="off">
+      <input id="code" maxlength="9" placeholder="XXXX-XXXX" inputmode="latin" spellcheck="false" autofocus>
+      <div class="err" id="loginErr"></div>
+      <div class="row" style="justify-content: flex-end"><button class="primary" type="submit" id="openBtn">Открыть</button></div>
+    </form>
+    <p class="small">Код — в приложении FreeWrite под названием общей доски («код XXXX-XXXX») или ссылка, которую прислали.
+      На сайте доску можно только смотреть.</p>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <span class="title" id="title">Доска</span>
+    <span class="state" id="state">только просмотр</span>
+    <button class="icon" id="zoomOut" title="Отдалить">−</button>
+    <span class="zoom" id="zoom">100%</span>
+    <button class="icon" id="zoomIn" title="Приблизить">+</button>
+    <button id="fit" title="Показать всю доску">Вся доска</button>
+    <button id="legendBtn">Статусы</button>
+    <button id="summaryBtn">Сводка</button>
+    <button id="linkBtn" hidden title="Ссылка, по которой доску можно только смотреть">Ссылка для руководства</button>
+    <button id="logout" title="Забыть код на этом компьютере">Выйти</button>
+  </header>
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <div id="legend" hidden></div>
+    <div id="progress" hidden></div>
+  </div>
+</div>
+
+<div class="modal" id="modal" hidden><div class="card"><h1 id="mTitle"></h1><div class="body" id="mBody"></div>
+  <div class="row" style="justify-content: flex-end" id="mButtons"></div></div></div>
+
+<script>
+"use strict";
+// FreeWrite — сайт для просмотра общей доски (FW-003). Данные — тем же запросом pull, что у приложения,
+// картинки — img_get частями. Ничего не отправляет на доску: только смотреть.
+
+const API = location.origin + location.pathname;
+const $ = (id) => document.getElementById(id);
+const C = { desk: "#e6eaf0", paper: "#fcfdfe", ink: "#16223a", ink2: "#4b5873", muted: "#8592a8", rule: "#d3dae5",
+  line: "rgba(40,80,140,0.118)", accent: "#d4470c", ok: "#23803a", bad: "#be2a2a" };
+const FONT = 'Roboto, "Segoe UI", system-ui, Arial, sans-serif';
+const MIN_Z = 0.01, MAX_Z = 5, ROW_FONT = 15, ROW_BOX = 22, MIN_PX = 0.8;
+
+// ------------------------------------------------------------ сервер
+
+async function api(op, body) {
+  let last;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let r;
+    try {
+      r = await fetch(API, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ op }, body || {})) });
+    } catch (e) { last = new Error("Нет связи с сервером"); await sleep(1500 * (attempt + 1)); continue; }
+    let o = {};
+    try { o = await r.json(); } catch (e) { /* не JSON */ }
+    if (r.ok) return o;
+    const err = new Error(o.message || ("Ошибка сервера " + r.status));
+    err.code = o.error || "http"; err.status = r.status;
+    // Сервер занят (база «дышит» с ограничением) — подождать и повторить.
+    if (r.status === 503 || r.status === 429 || r.status >= 500) { last = err; await sleep(1500 * (attempt + 1)); continue; }
+    throw err;
+  }
+  throw last;
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ------------------------------------------------------------ хранилище браузера (повторное открытие — быстро)
+
+const DB = (() => {
+  let db = null;
+  function open() {
+    if (db) return Promise.resolve(db);
+    return new Promise((res) => {
+      try {
+        const q = indexedDB.open("freewrite-viewer", 1);
+        q.onupgradeneeded = () => { q.result.createObjectStore("boards"); q.result.createObjectStore("images"); };
+        q.onsuccess = () => { db = q.result; res(db); };
+        q.onerror = () => res(null);
+      } catch (e) { res(null); }
+    });
+  }
+  async function get(store, key) {
+    const d = await open(); if (!d) return null;
+    return new Promise((res) => { try { const r = d.transaction(store).objectStore(store).get(key); r.onsuccess = () => res(r.result || null); r.onerror = () => res(null); } catch (e) { res(null); } });
+  }
+  async function put(store, key, val) {
+    const d = await open(); if (!d) return;
+    return new Promise((res) => { try { const t = d.transaction(store, "readwrite"); t.objectStore(store).put(val, key); t.oncomplete = () => res(); t.onerror = () => res(); } catch (e) { res(); } });
+  }
+  return { get, put };
+})();
+
+function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* приватное окно */ } }
+
+// ------------------------------------------------------------ цвета (как в приложении)
+
+function argb(c) { return { a: ((c >>> 24) & 255) / 255, r: (c >>> 16) & 255, g: (c >>> 8) & 255, b: c & 255 }; }
+function css(c, alpha) { const x = argb(c); return `rgba(${x.r},${x.g},${x.b},${alpha == null ? x.a : alpha})`; }
+function lin(v) { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+function statusFg(c) {
+  const x = argb(c); const l = 0.2126 * lin(x.r) + 0.7152 * lin(x.g) + 0.0722 * lin(x.b);
+  const k = l > 0.45 ? 0.55 : l > 0.25 ? 0.8 : 1;
+  return `rgb(${Math.floor(x.r * k)},${Math.floor(x.g * k)},${Math.floor(x.b * k)})`;
+}
+function statusBg(c) { const x = argb(c); const m = (v) => Math.floor(v + (255 - v) * 0.78); return `rgb(${m(x.r)},${m(x.g)},${m(x.b)})`; }
+
+// ------------------------------------------------------------ доска
+
+const B = {
+  board: null, key: null, edit: false, title: "Доска", seq: 0,
+  objs: new Map(),      // id → {k, rev, d}
+  order: [],            // порядок статусов (~order)
+  // разобранное — пересобирается после каждой порции правок
+  statuses: [], strokes: [], texts: [], images: [], fills: [], frames: [], callouts: [], stickers: [], rows: [],
+};
+
+function rebuild() {
+  const by = { status: [], stroke: [], text: [], image: [], fill: [], frame: [], callout: [], sticker: [], row: [] };
+  B.title = "Доска";
+  for (const [id, o] of B.objs) {
+    if (id === "~title") { if (o.d && o.d.title) B.title = o.d.title; continue; }
+    if (id === "~order") { B.order = (o.d && o.d.order) || []; continue; }
+    if (by[o.k]) by[o.k].push(o);
+  }
+  const pos = new Map(B.order.map((id, i) => [id, i]));
+  B.statuses = by.status.map((o) => ({ id: o.id, name: o.d.name || "Статус", color: o.d.color | 0, group: o.d.g === "con" ? "con" : "id" }))
+    .sort((a, b) => (pos.has(a.id) ? pos.get(a.id) : 1e9) - (pos.has(b.id) ? pos.get(b.id) : 1e9));
+  B.strokes = by.stroke.map(prepStroke).filter(Boolean);
+  B.texts = by.text.map((o) => o.d);
+  B.images = by.image.map((o) => o.d);
+  B.fills = by.fill.map((o) => prepFill(o.d)).filter(Boolean);
+  B.frames = by.frame.map((o) => o.d);
+  B.callouts = by.callout.map((o) => o.d);
+  B.stickers = by.sticker.map((o) => o.d);
+  B.rows = by.row.map((o) => o.d);
+  for (const t of B.texts) t._w = null;
+  for (const c of B.callouts) c._w = null;
+  for (const r of B.rows) r._key = null;
+}
+
+function status(id) { return B.statuses.find((s) => s.id === id) || B.statuses[0] || { id: "", name: "Статус", color: 0xff8592a8 | 0, group: "id" }; }
+function statuses(group) { return B.statuses.filter((s) => s.group === group); }
+
+function prepStroke(o) {
+  const d = o.d; const p = d.pts || [];
+  const n = Math.floor(p.length / 3);
+  if (!n) return null;
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity, uniform = true;
+  for (let i = 0; i < n; i++) {
+    const x = p[i * 3], y = p[i * 3 + 1];
+    if (x < l) l = x; if (x > r) r = x; if (y < t) t = y; if (y > b) b = y;
+    if (p[i * 3 + 2] !== p[2]) uniform = false;
+  }
+  const w = d.w || 3;
+  return { kind: d.kind || "pen", color: d.color | 0, w, p, n, uniform, l: l - w, t: t - w, r: r + w, b: b + w, path: null };
+}
+
+function strokePath(s) {
+  if (s.path) return s.path;
+  const p = s.p, n = s.n, path = new Path2D();
+  path.moveTo(p[0], p[1]);
+  if (s.kind === "pen" && s.uniform) { for (let i = 1; i < n; i++) path.lineTo(p[i * 3], p[i * 3 + 1]); }
+  else {
+    for (let i = 1; i < n; i++) {
+      const ax = p[i * 3 - 3], ay = p[i * 3 - 2], bx = p[i * 3], by = p[i * 3 + 1];
+      path.quadraticCurveTo(ax, ay, (ax + bx) / 2, (ay + by) / 2);
+    }
+    path.lineTo(p[(n - 1) * 3], p[(n - 1) * 3 + 1]);
+  }
+  s.path = path;
+  return path;
+}
+
+function prepFill(d) {
+  const p = d.pts || []; if (p.length < 6) return null;
+  const path = new Path2D(); path.moveTo(p[0], p[1]);
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+  for (let i = 0; i + 1 < p.length; i += 2) {
+    if (i) path.lineTo(p[i], p[i + 1]);
+    l = Math.min(l, p[i]); r = Math.max(r, p[i]); t = Math.min(t, p[i + 1]); b = Math.max(b, p[i + 1]);
+  }
+  path.closePath();
+  return { color: d.color | 0, alpha: d.alpha == null ? 0.35 : d.alpha, path, l, t, r, b, pts: p };
+}
+
+// Размеры как в приложении (BoardView).
+const mctx = document.createElement("canvas").getContext("2d");
+function measure(text, size, bold) { mctx.font = (bold ? "bold " : "") + size + "px " + FONT; return mctx.measureText(text).width; }
+function textW(t) { if (t._w == null) { t._lines = String(t.text || "").split("\n"); t._w = Math.max(...t._lines.map((l) => measure(l, t.size, false)), 1); } return t._w; }
+function textBottom(t) { textW(t); return t.y + (t._lines.length - 1) * t.size * 1.25 + t.size * 0.3; }
+function stickerW(s) { return Math.max(128, status(s.sid).name.length * 9.4 + 40) * s.scale; }
+function calloutBox(c) {
+  const name = status(c.sid).name; const key = c.title + "\u0001" + name;
+  if (c._w == null || c._wk !== key) {
+    const tw = measure(c.title || " ", 15, false), sw = measure(name, 14, true);
+    c._w = Math.max(150, Math.max(tw, sw) + 24); c._wk = key;
+  }
+  return { l: c.x, t: c.y, r: c.x + c._w * c.scale, b: c.y + 60 * c.scale };
+}
+function rowLayout(r) {
+  const st = status(r.sid).name; const key = (r.title || "") + "\u0001" + st;
+  if (r._key === key) return r._parts;
+  const pad = 12; let x = 0; const p = [0, 0, 0, 0, 0];
+  x += r.title ? pad + measure(r.title, ROW_FONT, true) + pad : 0; p[1] = x;
+  x += pad + measure("Чек-лист", ROW_FONT, false) + 8 + ROW_BOX + pad; p[2] = x;
+  x += pad + measure("DWG", ROW_FONT, false) + 8 + ROW_BOX + pad; p[3] = x;
+  x += pad + measure("ИГС", ROW_FONT, true) + 8 + measure(st, ROW_FONT, true) + 28 + pad; p[4] = x;
+  r._parts = p; r._key = key;
+  return p;
+}
+function rowW(r) { return rowLayout(r)[4] * r.scale; }
+function rowH(r) { return 40 * r.scale; }
+
+// Раздел, где стоит предмет (как Board.sectionOf): самая маленькая рамка, внутри которой его опорная точка.
+function sectionAt(x, y) {
+  let best = null;
+  for (const f of B.frames) {
+    if (x < f.x || x > f.x + f.w || y < f.y || y > f.y + f.h) continue;
+    if (!best || f.w * f.h < best.w * best.h) best = f;
+  }
+  return best;
+}
+function sectionOf(o, kind) {
+  if (kind === "sticker") return sectionAt(o.x + 64 * o.scale, o.y + 18 * o.scale);
+  if (kind === "row") return sectionAt(o.x + 20 * o.scale, o.y + 20 * o.scale);
+  if (kind === "callout") return o.leaders && o.leaders.length >= 2 ? sectionAt(o.leaders[0], o.leaders[1]) : sectionAt(o.x, o.y);
+  return null;
+}
+
+// ------------------------------------------------------------ загрузка и обновления
+
+let sinceSaved = 0, saveTimer = 0;
+
+function applyChanges(list) {
+  for (const c of list) {
+    if (c.x) { B.objs.delete(c.id); continue; }
+    let d = null; try { d = JSON.parse(c.d); } catch (e) { continue; }
+    const prev = B.objs.get(c.id);
+    if (prev && prev.rev > c.rev) continue;
+    B.objs.set(c.id, { id: c.id, k: c.k, rev: c.rev, d });
+  }
+}
+
+async function pullAll(first) {
+  let more = true, got = 0;
+  while (more) {
+    const r = await api("pull", { board: B.board, key: B.key, since: B.seq });
+    if (r.seq < B.seq) { // доску на сервере выложили заново — начать с нуля
+      B.objs.clear(); B.seq = 0; continue;
+    }
+    applyChanges(r.changes || []);
+    got += (r.changes || []).length;
+    B.seq = r.next; more = r.more;
+    if (r.title) B.title = r.title;
+    if (first) progress(`Загружаю доску: ${B.objs.size} предметов…`);
+  }
+  if (got || first) { rebuild(); redraw(true); refreshPanels(); scheduleSave(); }
+  return got;
+}
+
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    if (B.seq === sinceSaved) return;
+    sinceSaved = B.seq;
+    DB.put("boards", B.board, { seq: B.seq, objs: [...B.objs.values()].map((o) => [o.id, o.k, o.rev, o.d]) });
+  }, 1500);
+}
+
+async function loadCached() {
+  const c = await DB.get("boards", B.board);
+  if (!c || !c.objs) return false;
+  B.objs.clear();
+  for (const [id, k, rev, d] of c.objs) B.objs.set(id, { id, k, rev, d });
+  B.seq = c.seq || 0; sinceSaved = B.seq;
+  rebuild();
+  return true;
+}
+
+let pollTimer = 0, lastOk = 0;
+function startPolling() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    if (document.hidden) return;
+    try { await pullAll(false); lastOk = Date.now(); updateState(); }
+    catch (e) { updateState(e.message); }
+  }, 20000);
+}
+function updateState(err) {
+  const t = lastOk ? new Date(lastOk).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "";
+  $("state").textContent = (B.edit ? "только просмотр (код с правом правки)" : "только просмотр") + (err ? " · нет связи: " + err : t ? " · ✓ " + t : "");
+  $("title").textContent = B.title;
+  document.title = B.title + " — FreeWrite";
+}
+
+// ------------------------------------------------------------ картинки
+
+const IMG = new Map(); // файл → {state, blob, small, big, w, h}
+let imgQueue = [], imgBusy = 0, imgDone = 0;
+
+function imageFor(m, screenW) {
+  let e = IMG.get(m.file);
+  if (!e) { e = { state: "new" }; IMG.set(m.file, e); }
+  if (e.state === "new") { e.state = "queued"; imgQueue.push(m.file); pumpImages(); }
+  if (e.state !== "ready") return null;
+  // Крупно на экране — полная картинка (делается по запросу, держим немного), иначе — уменьшенная.
+  if (screenW > 1100 && e.blob) {
+    if (e.big) { e.bigUsed = performance.now(); return e.big; }
+    if (!e.bigPending) {
+      e.bigPending = true;
+      createImageBitmap(e.blob).then((bmp) => { e.big = bmp; e.bigUsed = performance.now(); e.bigPending = false; trimBig(); redraw(); })
+        .catch(() => { e.bigPending = false; });
+    }
+  }
+  return e.small;
+}
+function trimBig() {
+  const bigs = [...IMG.values()].filter((e) => e.big).sort((a, b) => a.bigUsed - b.bigUsed);
+  while (bigs.length > 6) { const e = bigs.shift(); try { e.big.close(); } catch (x) { /* */ } e.big = null; }
+}
+async function pumpImages() {
+  while (imgBusy < 2 && imgQueue.length) {
+    // Сначала — видимые.
+    const vis = imgQueue.findIndex((f) => { const m = B.images.find((i) => i.file === f); return m && visible(m.x, m.y, m.x + m.w, m.y + m.h); });
+    const file = imgQueue.splice(vis >= 0 ? vis : 0, 1)[0];
+    imgBusy++;
+    loadImage(file).finally(() => { imgBusy--; imgDone++; showImgProgress(); pumpImages(); });
+  }
+}
+async function loadImage(file) {
+  const e = IMG.get(file);
+  try {
+    let blob = await DB.get("images", file);
+    if (!blob) {
+      const first = await api("img_get", { board: B.board, key: B.key, file, part: 0 });
+      const parts = [b64(first.data)];
+      for (let i = 1; i < first.parts; i++) parts.push(b64((await api("img_get", { board: B.board, key: B.key, file, part: i })).data));
+      blob = new Blob(parts, { type: "image/jpeg" });
+      DB.put("images", file, blob);
+    }
+    e.blob = blob;
+    const full = await createImageBitmap(blob);
+    e.w = full.width; e.h = full.height;
+    const k = Math.min(1, 1024 / Math.max(full.width, full.height));
+    e.small = k < 1 ? await createImageBitmap(full, { resizeWidth: Math.round(full.width * k), resizeHeight: Math.round(full.height * k), resizeQuality: "high" }) : full;
+    if (e.small !== full) full.close();
+    e.state = "ready";
+    redraw();
+  } catch (err) { e.state = "error"; }
+}
+function b64(s) { const bin = atob(s); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; }
+function showImgProgress() {
+  const total = B.images.length;
+  const ready = B.images.filter((m) => { const e = IMG.get(m.file); return e && (e.state === "ready" || e.state === "error"); }).length;
+  if (total && ready < total) progress(`Картинки: ${ready} из ${total}…`); else progress(null);
+}
+function progress(text) { const p = $("progress"); if (text) { p.textContent = text; p.hidden = false; } else p.hidden = true; }
+
+// ------------------------------------------------------------ рисование
+
+const cv = $("c"), ctx = cv.getContext("2d");
+const cam = { x: 0, y: 0, z: 1 };
+let W = 0, H = 0, DPR = 1, highlight = null;
+
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  const r = cv.getBoundingClientRect();
+  W = r.width; H = r.height;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  redraw(true);
+}
+function visible(l, t, r, b) {
+  return r >= cam.x && l <= cam.x + W / cam.z && b >= cam.y && t <= cam.y + H / cam.z;
+}
+
+let frameReq = 0, fullNeeded = false, snap = null, lastRenderMs = 0, idleTimer = 0;
+function redraw(full) {
+  if (full) fullNeeded = true;
+  if (!frameReq) frameReq = requestAnimationFrame(frame);
+}
+function frame() {
+  frameReq = 0;
+  // Пока двигают и доска тяжёлая — показываем снимок, полную картинку — когда остановились.
+  if (interacting && snap && lastRenderMs > 25 && !fullNeeded) { drawSnap(); return; }
+  fullNeeded = false;
+  const t0 = performance.now();
+  render();
+  lastRenderMs = performance.now() - t0;
+  $("zoom").textContent = Math.round(cam.z * 100) + "%";
+}
+function takeSnap() {
+  if (!snap) snap = document.createElement("canvas");
+  snap.width = cv.width; snap.height = cv.height;
+  snap.getContext("2d").drawImage(cv, 0, 0);
+  snap.cam = { x: cam.x, y: cam.y, z: cam.z };
+}
+function drawSnap() {
+  const s = snap.cam, k = cam.z / s.z;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(snap, (s.x - cam.x) * cam.z * DPR, (s.y - cam.y) * cam.z * DPR, snap.width * k, snap.height * k);
+  $("zoom").textContent = Math.round(cam.z * 100) + "%";
+}
+
+function render() {
+  const z = cam.z;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(DPR * z, 0, 0, DPR * z, -cam.x * z * DPR, -cam.y * z * DPR);
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  // Сетка.
+  let step = 40; while (step * z < 14) step *= 5;
+  ctx.strokeStyle = C.line; ctx.lineWidth = 1 / z;
+  ctx.beginPath();
+  const x0 = cam.x, y0 = cam.y, x1 = cam.x + W / z, y1 = cam.y + H / z;
+  for (let x = Math.floor(x0 / step) * step; x < x1; x += step) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+  for (let y = Math.floor(y0 / step) * step; y < y1; y += step) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+  ctx.stroke();
+  // Картинки.
+  for (const m of B.images) if (visible(m.x, m.y, m.x + m.w, m.y + m.h)) drawImage(m, z);
+  // Заливки.
+  for (const f of B.fills) if (visible(f.l, f.t, f.r, f.b)) {
+    ctx.fillStyle = css(f.color, f.alpha); ctx.fill(f.path);
+    ctx.strokeStyle = css(f.color, 200 / 255); ctx.lineWidth = 1.5 / z; ctx.stroke(f.path);
+  }
+  // Разделы (рамки).
+  ctx.strokeStyle = "rgba(75,88,115,0.67)"; ctx.lineWidth = 1.5 / z;
+  for (const f of B.frames) if (visible(f.x, f.y, f.x + f.w, f.y + f.h)) ctx.strokeRect(f.x, f.y, f.w, f.h);
+  // Штрихи.
+  const minW = MIN_PX / z, fast = z < 0.6;
+  for (const s of B.strokes) {
+    if (!visible(s.l, s.t, s.r, s.b)) continue;
+    const marker = s.kind === "marker";
+    ctx.strokeStyle = css(s.color, marker ? 80 / 255 : null);
+    if (s.n === 1) {
+      ctx.fillStyle = ctx.strokeStyle; ctx.beginPath(); ctx.arc(s.p[0], s.p[1], Math.max(s.w, minW) * 0.6, 0, 7); ctx.fill(); continue;
+    }
+    if (s.kind === "pen" && !s.uniform && !fast) {
+      for (let i = 1; i < s.n; i++) {
+        ctx.lineWidth = Math.max(s.w * (0.45 + 1.1 * (s.p[i * 3 - 1] + s.p[i * 3 + 2]) / 2), minW);
+        ctx.beginPath(); ctx.moveTo(s.p[i * 3 - 3], s.p[i * 3 - 2]); ctx.lineTo(s.p[i * 3], s.p[i * 3 + 1]); ctx.stroke();
+      }
+      continue;
+    }
+    ctx.lineWidth = Math.max(s.kind === "pen" && s.uniform ? s.w * (0.45 + 1.1 * s.p[2]) : s.w, minW);
+    ctx.stroke(strokePath(s));
+  }
+  // Надписи.
+  for (const t of B.texts) {
+    if (t.size * z < 2) continue;
+    if (!visible(t.x, t.y - t.size, t.x + textW(t), textBottom(t))) continue;
+    ctx.fillStyle = css(t.color | 0); ctx.font = t.size + "px " + FONT;
+    let ly = t.y; for (const line of t._lines) { ctx.fillText(line, t.x, ly); ly += t.size * 1.25; }
+  }
+  for (const c of B.callouts) drawCallout(c, z);
+  for (const s of B.stickers) drawSticker(s, z);
+  for (const r of B.rows) drawRow(r, z);
+  if (highlight) {
+    ctx.fillStyle = "rgba(252,253,254,0.745)"; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    for (const c of B.callouts) if (c.sid === highlight) drawCallout(c, z);
+    for (const s of B.stickers) if (s.sid === highlight) drawSticker(s, z);
+    for (const r of B.rows) if (r.sid === highlight) drawRow(r, z);
+  }
+  // Ярлыки разделов — на экране, всегда одного размера.
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.font = "bold 13px " + FONT;
+  for (const f of B.frames) {
+    if (!visible(f.x, f.y - 30 / z, f.x + f.w, f.y + f.h)) continue;
+    const label = f.title || "Раздел", w = ctx.measureText(label).width + 14;
+    const l = (f.x - cam.x) * z, b = (f.y - cam.y) * z - 3;
+    rrect(l, b - 24, w, 24, 6); ctx.fillStyle = C.paper; ctx.fill(); ctx.strokeStyle = C.ink2; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = C.ink; ctx.fillText(label, l + 7, b - 7.5);
+  }
+}
+
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h);
+}
+
+function drawImage(m, z) {
+  const sw = m.w * z;
+  const bmp = sw < 3 ? null : imageFor(m, sw);
+  const fr = 5 / z;
+  ctx.fillStyle = "#fff"; ctx.fillRect(m.x - fr, m.y - fr, m.w + fr * 2, m.h + fr * 2);
+  ctx.strokeStyle = C.rule; ctx.lineWidth = 1 / z; ctx.strokeRect(m.x - fr, m.y - fr, m.w + fr * 2, m.h + fr * 2);
+  if (!bmp) { ctx.fillStyle = C.desk; ctx.fillRect(m.x, m.y, m.w, m.h); return; }
+  const c = m.crop || [0, 0, 1, 1];
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bmp, c[0] * bmp.width, c[1] * bmp.height, (c[2] - c[0]) * bmp.width, (c[3] - c[1]) * bmp.height, m.x, m.y, m.w, m.h);
+}
+
+function drawCallout(c, z) {
+  const st = status(c.sid), fg = statusFg(st.color), box = calloutBox(c), k = c.scale;
+  if (!visible(Math.min(box.l, ...lx(c)), Math.min(box.t, ...ly(c)), Math.max(box.r, ...lx(c)), Math.max(box.b, ...ly(c)))) return;
+  ctx.strokeStyle = C.ink2; ctx.fillStyle = C.ink2; ctx.lineWidth = 1.6 * k;
+  for (let i = 0; i + 1 < (c.leaders || []).length; i += 2) {
+    const tx = c.leaders[i], ty = c.leaders[i + 1];
+    const ax = Math.min(Math.max(tx, box.l), box.r), ay = Math.min(Math.max(ty, box.t), box.b);
+    const inside = ax === tx && ay === ty;
+    const ox = inside ? (box.l + box.r) / 2 : ax, oy = inside ? box.b : ay;
+    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(tx, ty); ctx.stroke();
+    const len = Math.hypot(tx - ox, ty - oy);
+    if (len > 1) {
+      const ux = (tx - ox) / len, uy = (ty - oy) / len, al = 11 * k, aw = 4.5 * k;
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx - ux * al - uy * aw, ty - uy * al + ux * aw); ctx.lineTo(tx - ux * al + uy * aw, ty - uy * al - ux * aw); ctx.closePath(); ctx.fill();
+    }
+  }
+  const r = 8 * k, row = 30 * k, w = box.r - box.l, h = box.b - box.t;
+  rrect(box.l, box.t, w, h, r); ctx.fillStyle = "#fff"; ctx.fill();
+  ctx.save(); ctx.beginPath(); ctx.rect(box.l, box.t + row, w, h - row); ctx.clip();
+  rrect(box.l, box.t, w, h, r); ctx.fillStyle = statusBg(st.color); ctx.fill(); ctx.restore();
+  rrect(box.l, box.t, w, h, r); ctx.strokeStyle = fg; ctx.lineWidth = 1.5 * k; ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(box.l, box.t + row); ctx.lineTo(box.r, box.t + row); ctx.stroke();
+  if (15 * k * z < 3) return;
+  ctx.fillStyle = C.ink; ctx.font = 15 * k + "px " + FONT;
+  ctx.fillText(c.title || "", box.l + 12 * k, box.t + row / 2 + 15 * k * 0.36);
+  ctx.fillStyle = fg; ctx.font = "bold " + 14 * k + "px " + FONT;
+  ctx.fillText(st.name, box.l + 12 * k, box.t + row * 1.5 + 14 * k * 0.36);
+}
+function lx(c) { const a = []; for (let i = 0; i + 1 < (c.leaders || []).length; i += 2) a.push(c.leaders[i]); return a.length ? a : [c.x]; }
+function ly(c) { const a = []; for (let i = 1; i < (c.leaders || []).length; i += 2) a.push(c.leaders[i]); return a.length ? a : [c.y]; }
+
+function drawSticker(s, z) {
+  const st = status(s.sid), w = stickerW(s), h = 36 * s.scale;
+  if (!visible(s.x, s.y, s.x + w, s.y + h)) return;
+  const fg = statusFg(st.color);
+  rrect(s.x, s.y, w, h, h / 2); ctx.fillStyle = statusBg(st.color); ctx.fill();
+  ctx.strokeStyle = fg; ctx.lineWidth = 1.5 * s.scale; ctx.stroke();
+  if (16 * s.scale * z < 3) return;
+  ctx.fillStyle = fg; ctx.font = "bold " + 16 * s.scale + "px " + FONT;
+  const tw = ctx.measureText(st.name).width;
+  ctx.fillText(st.name, s.x + (w - tw) / 2, s.y + h / 2 + 16 * s.scale * 0.36);
+}
+
+function drawRow(r, z) {
+  const p = rowLayout(r), k = r.scale, h = rowH(r), x0 = r.x, y0 = r.y, cy = y0 + h / 2;
+  if (!visible(x0, y0, x0 + p[4] * k, y0 + h)) return;
+  rrect(x0, y0, p[4] * k, h, 8 * k); ctx.fillStyle = "#fff"; ctx.fill(); ctx.strokeStyle = C.rule; ctx.lineWidth = 1.5 * k; ctx.stroke();
+  if (ROW_FONT * k * z < 3) return;
+  const fs = ROW_FONT * k, base = cy + fs * 0.36;
+  if (p[1] > 0) {
+    ctx.fillStyle = C.ink; ctx.font = "bold " + fs + "px " + FONT; ctx.fillText(r.title, x0 + 12 * k, base);
+    ctx.strokeStyle = C.rule; ctx.beginPath(); ctx.moveTo(x0 + p[1] * k, y0 + 6 * k); ctx.lineTo(x0 + p[1] * k, y0 + h - 6 * k); ctx.stroke();
+  }
+  function check(from, label, on) {
+    ctx.fillStyle = C.ink2; ctx.font = fs + "px " + FONT;
+    ctx.fillText(label, x0 + (from + 12) * k, base);
+    const bx = x0 + (from + 12) * k + ctx.measureText(label).width + 8 * k, s = ROW_BOX * k;
+    const col = on ? 0xff23803a | 0 : 0xffbe2a2a | 0;
+    rrect(bx, cy - s / 2, s, s, 5 * k); ctx.fillStyle = statusBg(col); ctx.fill(); ctx.strokeStyle = css(col); ctx.lineWidth = 1.5 * k; ctx.stroke();
+    ctx.lineWidth = 2.6 * k; ctx.beginPath();
+    if (on) { ctx.moveTo(bx + s * 0.22, cy); ctx.lineTo(bx + s * 0.42, cy + s * 0.22); ctx.lineTo(bx + s * 0.8, cy - s * 0.24); }
+    else { ctx.moveTo(bx + s * 0.28, cy - s * 0.22); ctx.lineTo(bx + s * 0.72, cy + s * 0.22); ctx.moveTo(bx + s * 0.72, cy - s * 0.22); ctx.lineTo(bx + s * 0.28, cy + s * 0.22); }
+    ctx.stroke();
+  }
+  check(p[1], "Чек-лист", !!r.ck);
+  check(p[2], "DWG", !!r.dwg);
+  const st = status(r.sid), fg = statusFg(st.color);
+  ctx.font = "bold " + fs + "px " + FONT; ctx.fillStyle = C.ink2;
+  const lx0 = x0 + (p[3] + 12) * k; ctx.fillText("ИГС", lx0, base);
+  const px = lx0 + ctx.measureText("ИГС").width + 8 * k, pw = ctx.measureText(st.name).width + 28 * k;
+  const ph = h - 12 * k;
+  rrect(px, y0 + 6 * k, pw, ph, ph / 2); ctx.fillStyle = statusBg(st.color); ctx.fill(); ctx.strokeStyle = fg; ctx.lineWidth = 1.5 * k; ctx.stroke();
+  ctx.fillStyle = fg; ctx.fillText(st.name, px + 14 * k, base);
+}
+
+// ------------------------------------------------------------ камера: мышь, колёсико, пальцы
+
+let interacting = false, dragging = null;
+function setZoom(z, sx, sy) {
+  z = Math.min(MAX_Z, Math.max(MIN_Z, z));
+  const wx = sx / cam.z + cam.x, wy = sy / cam.z + cam.y;
+  cam.z = z; cam.x = wx - sx / z; cam.y = wy - sy / z;
+}
+function beginInteract() { if (!interacting) { interacting = true; takeSnap(); } clearTimeout(idleTimer); }
+function endInteractSoon(ms) { clearTimeout(idleTimer); idleTimer = setTimeout(() => { interacting = false; redraw(true); saveCam(); }, ms); }
+
+const pointers = new Map();
+let pinch = null;
+cv.addEventListener("pointerdown", (e) => {
+  cv.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, z: cam.z, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, cx: cam.x, cy: cam.y };
+    dragging = null;
+  } else if (pointers.size === 1) {
+    dragging = { x: e.offsetX, y: e.offsetY, cx: cam.x, cy: cam.y, moved: false };
+  }
+  beginInteract();
+  cv.classList.add("drag");
+});
+cv.addEventListener("pointermove", (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+  if (pinch && pointers.size >= 2) {
+    const [a, b] = [...pointers.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y) || 1, mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const z = Math.min(MAX_Z, Math.max(MIN_Z, pinch.z * d / pinch.d));
+    const wx = pinch.mx / pinch.z + pinch.cx, wy = pinch.my / pinch.z + pinch.cy;
+    cam.z = z; cam.x = wx - mx / z; cam.y = wy - my / z;
+    redraw();
+  } else if (dragging) {
+    const dx = e.offsetX - dragging.x, dy = e.offsetY - dragging.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) dragging.moved = true;
+    cam.x = dragging.cx - dx / cam.z; cam.y = dragging.cy - dy / cam.z;
+    redraw();
+  }
+});
+function pointerEnd(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinch = null;
+  if (pointers.size === 1) { const p = [...pointers.values()][0]; dragging = { x: p.x, y: p.y, cx: cam.x, cy: cam.y, moved: true }; }
+  if (!pointers.size) { dragging = null; cv.classList.remove("drag"); endInteractSoon(60); }
+}
+cv.addEventListener("pointerup", pointerEnd);
+cv.addEventListener("pointercancel", pointerEnd);
+cv.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  beginInteract();
+  // Колёсико мыши — приблизить/отдалить у курсора; щипок на тачпаде (ctrl) — тоже; прокрутка двумя пальцами
+  // на тачпаде (есть сдвиг вбок или дробный шаг) и Shift+колёсико — сдвинуть доску.
+  const trackpad = e.deltaMode === 0 && (e.deltaX !== 0 || !Number.isInteger(e.deltaY));
+  if (e.ctrlKey || (!trackpad && !e.shiftKey)) {
+    const step = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+    setZoom(cam.z * Math.exp(-step * (e.ctrlKey ? 0.01 : 0.0015)), e.offsetX, e.offsetY);
+  } else {
+    const dx = e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX, dy = e.shiftKey && !e.deltaX ? 0 : e.deltaY;
+    cam.x += dx / cam.z; cam.y += dy / cam.z;
+  }
+  redraw();
+  endInteractSoon(160);
+}, { passive: false });
+window.addEventListener("resize", resize);
+
+function fitRect(l, t, r, b) {
+  if (!(r > l && b > t)) return;
+  const pad = 40;
+  const z = Math.min(MAX_Z, Math.max(MIN_Z, Math.min(W / (r - l + pad * 2 / Math.max(cam.z, 0.01)), H / (b - t + pad * 2 / Math.max(cam.z, 0.01)))));
+  const z2 = Math.min(MAX_Z, Math.max(MIN_Z, Math.min((W - pad * 2) / (r - l), (H - pad * 2) / (b - t))));
+  cam.z = Math.min(z, z2); cam.x = (l + r) / 2 - W / 2 / cam.z; cam.y = (t + b) / 2 - H / 2 / cam.z;
+  redraw(true); saveCam();
+}
+function contentBounds() {
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+  const add = (x0, y0, x1, y1) => { l = Math.min(l, x0); t = Math.min(t, y0); r = Math.max(r, x1); b = Math.max(b, y1); };
+  for (const s of B.strokes) add(s.l, s.t, s.r, s.b);
+  for (const m of B.images) add(m.x, m.y, m.x + m.w, m.y + m.h);
+  for (const f of B.fills) add(f.l, f.t, f.r, f.b);
+  for (const f of B.frames) add(f.x, f.y, f.x + f.w, f.y + f.h);
+  for (const t2 of B.texts) add(t2.x, t2.y - t2.size, t2.x + textW(t2), textBottom(t2));
+  for (const c of B.callouts) { const x = calloutBox(c); add(x.l, x.t, x.r, x.b); }
+  for (const s of B.stickers) add(s.x, s.y, s.x + stickerW(s), s.y + 36 * s.scale);
+  for (const rr of B.rows) add(rr.x, rr.y, rr.x + rowW(rr), rr.y + rowH(rr));
+  return l <= r ? [l, t, r, b] : null;
+}
+function fitAll() { const bb = contentBounds(); if (bb) fitRect(...bb); else { cam.x = -40; cam.y = -40; cam.z = 1; redraw(true); } }
+function saveCam() { if (B.board) lsSet("fw-cam-" + B.board, JSON.stringify(cam)); }
+
+$("zoomIn").onclick = () => { setZoom(cam.z * 1.4, W / 2, H / 2); redraw(true); saveCam(); };
+$("zoomOut").onclick = () => { setZoom(cam.z / 1.4, W / 2, H / 2); redraw(true); saveCam(); };
+$("fit").onclick = fitAll;
+
+// ------------------------------------------------------------ легенда и сводка
+
+let legendSection = null;
+function sortedFrames() { return [...B.frames].sort((a, b) => Math.floor(a.y / 200) - Math.floor(b.y / 200) || a.x - b.x); }
+function inSection(o, kind, f) { return sectionOf(o, kind) === f; }
+function countStatus(id, f) {
+  const all = f === undefined;
+  return B.stickers.filter((s) => s.sid === id && (all || inSection(s, "sticker", f))).length +
+    B.callouts.filter((c) => c.sid === id && (all || inSection(c, "callout", f))).length +
+    B.rows.filter((r) => r.sid === id && (all || inSection(r, "row", f))).length;
+}
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+function buildLegend() {
+  const L = $("legend");
+  const frames = sortedFrames();
+  const f = frames.find((x) => x.id === legendSection);
+  if (!f) legendSection = null;
+  let h = `<div class="row"><h3>Статусы</h3><button class="icon" id="lgClose" title="Закрыть">✕</button></div>`;
+  h += `<select id="lgSection"><option value="">Где: вся доска</option>${frames.map((x) => `<option value="${esc(x.id)}" ${x.id === legendSection ? "selected" : ""}>Где: ${esc(x.title || "Раздел")}</option>`).join("")}</select>`;
+  h += `<div class="small">${highlight ? "Остальное притушено. Ещё щелчок — показать всё" : "Щелчок — показать только этот статус"}</div>`;
+  for (const g of ["id", "con"]) {
+    const list = statuses(g);
+    if (!list.length) continue;
+    h += `<div class="group">${g === "id" ? "ИД — метки и строки" : "Конструкции — выноски"}</div>`;
+    for (const st of list) {
+      const n = countStatus(st.id, f || undefined);
+      h += `<div class="st ${st.id === highlight ? "on" : ""}" data-sid="${esc(st.id)}"><span class="dot" style="background:${css(st.color, 1)}"></span>${esc(st.name)}<span class="n">${n}</span></div>`;
+    }
+    if (g === "id") {
+      const rows = B.rows.filter((r) => !f || inSection(r, "row", f));
+      if (rows.length) h += `<div class="checks">Строк ИД: ${rows.length} · Чек-лист ✓ ${rows.filter((r) => r.ck).length} · DWG ✓ ${rows.filter((r) => r.dwg).length}</div>`;
+    }
+  }
+  h += `<div class="row" style="margin-top:8px"><button id="lgSummary">Сводка по разделам</button>${highlight ? `<button class="primary" id="lgShow">Показать все</button>` : ""}</div>`;
+  L.innerHTML = h;
+  $("lgClose").onclick = () => { L.hidden = true; highlight = null; redraw(true); };
+  $("lgSection").onchange = (e) => { legendSection = e.target.value || null; buildLegend(); };
+  $("lgSummary").onclick = summary;
+  if ($("lgShow")) $("lgShow").onclick = () => showStatus(highlight);
+  for (const el of L.querySelectorAll(".st")) el.onclick = () => { const sid = el.dataset.sid; highlight = highlight === sid ? null : sid; buildLegend(); redraw(true); };
+}
+function showStatus(sid) {
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+  const add = (x0, y0, x1, y1) => { l = Math.min(l, x0); t = Math.min(t, y0); r = Math.max(r, x1); b = Math.max(b, y1); };
+  for (const s of B.stickers) if (s.sid === sid) add(s.x, s.y, s.x + stickerW(s), s.y + 36 * s.scale);
+  for (const rr of B.rows) if (rr.sid === sid) add(rr.x, rr.y, rr.x + rowW(rr), rr.y + rowH(rr));
+  for (const c of B.callouts) if (c.sid === sid) { const x = calloutBox(c); add(x.l, x.t, x.r, x.b); for (let i = 0; i + 1 < (c.leaders || []).length; i += 2) add(c.leaders[i], c.leaders[i + 1], c.leaders[i], c.leaders[i + 1]); }
+  if (l <= r) fitRect(l, t, r, b);
+}
+function refreshPanels() { if (!$("legend").hidden) buildLegend(); updateState(); showImgProgress(); }
+
+function summaryData() {
+  const ids = statuses("id"), cons = statuses("con");
+  const scopes = [...sortedFrames(), null];
+  return scopes.map((f) => {
+    const rows = B.rows.filter((r) => inSection(r, "row", f));
+    const st = B.stickers.filter((s) => inSection(s, "sticker", f));
+    const co = B.callouts.filter((c) => inSection(c, "callout", f));
+    return { f, rows, st, co,
+      ids: ids.map((s) => [s, rows.filter((r) => r.sid === s.id).length + st.filter((x) => x.sid === s.id).length]),
+      cons: cons.map((s) => [s, co.filter((c) => c.sid === s.id).length]) };
+  }).filter((x) => x.f || x.rows.length || x.st.length || x.co.length);
+}
+function summary() {
+  const data = summaryData();
+  let h = "";
+  for (const x of data) {
+    const n = x.rows.length;
+    h += `<div class="sec" data-f="${x.f ? esc(x.f.id) : ""}"><b>${esc(x.f ? x.f.title || "Раздел" : "Вне разделов")}</b>
+      <div class="small">Строк ИД: ${n}${n ? ` · Чек-лист ✓ ${x.rows.filter((r) => r.ck).length} из ${n} · DWG ✓ ${x.rows.filter((r) => r.dwg).length} из ${n}` : ""}${x.st.length ? ` · меток: ${x.st.length}` : ""}</div>
+      <div class="chips">${[...x.ids, ...x.cons].filter(([, c]) => c > 0).map(([s, c]) => `<span class="chip" style="color:${statusFg(s.color)};background:${statusBg(s.color)}">${esc(s.name)}: ${c}</span>`).join("")}</div></div>`;
+  }
+  if (!data.length) h = `<p>Пока нет строк ИД, меток и выносок.</p>`;
+  openModal("Сводка по разделам", h, [
+    ["Скачать для Excel", () => downloadCsv()],
+    ["Скопировать таблицу", () => { copy(table("\t")); }],
+    ["Готово", closeModal, true],
+  ]);
+  for (const el of $("mBody").querySelectorAll(".sec")) el.onclick = () => {
+    const f = B.frames.find((x) => x.id === el.dataset.f); if (!f) return;
+    closeModal(); fitRect(f.x, f.y, f.x + f.w, f.y + f.h);
+  };
+}
+function table(sep) {
+  const ids = statuses("id"), cons = statuses("con");
+  const q = (s) => sep === ";" ? `"${String(s).replace(/"/g, '""')}"` : String(s).replace(/[\t\n]/g, " ");
+  const lines = [["Раздел", "Строк ИД", "Чек-лист ✓", "DWG ✓", ...ids.map((s) => s.name), ...cons.map((s) => s.name)].map(q).join(sep)];
+  for (const x of summaryData()) {
+    lines.push([q(x.f ? x.f.title || "Раздел" : "Вне разделов"), x.rows.length, x.rows.filter((r) => r.ck).length, x.rows.filter((r) => r.dwg).length,
+      ...x.ids.map(([, c]) => c), ...x.cons.map(([, c]) => c)].join(sep));
+  }
+  return lines.join("\r\n") + "\r\n";
+}
+function downloadCsv() {
+  // Excel в России открывает CSV с «;» и BOM — русские буквы и столбцы на месте.
+  const blob = new Blob(["﻿" + table(";")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  const d = new Date();
+  a.download = `${B.title.replace(/[\\/:*?"<>|]/g, " ")} — сводка ${d.toLocaleDateString("ru-RU")}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); toast("Скопировано — вставьте в Excel"); }
+  catch (e) { const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); toast("Скопировано"); }
+}
+function toast(text) { progress(text); setTimeout(showImgProgress, 2500); }
+
+function openModal(title, html, buttons) {
+  $("mTitle").textContent = title; $("mBody").innerHTML = html;
+  const box = $("mButtons"); box.innerHTML = "";
+  for (const [label, fn, primary] of buttons) { const b = document.createElement("button"); b.textContent = label; if (primary) b.className = "primary"; b.onclick = fn; box.appendChild(b); }
+  $("modal").hidden = false;
+}
+function closeModal() { $("modal").hidden = true; }
+$("modal").addEventListener("click", (e) => { if (e.target === $("modal")) closeModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+
+$("legendBtn").onclick = () => { const L = $("legend"); if (L.hidden) { buildLegend(); L.hidden = false; } else { L.hidden = true; highlight = null; redraw(true); } };
+$("summaryBtn").onclick = summary;
+$("linkBtn").onclick = async () => {
+  try {
+    const r = await api("view_link", { board: B.board, key: B.key });
+    const url = API + "?v=" + r.code.slice(0, 4) + "-" + r.code.slice(4);
+    openModal("Ссылка для руководства", `<p>По этой ссылке доску можно только смотреть — ничего не изменить. Код: <b>${r.code.slice(0, 4)}-${r.code.slice(4)}</b></p><div class="link">${esc(url)}</div>`,
+      [["Скопировать ссылку", () => copy(url)], ["Готово", closeModal, true]]);
+  } catch (e) { toast("Не удалось: " + e.message); }
+};
+$("logout").onclick = () => {
+  lsSet("fw-viewer", null);
+  location.href = API;
+};
+
+// ------------------------------------------------------------ вход
+
+function normCode(s) { return String(s || "").toUpperCase().replace(/[\s-]/g, "").replace(/0/g, "O").replace(/1/g, "I"); }
+$("code").addEventListener("input", (e) => {
+  const c = normCode(e.target.value).slice(0, 8);
+  e.target.value = c.length > 4 ? c.slice(0, 4) + "-" + c.slice(4) : c;
+});
+$("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const code = normCode($("code").value);
+  $("loginErr").textContent = "";
+  if (code.length !== 8) { $("loginErr").textContent = "В коде 8 знаков, например ABCD-EFGH"; return; }
+  $("openBtn").disabled = true;
+  try { await openByCode(code); } catch (err) { $("loginErr").textContent = err.message; }
+  $("openBtn").disabled = false;
+});
+
+async function openByCode(code) {
+  let r, edit = false;
+  try { r = await api("view", { code }); }
+  catch (e) {
+    if (e.code !== "no_view") throw e;
+    r = await api("join", { invite: code }); edit = true; // код доски из приложения
+  }
+  const sess = { board: r.board, key: r.key, edit, title: r.title || "Доска" };
+  lsSet("fw-viewer", JSON.stringify(sess));
+  history.replaceState(null, "", API + "?v=" + code.slice(0, 4) + "-" + code.slice(4));
+  await start(sess);
+}
+
+async function start(sess) {
+  Object.assign(B, { board: sess.board, key: sess.key, edit: !!sess.edit, title: sess.title, seq: 0 });
+  B.objs.clear();
+  $("login").hidden = true; $("app").hidden = false;
+  $("linkBtn").hidden = !B.edit;
+  resize();
+  // Вид — как оставили в прошлый раз на этом компьютере; первый раз — вся доска.
+  let saved = null;
+  try { saved = JSON.parse(lsGet("fw-cam-" + B.board) || "null"); } catch (e) { saved = null; }
+  if (saved) Object.assign(cam, saved);
+  const had = await loadCached();
+  if (had) { if (!saved) fitAll(); redraw(true); updateState(); }
+  try {
+    await pullAll(true);
+    lastOk = Date.now();
+  } catch (e) {
+    if (e.status === 403 || e.status === 404) { lsSet("fw-viewer", null); throw new Error("Доступ к доске закрыт — попросите новую ссылку"); }
+    updateState(e.message);
+  }
+  progress(null); showImgProgress();
+  if (!had && !saved) fitAll();
+  redraw(true);
+  updateState();
+  startPolling();
+}
+
+(async function boot() {
+  const q = new URLSearchParams(location.search);
+  const v = q.get("v") || location.hash.replace("#", "");
+  const saved = lsGet("fw-viewer");
+  if (v) {
+    $("code").value = normCode(v).slice(0, 4) + "-" + normCode(v).slice(4, 8);
+    try { await openByCode(normCode(v)); return; } catch (e) { $("login").hidden = false; $("app").hidden = true; $("loginErr").textContent = e.message; return; }
+  }
+  if (saved) {
+    try { await start(JSON.parse(saved)); return; } catch (e) { $("login").hidden = false; $("app").hidden = true; $("loginErr").textContent = e.message; }
+  }
+})();
+</script>
+</body>
+</html>

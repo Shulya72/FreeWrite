@@ -24,7 +24,13 @@ TABLES = [
         CREATE TABLE boards (
             board_id Utf8, secret Utf8, title Utf8, invite Utf8,
             seq Uint64, n_objects Uint64, created Uint64, updated Uint64, owner Utf8,
+            view_code Utf8, view_key Utf8,
             PRIMARY KEY (board_id)
+        )"""),
+    ("views", """
+        CREATE TABLE views (
+            code Utf8, board_id Utf8,
+            PRIMARY KEY (code)
         )"""),
     ("invites", """
         CREATE TABLE invites (
@@ -47,7 +53,7 @@ TABLES = [
 
 Q_BOARD = """
 DECLARE $b AS Utf8;
-SELECT board_id, secret, title, invite, seq, n_objects, owner FROM boards WHERE board_id = $b;
+SELECT board_id, secret, title, invite, seq, n_objects, owner, view_code, view_key FROM boards WHERE board_id = $b;
 """
 Q_COUNT_BOARDS = "SELECT COUNT(*) AS n FROM boards;"
 Q_INVITE = """
@@ -60,6 +66,15 @@ DECLARE $owner AS Utf8; DECLARE $now AS Uint64;
 INSERT INTO boards (board_id, secret, title, invite, seq, n_objects, created, updated, owner)
 VALUES ($b, $secret, $title, $invite, 0ul, 0ul, $now, $now, $owner);
 INSERT INTO invites (code, board_id) VALUES ($invite, $b);
+"""
+Q_VIEW = """
+DECLARE $c AS Utf8;
+SELECT board_id FROM views WHERE code = $c;
+"""
+Q_VIEW_SET = """
+DECLARE $b AS Utf8; DECLARE $c AS Utf8; DECLARE $k AS Utf8;
+UPDATE boards SET view_code = $c, view_key = $k WHERE board_id = $b;
+INSERT INTO views (code, board_id) VALUES ($c, $b);
 """
 Q_REVS = """
 DECLARE $b AS Utf8; DECLARE $ids AS List<Utf8>;
@@ -102,6 +117,7 @@ DECLARE $b AS Utf8; DECLARE $invite AS Utf8;
 DELETE FROM images WHERE board_id = $b;
 DELETE FROM objects WHERE board_id = $b;
 DELETE FROM invites WHERE code = $invite;
+DELETE FROM views WHERE board_id = $b;
 DELETE FROM boards WHERE board_id = $b;
 """
 
@@ -111,6 +127,14 @@ RETRY = ydb.RetrySettings(
     max_retries=4,
     slow_backoff_settings=ydb.retries.BackoffSettings(ceiling=3, slot_duration=0.5),
 )
+
+
+def can_read(b: dict, key: str) -> bool:
+    """Читать доску можно ключом доски или ключом «только смотреть» (сайт для руководства)."""
+    if hmac.compare_digest(b["secret"].encode(), key.encode()):
+        return True
+    vk = b.get("view_key") or ""
+    return bool(vk) and hmac.compare_digest(vk.encode(), key.encode())
 
 
 def _title_of(changes):
@@ -157,6 +181,13 @@ class YdbStore:
             if "author" not in [c.name for c in d.columns]:
                 print("add column objects.author")
                 session.execute_scheme("ALTER TABLE objects ADD COLUMN author Utf8;")
+            # Сайт (FW-003): код и ключ «только смотреть».
+            d = session.describe_table("%s/boards" % self.database)
+            names = [c.name for c in d.columns]
+            for col in ("view_code", "view_key"):
+                if col not in names:
+                    print("add column boards.%s" % col)
+                    session.execute_scheme("ALTER TABLE boards ADD COLUMN %s Utf8;" % col)
         self._run(fn)
 
     def _read(self, query: str, params: dict):
@@ -168,7 +199,8 @@ class YdbStore:
     @staticmethod
     def _board_row(r):
         return {"board_id": r.board_id, "secret": r.secret, "title": r.title or "", "invite": r.invite,
-                "seq": r.seq or 0, "n_objects": r.n_objects or 0, "owner": r.owner or ""}
+                "seq": r.seq or 0, "n_objects": r.n_objects or 0, "owner": r.owner or "",
+                "view_code": r.view_code or "", "view_key": r.view_key or ""}
 
     # ------------------------------------------------------------ доски
 
@@ -183,6 +215,29 @@ class YdbStore:
     def find_invite(self, code: str):
         rows = self._read(Q_INVITE, {"$c": code})[0].rows
         return rows[0].board_id if rows else None
+
+    def find_view(self, code: str):
+        rows = self._read(Q_VIEW, {"$c": code})[0].rows
+        return rows[0].board_id if rows else None
+
+    def set_view(self, board_id: str, key: str, code: str, vkey: str):
+        """Код и ключ «только смотреть» (если уже есть — прежние). Вернуть (код, ключ)."""
+        def fn(session):
+            tx = session.transaction(ydb.SerializableReadWrite())
+            rows = tx.execute(session.prepare(Q_BOARD), {"$b": board_id})[0].rows
+            if not rows:
+                tx.rollback()
+                raise not_found()
+            b = self._board_row(rows[0])
+            if not hmac.compare_digest(b["secret"].encode(), key.encode()):
+                tx.rollback()
+                raise forbidden()
+            if b["view_code"] and b["view_key"]:
+                tx.commit()
+                return b["view_code"], b["view_key"]
+            tx.execute(session.prepare(Q_VIEW_SET), {"$b": board_id, "$c": code, "$k": vkey}, commit_tx=True)
+            return code, vkey
+        return self._run(fn)
 
     def create_board(self, board_id, secret, title, invite, owner, now) -> bool:
         def fn(session):
@@ -270,7 +325,7 @@ class YdbStore:
                 tx.commit()
                 raise not_found()
             b = self._board_row(rows[0])
-            if not hmac.compare_digest(b["secret"].encode(), key.encode()):
+            if not can_read(b, key):
                 tx.commit()
                 raise forbidden()
             if since >= b["seq"]:
