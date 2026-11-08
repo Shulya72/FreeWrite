@@ -51,6 +51,10 @@ class BoardActivity : Activity(), BoardView.Host {
     private lateinit var bannerText: TextView
     private lateinit var bannerButton: TextView
     private lateinit var selBar: LinearLayout
+    /** Панель режима: обрезка картинки или заливка по точкам (вверху посередине). */
+    private lateinit var modeBar: LinearLayout
+    /** «Заливка» по точкам: поставленные точки x, y, x, y… */
+    private val fillPts = ArrayList<Float>()
     private val toolButtons = HashMap<Tool, Ui.ToolButton>()
     private val quickColors = ArrayList<View>()
     private var toolBeforePipette = Tool.PEN
@@ -172,13 +176,14 @@ class BoardActivity : Activity(), BoardView.Host {
 
     private val remoteHost = object : RemoteSync.Host {
         override fun board(): Board = board
-        override fun canApply(): Boolean = current == null && committing.isEmpty() && view.isIdle
+        override fun canApply(): Boolean = current == null && committing.isEmpty() && view.isIdle && view.cropping == null
         override fun saveBoard() = saveNow()
         override fun onRemoteApplied(changed: Int, authors: Map<String, Int>) {
             // Отмена после чужих правок вернула бы их назад у всех — поэтому её история сбрасывается.
             undoStack.clear(); redoStack.clear()
             titleView.text = board.title
             view.pruneSelection()
+            checkCrop()
             view.invalidate()
             val who = authors.entries.sortedByDescending { it.value }.joinToString(", ") { "${it.key} — ${it.value}" }
             hint(if (who.isNotEmpty()) "Правки: $who" else "Пришли правки коллег: $changed", 3500)
@@ -464,6 +469,16 @@ class BoardActivity : Activity(), BoardView.Host {
         area.addView(selScroll, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = dp(10f)
         })
+        modeBar = LinearLayout(this).apply { tag = "mode_bar"; visibility = View.GONE }
+        val modeScroll = android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            setPadding(dp(8f), 0, dp(8f), 0)
+            addView(modeBar)
+        }
+        area.addView(modeScroll, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = dp(10f)
+        })
         root.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
         bottomTools?.let { tools ->
             // Телефон: инструменты внизу, под большим пальцем.
@@ -483,6 +498,8 @@ class BoardActivity : Activity(), BoardView.Host {
     private fun setTool(t: Tool, quiet: Boolean = false) {
         if (t != Tool.WRITE) current?.let { commit(it) }
         tool = t
+        if (t != Tool.FILL && t != Tool.PIPETTE && fillPts.isNotEmpty()) cancelFillDraft()
+        if (view.cropping != null) endCrop()
         for ((k, v) in toolButtons) v.selectedTool = k == t
         refreshColors()
         if (t != Tool.SHAPE) shapeTool.reset()
@@ -492,7 +509,7 @@ class BoardActivity : Activity(), BoardView.Host {
             Tool.HAND -> hint("Пальцем — двигать доску, касание — выбрать, касание метки — следующий статус. Два пальца — приблизить", 4000)
             Tool.TEXT -> hint("Коснитесь, где написать, — откроется клавиатура", 3000)
             Tool.STATUS -> hint("Коснитесь $penWord — метка статуса. Касание метки — следующий статус, подержать — список", 3500)
-            Tool.FILL -> hint("Обведите $penWord захватку — она зальётся выбранным цветом.$two", 3500)
+            Tool.FILL -> hint("Касайтесь $penWord углов захватки по очереди, касание первой точки — залить. Или обведите одним движением.$two", 4500)
             Tool.CALLOUT -> hint("Проведите $penWord от места на чертеже туда, где будет надпись.$two", 4000)
             Tool.SELECT -> hint("Обведите, что выделить. Касание — один объект. Доску двигать — двумя пальцами", 3500)
             Tool.SHAPE -> hint("Нарисуйте линию, стрелку, квадрат, круг или треугольник — станет ровной фигурой.$two", 3500)
@@ -600,10 +617,12 @@ class BoardActivity : Activity(), BoardView.Host {
         board = board.restored(snap)
         titleView.text = board.title
         view.clearSelection()
+        checkCrop()
         changed()
     }
 
     private fun undo() {
+        if (fillPts.isNotEmpty()) { removeFillPoint(); return }
         val g = current
         if (g != null && g.strokes.isNotEmpty()) {
             g.strokes.removeAt(g.strokes.lastIndex)
@@ -877,7 +896,17 @@ class BoardActivity : Activity(), BoardView.Host {
             handler.postDelayed(interimRunnable, 180)
             handler.postDelayed(commitRunnable, pauseMs)
         } else if (style.kind == "fill") {
-            createFill(stroke)
+            // Касание (след меньше 14 dp) — точка угла; обвели — заливка по контуру, как раньше.
+            // (Замкнутая обводка кончается там же, где началась, — поэтому смотрим на размер следа.)
+            val bb = NoteInkView.bounds(listOf(stroke))
+            val small = max(bb[2] - bb[0], bb[3] - bb[1]) * board.camZ < dp(14f)
+            if (small) {
+                val p0 = stroke.points[0]
+                addFillPoint(p0.x, p0.y)
+            } else {
+                cancelFillDraft()
+                createFill(stroke)
+            }
         } else if (style.kind == "shape") {
             pushUndo()
             val z = board.camZ
@@ -990,6 +1019,122 @@ class BoardActivity : Activity(), BoardView.Host {
         }
     }
 
+    // ---------------------------------------------------------------- заливка по точкам
+
+    override fun fillDraft(): FloatArray? = if (fillPts.isEmpty()) null else fillPts.toFloatArray()
+
+    /** Поставить точку угла. Касание первой точки (если точек уже 3 и больше) — замкнуть и залить. */
+    private fun addFillPoint(x: Float, y: Float) {
+        val z = board.camZ
+        if (fillPts.size >= 6 && Math.hypot((x - fillPts[0]).toDouble(), (y - fillPts[1]).toDouble()) * z < dp(24f)) {
+            finishFillDraft()
+            return
+        }
+        val n = fillPts.size
+        if (n >= 2 && Math.hypot((x - fillPts[n - 2]).toDouble(), (y - fillPts[n - 1]).toDouble()) * z < dp(5f)) return
+        fillPts += x; fillPts += y
+        showFillBar()
+        view.invalidate()
+    }
+
+    private fun removeFillPoint() {
+        if (fillPts.size >= 2) { fillPts.removeAt(fillPts.lastIndex); fillPts.removeAt(fillPts.lastIndex) }
+        if (fillPts.isEmpty()) hideModeBar() else showFillBar()
+        view.invalidate()
+    }
+
+    private fun cancelFillDraft() {
+        fillPts.clear()
+        hideModeBar()
+        view.invalidate()
+    }
+
+    private fun finishFillDraft() {
+        if (fillPts.size < 6) { hint("Нужно хотя бы три угла"); return }
+        val pts = fillPts.toFloatArray()
+        fillPts.clear()
+        hideModeBar()
+        pushUndo()
+        board.fills += BoardFill(pts, penColor)
+        changed()
+        hint("Залито. Следующая захватка — снова касайтесь углов", 2500)
+    }
+
+    private fun showFillBar() {
+        val n = fillPts.size / 2
+        val buttons = arrayListOf(
+            Ui.pill(this, "Убрать точку", Ui.INK, Ui.DESK).apply { tag = "fill_undo"; setOnClickListener { removeFillPoint() } },
+            Ui.pill(this, "Отмена", Ui.BAD, Ui.BAD_SOFT).apply { tag = "fill_cancel"; setOnClickListener { cancelFillDraft() } },
+        )
+        if (n >= 3) buttons += Ui.pill(this, "Залить", Color.WHITE, Ui.ACCENT).apply { tag = "fill_done"; setOnClickListener { finishFillDraft() } }
+        val label = if (n < 3) "Углы: $n — нужно хотя бы 3" else "Углы: $n"
+        modeBar.removeAllViews()
+        modeBar.addView(Ui.floatingBar(this, label, *buttons.toTypedArray()))
+        modeBar.visibility = View.VISIBLE
+    }
+
+    private fun hideModeBar() {
+        modeBar.removeAllViews()
+        modeBar.visibility = View.GONE
+    }
+
+    // ---------------------------------------------------------------- обрезка и булавка
+
+    private fun startCrop(m: BoardImage) {
+        view.clearSelection()
+        view.cropping = m
+        val buttons = arrayOf(
+            Ui.pill(this, "Как было", Ui.INK, Ui.DESK).apply {
+                tag = "crop_reset"
+                setOnClickListener { if (m.cropped) { pushUndo(); m.uncrop(); changed() } }
+            },
+            Ui.pill(this, "Готово", Color.WHITE, Ui.ACCENT).apply { tag = "crop_done"; setOnClickListener { endCrop(select = true) } },
+        )
+        modeBar.removeAllViews()
+        modeBar.addView(Ui.floatingBar(this, "Обрезка: тяните края и углы", *buttons))
+        modeBar.visibility = View.VISIBLE
+        hint("Тяните $penWord или пальцем за края и углы рамки — лишнее скроется. Скрытое не пропадает", 4000)
+    }
+
+    private fun endCrop(select: Boolean = false) {
+        val m = view.cropping ?: return
+        view.cropping = null
+        hideModeBar()
+        if (fillPts.isNotEmpty()) showFillBar()
+        if (select && board.images.any { it === m }) view.select(listOf(m))
+    }
+
+    /** Картинки, которую обрезали, больше нет (отмена, правки коллег) — выйти из обрезки. */
+    private fun checkCrop() {
+        val m = view.cropping ?: return
+        if (board.images.none { it === m }) endCrop()
+    }
+
+    private fun pinSelectedImages() {
+        val imgs = view.selection.filterIsInstance<BoardImage>()
+        if (imgs.isEmpty()) return
+        pushUndo()
+        for (m in imgs) m.locked = true
+        view.clearSelection()
+        changed()
+        hint("Закреплено: не сдвинуть и не удалить, можно рисовать поверх. Открепить — нажмите булавку", 4500)
+    }
+
+    override fun onPinTap(img: BoardImage) {
+        AlertDialog.Builder(this)
+            .setTitle("Картинка закреплена")
+            .setMessage("Её нельзя выделить, сдвинуть, растянуть или удалить — только рисовать и писать поверх.")
+            .setPositiveButton("Открепить") { _, _ ->
+                if (board.images.none { it === img }) return@setPositiveButton
+                pushUndo()
+                img.locked = false
+                changed()
+                view.select(listOf(img))
+            }
+            .setNegativeButton("Оставить", null)
+            .show()
+    }
+
     override fun onDragStart() { pushUndo() }
     override fun onDragEnd() { changed() }
     override fun onDragCancel() {
@@ -1049,6 +1194,12 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         if (sel.size == 1 && sel[0] is BoardSticker) {
             buttons += Ui.pill(this, "Статус", Ui.INK, Ui.DESK).apply { tag = "sel_status"; setOnClickListener { chooseStatus(sel[0]) } }
+        }
+        if (sel.size == 1 && sel[0] is BoardImage) {
+            buttons += Ui.pill(this, "Обрезать", Ui.INK, Ui.DESK).apply { tag = "sel_crop"; setOnClickListener { startCrop(sel[0] as BoardImage) } }
+        }
+        if (sel.any { it is BoardImage }) {
+            buttons += Ui.pill(this, "Закрепить", Ui.INK, Ui.DESK).apply { tag = "sel_pin"; setOnClickListener { pinSelectedImages() } }
         }
         if (sel.any { it is Drawing && isClosed(it) }) {
             buttons += Ui.pill(this, "Залить", Ui.INK, Ui.DESK).apply { tag = "sel_fill"; setOnClickListener { fillSelectedShapes() } }
@@ -1121,7 +1272,10 @@ class BoardActivity : Activity(), BoardView.Host {
         for (o in sel) {
             when (o) {
                 is BoardText -> BoardText(o.x + off, o.y + off, o.size, o.text, o.color).also { board.texts += it; copies += it }
-                is BoardImage -> BoardImage(o.file, o.x + off, o.y + off, o.w, o.h, o.pxW, o.pxH).also { board.images += it; copies += it }
+                is BoardImage -> BoardImage(o.file, o.x + off, o.y + off, o.w, o.h, o.pxW, o.pxH).also {
+                    it.cl = o.cl; it.ct = o.ct; it.cr = o.cr; it.cb = o.cb
+                    board.images += it; copies += it
+                }
                 is BoardSticker -> BoardSticker(o.x + off, o.y + off, o.sid, o.scale).also { board.stickers += it; copies += it }
                 is Drawing -> o.copy().also { d ->
                     var i = 0

@@ -76,12 +76,64 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onTextTap(x: Float, y: Float) {}
         /** На доске впервые коснулись пером — устройство с пером. */
         fun onPenSeen() {}
+        /** Нажали булавку закреплённой картинки. */
+        fun onPinTap(img: BoardImage) {}
+        /** «Заливка» по точкам: уже поставленные точки (x, y, x, y…) для показа; null — точек нет. */
+        fun fillDraft(): FloatArray? = null
     }
 
     enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL }
     class Hit(val kind: Kind, val index: Int)
 
-    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM }
+    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP }
+
+    // ---- Обрезка картинки (0.13) ----
+    /** Картинку обрезают: видна целиком (скрытое — бледно), рамка с ручками по краям и углам. */
+    var cropping: BoardImage? = null
+        set(v) { field = v; sceneValid = false; invalidate() }
+    /** Какие края тянем: 1 — левый, 2 — верхний, 4 — правый, 8 — нижний. */
+    private var cropEdges = 0
+    private val cropStart = RectF()
+
+    /** Ручка рамки обрезки под точкой экрана: какие края она двигает (0 — никакие). */
+    private fun cropHandleAt(m: BoardImage, px: Float, py: Float): Int {
+        val l = sx(m.x); val t = sy(m.y); val r = sx(m.x + m.w); val bt = sy(m.y + m.h)
+        val rr = Ui.dpf(context, 26f)
+        fun near(ax: Float, ay: Float) = hypot(ax - px, ay - py) <= rr
+        if (near(l, t)) return 1 or 2
+        if (near(r, t)) return 4 or 2
+        if (near(l, bt)) return 1 or 8
+        if (near(r, bt)) return 4 or 8
+        val inY = py >= t - rr && py <= bt + rr
+        val inX = px >= l - rr && px <= r + rr
+        if (inY && kotlin.math.abs(px - l) <= rr) return 1
+        if (inY && kotlin.math.abs(px - r) <= rr) return 4
+        if (inX && kotlin.math.abs(py - t) <= rr) return 2
+        if (inX && kotlin.math.abs(py - bt) <= rr) return 8
+        return 0
+    }
+
+    // ---- Булавка закреплённой картинки ----
+    private val pinR get() = Ui.dpf(context, 15f)
+    private val pinIcon by lazy { context.getDrawable(R.drawable.ic_pin)!!.mutate().apply { setTint(Ui.ACCENT) } }
+
+    /** Где на экране булавка картинки (правый верхний угол); null — картинка на экране слишком мала. */
+    private fun pinCenter(m: BoardImage, out: PointF): Boolean {
+        if (m.w * b.camZ < pinR * 4f || m.h * b.camZ < pinR * 3f) return false
+        out.set(sx(m.x + m.w) - pinR * 1.5f, sy(m.y) + pinR * 1.5f)
+        return true
+    }
+
+    /** Булавка под точкой экрана. */
+    fun pinAt(px: Float, py: Float): BoardImage? {
+        val c = PointF()
+        for (i in b.images.indices.reversed()) {
+            val m = b.images[i]
+            if (!m.locked || !pinCenter(m, c)) continue
+            if (hypot(c.x - px, c.y - py) <= pinR * 1.7f) return m
+        }
+        return null
+    }
 
     // ---- Защита от ладони ----
     // Пока перо над экраном (и ещё немного после), касания пальцем — это ладонь: их не слушаем.
@@ -384,6 +436,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         for (i in b.images.indices.reversed()) {
             val m = b.images[i]
+            if (m.locked) continue // закреплённую не выделить и не удалить
             if (x >= m.x && x <= m.x + m.w && y >= m.y && y <= m.y + m.h) return Hit(Kind.IMAGE, i)
         }
         return null
@@ -622,7 +675,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
             return c
         }
-        for (o in b.images) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
+        for (o in b.images) { if (o.locked) continue; boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.fills) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.callouts) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.strokes) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
@@ -746,6 +799,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             mode = Mode.PIPETTE
             hover = PointF(downX, downY)
             invalidate()
+            return
+        }
+        // Обрезка: ручки рамки — тянуть края (пером или пальцем); в остальном месте — двигать доску.
+        cropping?.let { m ->
+            if (!exists(m)) { cropping = null; return@let }
+            parent?.requestDisallowInterceptTouchEvent(true)
+            val e = cropHandleAt(m, downX, downY)
+            if (e != 0) {
+                cropEdges = e
+                cropStart.set(m.x, m.y, m.x + m.w, m.y + m.h)
+                mode = Mode.CROP
+            } else {
+                mode = Mode.PAN
+            }
             return
         }
         // Конец указателя выделенной выноски — тянуть.
@@ -883,6 +950,22 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                     applyTransform(anchor.x, anchor.y, s, 0f, 0f)
                 }
             }
+            Mode.CROP -> {
+                if (!moved) return
+                val m = cropping ?: return
+                if (!editStarted) { editStarted = true; host.onDragStart() }
+                val dx = wx(sxp) - wx(downX)
+                val dy = wy(syp) - wy(downY)
+                val minW = m.fullW() * BoardImage.MIN_CROP * 2
+                val minH = m.fullH() * BoardImage.MIN_CROP * 2
+                var l = cropStart.left; var t = cropStart.top; var r = cropStart.right; var bt = cropStart.bottom
+                if (cropEdges and 1 != 0) l = min(l + dx, r - minW)
+                if (cropEdges and 4 != 0) r = max(r + dx, l + minW)
+                if (cropEdges and 2 != 0) t = min(t + dy, bt - minH)
+                if (cropEdges and 8 != 0) bt = max(bt + dy, t + minH)
+                m.setVisible(l, t, r, bt)
+                invalidate()
+            }
             Mode.LASSO -> {
                 val x = wx(sxp); val y = wy(syp)
                 val last = lasso.lastOrNull()
@@ -947,7 +1030,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             Mode.STATUS -> if (quick) {
                 if (t == BoardActivity.Tool.TEXT) host.onTextTap(wx(sxp), wy(syp)) else host.onStatusTap(wx(sxp), wy(syp))
             }
-            Mode.PAN -> if (quick && !moved) tapAt(wx(sxp), wy(syp))
+            Mode.PAN -> if (quick && !moved && cropping == null) tapAt(wx(sxp), wy(syp))
+            Mode.CROP -> if (editStarted) host.onDragEnd()
             Mode.MOVE_SEL, Mode.RESIZE -> {
                 if (editStarted) {
                     host.onDragEnd()
@@ -966,8 +1050,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 // Короткое касание — выделить то, что под пером/пальцем; обводка — всё внутри.
                 // (замкнутая обводка кончается там же, где началась, — поэтому смотрим, двигалось ли перо)
                 if (!moved || lasso.size < 3) {
-                    val o = selectableAt(wx(sxp), wy(syp))
-                    if (o != null) select(listOf(o)) else clearSelection()
+                    val pin = pinAt(sxp, syp)
+                    val o = if (pin != null) null else selectableAt(wx(sxp), wy(syp))
+                    if (pin != null) host.onPinTap(pin) else if (o != null) select(listOf(o)) else clearSelection()
                 } else {
                     lassoSelect()
                 }
@@ -1023,6 +1108,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
      * объект — выделить, пусто — снять выделение.
      */
     private fun tapAt(x: Float, y: Float) {
+        pinAt(sx(x), sy(y))?.let { host.onPinTap(it); return }
         val h = hitAt(x, y)
         if (h?.kind == Kind.STICKER && host.tool() != BoardActivity.Tool.SELECT) {
             clearSelection()
@@ -1193,6 +1279,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             val pendingStyle = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z)
             live?.let { painter.stroke(canvas, it, liveStyle ?: pendingStyle, 255) }
             drawInterim(canvas, z)
+            drawFillDraft(canvas, z)
             canvas.restore()
             val ms = (System.nanoTime() - t0) / 1e6f
             frameMs = if (frameMs == 0f) ms else frameMs * 0.8f + ms * 0.2f
@@ -1238,6 +1325,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawLine(calloutDown.x, calloutDown.y, calloutNow.x, calloutNow.y, dashPaint)
         }
         if (!plain) drawSelection(canvas, z)
+        if (!plain) cropping?.let { if (exists(it)) drawCropFrame(canvas, it, z) }
+        if (!plain && !capturing) drawFillDraft(canvas, z)
         val pendingStyle = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z)
         for (s in host.pendingStrokes()) painter.stroke(canvas, s, pendingStyle, 255)
         if (!capturing) live?.let { painter.stroke(canvas, it, liveStyle ?: pendingStyle, 255) }
@@ -1257,6 +1346,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawPath(lassoPath, dashPaint)
         }
         canvas.restore()
+        if (!plain && !capturing) drawPins(canvas)
         if (!plain && !capturing) hover?.let {
             when {
                 host.tool() == BoardActivity.Tool.PIPETTE -> pipetteRing(context, canvas, it.x, it.y, host.pipetteColor(it.x, it.y))
@@ -1311,15 +1401,17 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             if (!visible(m.x, m.y, m.x + m.w, m.y + m.h)) continue
             val big = max(m.pxW, m.pxH)
             if (big <= BoardImages.LEVELS.last() || m.w <= 0f || m.pxW <= 0) continue
-            val screenW = m.w * z
+            // Обрезанная картинка: считаем от картинки целиком, кусок — только из видимой части.
+            val fx = m.fullX(); val fy = m.fullY(); val fw = m.fullW(); val fh = m.fullH()
+            val screenW = fw * z
             if (screenW <= BoardImages.LEVELS.last() * m.pxW.toFloat() / big * 1.05f) continue
             // Видимая часть картинки в пикселях оригинала.
-            val kx = m.pxW / m.w
-            val ky = m.pxH / m.h
-            val l = ((max(vis.left, m.x) - m.x) * kx).toInt()
-            val t = ((max(vis.top, m.y) - m.y) * ky).toInt()
-            val r = ((min(vis.right, m.x + m.w) - m.x) * kx).toInt()
-            val bt = ((min(vis.bottom, m.y + m.h) - m.y) * ky).toInt()
+            val kx = m.pxW / fw
+            val ky = m.pxH / fh
+            val l = ((max(vis.left, m.x) - fx) * kx).toInt()
+            val t = ((max(vis.top, m.y) - fy) * ky).toInt()
+            val r = ((min(vis.right, m.x + m.w) - fx) * kx).toInt()
+            val bt = ((min(vis.bottom, m.y + m.h) - fy) * ky).toInt()
             if (r <= l || bt <= t) continue
             // Во сколько раз можно уменьшить кусок, чтобы он был не мельче экрана.
             val pxPerScreen = kx / z
@@ -1340,7 +1432,18 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         while (y < bt) { canvas.drawLine(l, y, r, y, gridPaint); y += step }
     }
 
+    private val srcRect = android.graphics.Rect()
+
     private fun drawImage(canvas: Canvas, m: BoardImage, z: Float) {
+        val fullScreenW = m.fullW() * z
+        val bmp = if (m.w * z < 3f) null else images?.get(m, fullScreenW)
+        // Обрезают — картинка видна целиком, скрытое бледно.
+        if (m === cropping && bmp != null) {
+            rect2.set(m.fullX(), m.fullY(), m.fullX() + m.fullW(), m.fullY() + m.fullH())
+            bitmapPaint.alpha = 80
+            canvas.drawBitmap(bmp, null, rect2, bitmapPaint)
+            bitmapPaint.alpha = 255
+        }
         val frame = Ui.dpf(context, 5f) / z
         rect.set(m.x - frame, m.y - frame, m.x + m.w + frame, m.y + m.h + frame)
         fillPaint.color = Color.WHITE
@@ -1349,21 +1452,105 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         linePaint.strokeWidth = 0f
         canvas.drawRect(rect, linePaint)
         rect.set(m.x, m.y, m.x + m.w, m.y + m.h)
-        val screenW = m.w * z
-        val bmp = if (screenW < 3f) null else images?.get(m, screenW)
         if (bmp != null) {
-            canvas.drawBitmap(bmp, null, rect, bitmapPaint)
+            if (m.cropped) {
+                srcRect.set((m.cl * bmp.width).toInt(), (m.ct * bmp.height).toInt(),
+                    kotlin.math.ceil(m.cr * bmp.width).toInt(), kotlin.math.ceil(m.cb * bmp.height).toInt())
+                canvas.drawBitmap(bmp, srcRect, rect, bitmapPaint)
+            } else {
+                canvas.drawBitmap(bmp, null, rect, bitmapPaint)
+            }
         } else {
             fillPaint.color = Ui.DESK
             canvas.drawRect(rect, fillPaint)
         }
-        // Чёткий кусок оригинала поверх (если картинку сильно приблизили).
+        // Чёткий кусок оригинала поверх (если картинку сильно приблизили); у обрезанной — только в видимой части.
         val d = images?.detail(m)
         if (d != null && m.pxW > 0 && m.pxH > 0) {
-            val kx = m.w / m.pxW
-            val ky = m.h / m.pxH
-            rect2.set(m.x + d.region.left * kx, m.y + d.region.top * ky, m.x + d.region.right * kx, m.y + d.region.bottom * ky)
-            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) canvas.drawBitmap(d.bitmap, null, rect2, bitmapPaint)
+            val kx = m.fullW() / m.pxW
+            val ky = m.fullH() / m.pxH
+            val fx = m.fullX(); val fy = m.fullY()
+            rect2.set(fx + d.region.left * kx, fy + d.region.top * ky, fx + d.region.right * kx, fy + d.region.bottom * ky)
+            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom) && RectF.intersects(rect2, rect)) {
+                if (m.cropped) {
+                    canvas.save()
+                    canvas.clipRect(rect)
+                    canvas.drawBitmap(d.bitmap, null, rect2, bitmapPaint)
+                    canvas.restore()
+                } else {
+                    canvas.drawBitmap(d.bitmap, null, rect2, bitmapPaint)
+                }
+            }
+        }
+    }
+
+    /** Рамка обрезки: края и восемь ручек (углы — кружки, середины сторон — планки). */
+    private fun drawCropFrame(canvas: Canvas, m: BoardImage, z: Float) {
+        rect.set(m.x, m.y, m.x + m.w, m.y + m.h)
+        linePaint.color = Ui.ACCENT
+        linePaint.strokeWidth = Ui.dpf(context, 2f) / z
+        canvas.drawRect(rect, linePaint)
+        val r = Ui.dpf(context, 9f) / z
+        for (cx in floatArrayOf(rect.left, rect.right)) for (cy in floatArrayOf(rect.top, rect.bottom)) {
+            fillPaint.color = Color.WHITE
+            canvas.drawCircle(cx, cy, r, fillPaint)
+            canvas.drawCircle(cx, cy, r, linePaint)
+        }
+        val bar = Ui.dpf(context, 22f) / z
+        val th = Ui.dpf(context, 6f) / z
+        fillPaint.color = Ui.ACCENT
+        val mx = rect.centerX(); val my = rect.centerY()
+        canvas.drawRoundRect(mx - bar / 2, rect.top - th / 2, mx + bar / 2, rect.top + th / 2, th, th, fillPaint)
+        canvas.drawRoundRect(mx - bar / 2, rect.bottom - th / 2, mx + bar / 2, rect.bottom + th / 2, th, th, fillPaint)
+        canvas.drawRoundRect(rect.left - th / 2, my - bar / 2, rect.left + th / 2, my + bar / 2, th, th, fillPaint)
+        canvas.drawRoundRect(rect.right - th / 2, my - bar / 2, rect.right + th / 2, my + bar / 2, th, th, fillPaint)
+    }
+
+    /** Булавки закреплённых картинок (в координатах экрана — всегда одного размера). */
+    private fun drawPins(canvas: Canvas) {
+        val c = PointF()
+        val r = pinR
+        for (m in b.images) {
+            if (!m.locked || !visible(m.x, m.y, m.x + m.w, m.y + m.h) || !pinCenter(m, c)) continue
+            fillPaint.color = Color.WHITE
+            canvas.drawCircle(c.x, c.y, r, fillPaint)
+            linePaint.color = Ui.ACCENT
+            linePaint.strokeWidth = Ui.dpf(context, 1.5f)
+            canvas.drawCircle(c.x, c.y, r, linePaint)
+            val ir = (r * 0.68f).toInt()
+            pinIcon.setBounds((c.x - ir).toInt(), (c.y - ir).toInt(), (c.x + ir).toInt(), (c.y + ir).toInt())
+            pinIcon.draw(canvas)
+        }
+    }
+
+    /** «Заливка» по точкам: поставленные точки, линии между ними и будущая заливка. */
+    private fun drawFillDraft(canvas: Canvas, z: Float) {
+        val p = host.fillDraft() ?: return
+        if (p.size < 2) return
+        val color = host.strokeStyle().color
+        val path = Path()
+        path.moveTo(p[0], p[1])
+        var i = 2
+        while (i + 1 < p.size) { path.lineTo(p[i], p[i + 1]); i += 2 }
+        if (p.size >= 6) {
+            val closed = Path(path).apply { close() }
+            fillPaint.color = color
+            fillPaint.alpha = 70
+            canvas.drawPath(closed, fillPaint)
+            fillPaint.alpha = 255
+        }
+        linePaint.color = color
+        linePaint.strokeWidth = Ui.dpf(context, 2f) / z
+        canvas.drawPath(path, linePaint)
+        // Первая точка — крупное кольцо: коснуться её — замкнуть и залить.
+        val dot = Ui.dpf(context, 4f) / z
+        i = 0
+        while (i + 1 < p.size) {
+            fillPaint.color = if (i == 0) Color.WHITE else color
+            val rr = if (i == 0) dot * 2.6f else dot
+            canvas.drawCircle(p[i], p[i + 1], rr, fillPaint)
+            if (i == 0) canvas.drawCircle(p[i], p[i + 1], rr, linePaint)
+            i += 2
         }
     }
 

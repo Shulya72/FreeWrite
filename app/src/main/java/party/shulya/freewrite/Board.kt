@@ -31,6 +31,46 @@ class BoardText(var x: Float, var y: Float, var size: Float, var text: String, v
 /** Картинка на доске (файл — в общей папке картинок). */
 class BoardImage(val file: String, var x: Float, var y: Float, var w: Float, var h: Float, val pxW: Int, val pxH: Int) {
     var id: String = Ids.next()
+
+    /**
+     * Обрезка (0.13): видимая часть картинки — доли (0…1) от левого, верхнего, правого и нижнего края.
+     * x, y, w, h — место видимой части на доске; скрытое не теряется, его можно вернуть.
+     */
+    var cl = 0f
+    var ct = 0f
+    var cr = 1f
+    var cb = 1f
+
+    /** Закреплена булавкой: не выделяется, не двигается, не удаляется — только рисовать и писать поверх. */
+    var locked = false
+
+    val cropped get() = cl > 0f || ct > 0f || cr < 1f || cb < 1f
+
+    /** Где на доске была бы картинка целиком (без обрезки). */
+    fun fullW() = w / (cr - cl)
+    fun fullH() = h / (cb - ct)
+    fun fullX() = x - cl * fullW()
+    fun fullY() = y - ct * fullH()
+
+    /** Видимая часть — рамка [l, t, r, b] на доске (в пределах картинки целиком). */
+    fun setVisible(l: Float, t: Float, r: Float, b: Float) {
+        val fw = fullW(); val fh = fullH(); val fx = fullX(); val fy = fullY()
+        cl = ((l - fx) / fw).coerceIn(0f, 1f - MIN_CROP); cr = ((r - fx) / fw).coerceIn(cl + MIN_CROP, 1f)
+        ct = ((t - fy) / fh).coerceIn(0f, 1f - MIN_CROP); cb = ((b - fy) / fh).coerceIn(ct + MIN_CROP, 1f)
+        x = fx + cl * fw; y = fy + ct * fh; w = (cr - cl) * fw; h = (cb - ct) * fh
+    }
+
+    /** Убрать обрезку: картинка снова целиком, на прежнем месте. */
+    fun uncrop() {
+        val fw = fullW(); val fh = fullH(); val fx = fullX(); val fy = fullY()
+        cl = 0f; ct = 0f; cr = 1f; cb = 1f
+        x = fx; y = fy; w = fw; h = fh
+    }
+
+    companion object {
+        /** Меньше 2 % стороны не обрезаем. */
+        const val MIN_CROP = 0.02f
+    }
 }
 
 /**
@@ -376,13 +416,23 @@ class Board(
 
         private fun f(v: Float): String { val sb = StringBuilder(); JsonNum.num(sb, v); return sb.toString() }
 
+        /** Доля 0…1 с пятью знаками (обрезка картинки). */
+        private fun frac(v: Float): String = String.format(java.util.Locale.US, "%.5f", v)
+
         private fun q(id: String) = JSONObject.quote(id)
 
         fun textJson(t: BoardText): String =
             "{\"id\":${q(t.id)},\"x\":${f(t.x)},\"y\":${f(t.y)},\"size\":${t.size.toDouble()},\"text\":${JSONObject.quote(t.text)},\"color\":${t.color}}"
 
-        fun imageJson(m: BoardImage): String =
-            "{\"id\":${q(m.id)},\"file\":${JSONObject.quote(m.file)},\"x\":${f(m.x)},\"y\":${f(m.y)},\"w\":${m.w.toDouble()},\"h\":${m.h.toDouble()},\"pxW\":${m.pxW},\"pxH\":${m.pxH}}"
+        fun imageJson(m: BoardImage): String {
+            val sb = StringBuilder(160)
+            sb.append("{\"id\":${q(m.id)},\"file\":${JSONObject.quote(m.file)},\"x\":${f(m.x)},\"y\":${f(m.y)},\"w\":${m.w.toDouble()},\"h\":${m.h.toDouble()},\"pxW\":${m.pxW},\"pxH\":${m.pxH}")
+            // Новые поля — только если есть: у обычных картинок строка та же, что до 0.13.
+            if (m.cropped) sb.append(",\"crop\":[${frac(m.cl)},${frac(m.ct)},${frac(m.cr)},${frac(m.cb)}]")
+            if (m.locked) sb.append(",\"lk\":1")
+            sb.append('}')
+            return sb.toString()
+        }
 
         fun stickerJson(s: BoardSticker): String =
             "{\"id\":${q(s.id)},\"x\":${f(s.x)},\"y\":${f(s.y)},\"sid\":${JSONObject.quote(s.sid)},\"scale\":${s.scale.toDouble()}}"
@@ -409,7 +459,19 @@ class Board(
             j.optString("text"), j.optInt("color", Ui.INK)).also { it.id = jid(j) }
 
         fun parseImage(j: JSONObject) = BoardImage(j.optString("file"), j.optDouble("x").toFloat(), j.optDouble("y").toFloat(),
-            j.optDouble("w").toFloat(), j.optDouble("h").toFloat(), j.optInt("pxW"), j.optInt("pxH")).also { it.id = jid(j) }
+            j.optDouble("w").toFloat(), j.optDouble("h").toFloat(), j.optInt("pxW"), j.optInt("pxH")).also { m ->
+            m.id = jid(j)
+            j.optJSONArray("crop")?.let { c ->
+                if (c.length() == 4) {
+                    val l = c.optDouble(0, 0.0).toFloat(); val t = c.optDouble(1, 0.0).toFloat()
+                    val r = c.optDouble(2, 1.0).toFloat(); val bt = c.optDouble(3, 1.0).toFloat()
+                    if (l >= 0f && t >= 0f && r <= 1f && bt <= 1f && r - l >= BoardImage.MIN_CROP / 2 && bt - t >= BoardImage.MIN_CROP / 2) {
+                        m.cl = l; m.ct = t; m.cr = r; m.cb = bt
+                    }
+                }
+            }
+            m.locked = j.optInt("lk") == 1
+        }
 
         fun parseSticker(j: JSONObject): BoardSticker {
             // До 0.7.0 статус был числом 0/1/2 — это s0/s1/s2 списка по умолчанию.
