@@ -82,12 +82,55 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun fillDraft(): FloatArray? = null
         /** «Раздел»: провели рамку от угла до угла (рамка на доске). */
         fun onFrameCreate(l: Float, t: Float, r: Float, b: Float) {}
+        /** «Заливка» пальцем: точка выбрана (под лупой, с привязкой). */
+        fun onFillPoint(x: Float, y: Float) {}
     }
 
     enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL }
     class Hit(val kind: Kind, val index: Int)
 
-    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP, FRAME_DRAG }
+    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP, FRAME_DRAG, POINT }
+
+    // ---- Точная точка (0.14.1): лупа и привязка, как в DWG FastView ----
+    // Палец закрывает угол, в который целятся: пока палец на экране, в углу экрана — лупа с перекрестием,
+    // палец ведёт точку, отпустил — точка. Рядом с углом заливки, картинки или раздела точка прилипает к нему.
+    private val aim = PointF()
+    private val aimFinger = PointF()
+    private var aimSnapped = false
+    private val loupePath = Path()
+    private val snapColor = Color.rgb(30, 150, 70)
+
+    /** Привязка: угол заливки (или уже поставленная точка), угол картинки или раздела ближе 18 dp — точка в него. */
+    fun snapPoint(x: Float, y: Float, out: PointF): Boolean {
+        val r = Ui.dpf(context, 18f) / b.camZ
+        var best = r
+        var found = false
+        fun c(px: Float, py: Float) {
+            val d = hypot(px - x, py - y)
+            if (d < best) { best = d; out.set(px, py); found = true }
+        }
+        fun near(l: Float, t: Float, rr: Float, bt: Float) = x >= l - r && x <= rr + r && y >= t - r && y <= bt + r
+        host.fillDraft()?.let { p -> var i = 0; while (i + 1 < p.size) { c(p[i], p[i + 1]); i += 2 } }
+        for (f in b.fills) {
+            val bb = f.bounds()
+            if (!near(bb.left, bb.top, bb.right, bb.bottom)) continue
+            var i = 0
+            while (i + 1 < f.pts.size) { c(f.pts[i], f.pts[i + 1]); i += 2 }
+        }
+        for (m in b.images) if (near(m.x, m.y, m.x + m.w, m.y + m.h)) {
+            c(m.x, m.y); c(m.x + m.w, m.y); c(m.x, m.y + m.h); c(m.x + m.w, m.y + m.h)
+        }
+        for (fr in b.frames) if (near(fr.x, fr.y, fr.x + fr.w, fr.y + fr.h)) {
+            c(fr.x, fr.y); c(fr.x + fr.w, fr.y); c(fr.x, fr.y + fr.h); c(fr.x + fr.w, fr.y + fr.h)
+        }
+        if (!found) out.set(x, y)
+        return found
+    }
+
+    private fun updateAim(px: Float, py: Float) {
+        aimFinger.set(px, py)
+        aimSnapped = snapPoint(wx(px), wy(py), aim)
+    }
 
     // ---- Легенда (0.14): подсветить метки и выноски одного статуса, остальное притушить ----
     var highlight: String? = null
@@ -794,7 +837,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                     lasso.clear()
                     startPinch(ev)
                 } else if (finger && !activeIsPen && host.fingerWrites() &&
-                    (mode == Mode.INK || mode == Mode.ERASE || mode == Mode.CALLOUT_DRAG || mode == Mode.FRAME_DRAG || mode == Mode.STATUS || mode == Mode.NONE)) {
+                    (mode == Mode.INK || mode == Mode.ERASE || mode == Mode.CALLOUT_DRAG || mode == Mode.FRAME_DRAG || mode == Mode.POINT || mode == Mode.STATUS || mode == Mode.NONE)) {
                     // Палец рисовал, лёг второй — значит, двигают или приближают доску: штрих не нужен.
                     cancelTouchAction()
                     startPinch(ev)
@@ -965,6 +1008,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             mode = Mode.CALLOUT_DRAG
             return
         }
+        if (t == BoardActivity.Tool.FILL && !isPen(tool) && tool != MotionEvent.TOOL_TYPE_MOUSE) {
+            // Палец ставит точки заливки: лупа и привязка (палец закрывает угол).
+            mode = Mode.POINT
+            updateAim(downX, downY)
+            sceneValid = false
+            invalidate()
+            return
+        }
         if (t == BoardActivity.Tool.FRAME && tool != MotionEvent.TOOL_TYPE_ERASER) {
             frameDown.set(x, y)
             frameNow.set(x, y)
@@ -1073,6 +1124,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 frameNow.set(wx(sxp), wy(syp))
                 invalidate()
             }
+            Mode.POINT -> {
+                updateAim(sxp, syp)
+                invalidate()
+            }
             Mode.LEADER -> {
                 if (!moved) return
                 val c = leaderCallout ?: return
@@ -1125,6 +1180,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
             Mode.PAN -> if (quick && !moved && cropping == null) tapAt(wx(sxp), wy(syp))
             Mode.CROP -> if (editStarted) host.onDragEnd()
+            Mode.POINT -> {
+                updateAim(sxp, syp)
+                host.onFillPoint(aim.x, aim.y)
+            }
             Mode.FRAME_DRAG -> {
                 val x = wx(sxp); val y = wy(syp)
                 if (kotlin.math.abs(x - frameDown.x) * b.camZ > Ui.dpf(context, 40f) && kotlin.math.abs(y - frameDown.y) * b.camZ > Ui.dpf(context, 40f)) {
@@ -1372,6 +1431,18 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     override fun onDraw(canvas: Canvas) {
         val t0 = System.nanoTime()
         val z = b.camZ
+        if (mode == Mode.POINT && !plain && !capturing && (sceneValid || renderScene())) {
+            // Точная точка: доска готовой картинкой, поверх — точки, резинка до пальца и лупа.
+            canvas.drawBitmap(scene!!, 0f, 0f, null)
+            canvas.save()
+            canvas.scale(z, z)
+            canvas.translate(-b.camX, -b.camY)
+            drawFillDraft(canvas, z)
+            drawAim(canvas, z)
+            canvas.restore()
+            drawLoupe(canvas)
+            return
+        }
         if (mode == Mode.INK && !plain && !capturing && fading.isEmpty() && (sceneValid || renderScene())) {
             canvas.drawBitmap(scene!!, 0f, 0f, null)
             canvas.save()
@@ -1663,6 +1734,67 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             pinIcon.setBounds((c.x - ir).toInt(), (c.y - ir).toInt(), (c.x + ir).toInt(), (c.y + ir).toInt())
             pinIcon.draw(canvas)
         }
+    }
+
+    /** Куда ляжет точка: резинка от последней точки, перекрестие; прилипла — зелёный квадрат. */
+    private fun drawAim(canvas: Canvas, z: Float) {
+        val p = host.fillDraft()
+        val color = host.strokeStyle().color
+        if (p != null && p.size >= 2) {
+            dashPaint.strokeWidth = Ui.dpf(context, 1.5f) / z
+            dashPaint.pathEffect = DashPathEffect(floatArrayOf(Ui.dpf(context, 6f) / z, Ui.dpf(context, 4f) / z), 0f)
+            canvas.drawLine(p[p.size - 2], p[p.size - 1], aim.x, aim.y, dashPaint)
+        }
+        val c = Ui.dpf(context, 9f) / z
+        linePaint.color = color
+        linePaint.strokeWidth = Ui.dpf(context, 1.5f) / z
+        canvas.drawLine(aim.x - c, aim.y, aim.x + c, aim.y, linePaint)
+        canvas.drawLine(aim.x, aim.y - c, aim.x, aim.y + c, linePaint)
+        if (aimSnapped) {
+            val q = Ui.dpf(context, 7f) / z
+            linePaint.color = snapColor
+            linePaint.strokeWidth = Ui.dpf(context, 2f) / z
+            canvas.drawRect(aim.x - q, aim.y - q, aim.x + q, aim.y + q, linePaint)
+        }
+    }
+
+    /**
+     * Лупа: круг в верхнем углу экрана — с другой стороны от пальца (палец под лупой — внизу),
+     * в 2,5 раза крупнее, перекрестие — ровно в точке, куда она ляжет.
+     */
+    private fun drawLoupe(canvas: Canvas) {
+        val bmp = scene ?: return
+        val r = Ui.dpf(context, 72f)
+        val m = Ui.dpf(context, 14f)
+        val k = 2.5f
+        val cx = if (aimFinger.x > width / 2f) m + r else width - m - r
+        var cy = m + r
+        if (hypot(aimFinger.x - cx, aimFinger.y - cy) < r + Ui.dpf(context, 60f)) cy = height - m - r
+        val ax = sx(aim.x); val ay = sy(aim.y)
+        canvas.save()
+        loupePath.reset()
+        loupePath.addCircle(cx, cy, r, Path.Direction.CW)
+        canvas.clipPath(loupePath)
+        canvas.drawColor(Ui.PAPER)
+        canvas.translate(cx - ax * k, cy - ay * k)
+        canvas.scale(k, k)
+        canvas.drawBitmap(bmp, 0f, 0f, bitmapPaint)
+        canvas.scale(b.camZ, b.camZ)
+        canvas.translate(-b.camX, -b.camY)
+        drawFillDraft(canvas, b.camZ * k)
+        drawAim(canvas, b.camZ * k)
+        canvas.restore()
+        // Перекрестие во всю лупу (с просветом в середине) и рамка.
+        val gap = Ui.dpf(context, 12f)
+        linePaint.color = Ui.INK
+        linePaint.alpha = 150
+        linePaint.strokeWidth = Ui.dpf(context, 1f)
+        canvas.drawLine(cx - r, cy, cx - gap, cy, linePaint); canvas.drawLine(cx + gap, cy, cx + r, cy, linePaint)
+        canvas.drawLine(cx, cy - r, cx, cy - gap, linePaint); canvas.drawLine(cx, cy + gap, cx, cy + r, linePaint)
+        linePaint.alpha = 255
+        linePaint.color = if (aimSnapped) snapColor else Ui.ACCENT
+        linePaint.strokeWidth = Ui.dpf(context, 2.5f)
+        canvas.drawCircle(cx, cy, r, linePaint)
     }
 
     /** «Заливка» по точкам: поставленные точки, линии между ними и будущая заливка. */

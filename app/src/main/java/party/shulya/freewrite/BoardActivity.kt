@@ -535,7 +535,8 @@ class BoardActivity : Activity(), BoardView.Host {
             Tool.HAND -> hint("Пальцем — двигать доску, касание — выбрать, касание метки — следующий статус. Два пальца — приблизить", 4000)
             Tool.TEXT -> hint("Коснитесь, где написать, — откроется клавиатура", 3000)
             Tool.STATUS -> hint("Коснитесь $penWord — метка статуса. Касание метки — следующий статус, подержать — список", 3500)
-            Tool.FILL -> hint("Касайтесь $penWord углов захватки по очереди, касание первой точки — залить. Или обведите одним движением.$two", 4500)
+            Tool.FILL -> hint(if (stylus) "Касайтесь пером углов захватки по очереди, касание первой точки — залить. Или обведите одним движением"
+                else "Ведите пальцем к углу захватки — в лупе видно точно, отпустите — точка. Касание первой точки — залить.$two", 5000)
             Tool.CALLOUT -> hint("Проведите $penWord от места на чертеже туда, где будет надпись.$two", 4000)
             Tool.FRAME -> hint("Проведите $penWord рамку от угла до угла — получится раздел с названием.$two", 4000)
             Tool.SELECT -> hint("Обведите, что выделить. Касание — один объект. Доску двигать — двумя пальцами", 3500)
@@ -930,7 +931,9 @@ class BoardActivity : Activity(), BoardView.Host {
             val small = max(bb[2] - bb[0], bb[3] - bb[1]) * board.camZ < dp(14f)
             if (small) {
                 val p0 = stroke.points[0]
-                addFillPoint(p0.x, p0.y)
+                val p = android.graphics.PointF()
+                view.snapPoint(p0.x, p0.y, p) // рядом угол заливки или картинки — точно в него
+                addFillPoint(p.x, p.y)
             } else {
                 cancelFillDraft()
                 createFill(stroke)
@@ -1050,6 +1053,9 @@ class BoardActivity : Activity(), BoardView.Host {
     // ---------------------------------------------------------------- заливка по точкам
 
     override fun fillDraft(): FloatArray? = if (fillPts.isEmpty()) null else fillPts.toFloatArray()
+
+    /** Палец выбрал точку под лупой (уже с привязкой). */
+    override fun onFillPoint(x: Float, y: Float) = addFillPoint(x, y)
 
     /** Поставить точку угла. Касание первой точки (если точек уже 3 и больше) — замкнуть и залить. */
     private fun addFillPoint(x: Float, y: Float) {

@@ -210,4 +210,49 @@ class PhoneTest {
         shot(root, "phone-home.png")
         controller.pause().stop().destroy()
     }
+
+    @Test
+    fun fillPointsWithLoupeAndSnap() {
+        Profile.save(ctx, "Николай", "Иванов")
+        val b = Board.create("Захватки")
+        b.fills += BoardFill(floatArrayOf(100f, 100f, 300f, 100f, 300f, 300f, 100f, 300f), Ui.PEN_BLUE)
+        b.camX = 0f; b.camY = 0f; b.camZ = 1f
+        BoardStore(ctx).save(b)
+        val controller = Robolectric.buildActivity(BoardActivity::class.java,
+            Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b.id)).setup()
+        val a = controller.get()
+        idle()
+        val root = a.window.decorView
+        val view = find(root, BoardView::class.java)
+        fun board() = field(a, "board") as Board
+        @Suppress("UNCHECKED_CAST")
+        fun pts() = field(a, "fillPts") as List<Float>
+        root.findViewWithTag<View>("board_tool_fill").performClick()
+
+        // Палец лёг рядом с углом соседней захватки и подвёлся — пока держит, видна лупа.
+        val d = SystemClock.uptimeMillis()
+        view.dispatchTouchEvent(ev(d, d, MotionEvent.ACTION_DOWN, view.sx(340f), view.sy(350f)))
+        for (i in 1..8) view.dispatchTouchEvent(ev(d, d + i * 15L, MotionEvent.ACTION_MOVE, view.sx(340f - i * 5f), view.sy(350f - i * 6f)))
+        idle()
+        shot(root, "phone-loupe.png")
+        view.dispatchTouchEvent(ev(d, d + 200, MotionEvent.ACTION_UP, view.sx(300f + 12f), view.sy(302f + 10f)))
+        idle()
+        assertEquals("точка прилипла к углу соседней захватки", listOf(300f, 300f), pts())
+
+        // Свободная точка — где отпустили.
+        tap(view, view.sx(520f), view.sy(90f))
+        assertEquals(520f, pts()[2], 0.5f)
+        assertEquals(90f, pts()[3], 0.5f)
+        tap(view, view.sx(520f), view.sy(320f))
+        assertEquals(6, pts().size)
+        // Рядом с первой точкой — прилипает к ней и замыкает: заливка готова, угол общий с соседней.
+        tap(view, view.sx(306f), view.sy(294f))
+        assertEquals(2, board().fills.size)
+        val f = board().fills[1]
+        assertEquals(6, f.pts.size)
+        assertEquals(300f, f.pts[0], 0.01f)
+        assertEquals(300f, f.pts[1], 0.01f)
+        assertTrue("штрихов пальцем не осталось", board().strokes.isEmpty())
+        controller.pause().stop().destroy()
+    }
 }

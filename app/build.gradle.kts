@@ -12,8 +12,8 @@ android {
         // HarmonyOS 4.x даёт приложениям Android 12 (API 31); 26 — запас для других планшетов.
         minSdk = 26
         targetSdk = 34
-        versionCode = 24
-        versionName = "0.14.0"
+        versionCode = 25
+        versionName = "0.14.1"
         // Адрес сервера общей доски (функция в Яндекс Облаке). Подставляется при сборке в GitHub
         // Actions из облака (в репозитории его нет); пусто — синхронизация недоступна в этой сборке.
         val syncUrl = System.getenv("FREEWRITE_SYNC_URL").orEmpty().trim()
