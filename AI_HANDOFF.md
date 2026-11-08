@@ -16,8 +16,8 @@
   `.github/workflows/yc-deploy.yml` (в zip — `viewer.html`), `app/.../HomeActivity.kt` («Открыть на компьютере»),
   `app/.../Remote.kt` (`siteLink`), `RemoteSyncTest.kt`, `NeboTest.kt` (`NEBO_EXPORT` — выгрузка доски для проверки сайта у себя),
   `app/build.gradle.kts` (0.19.0, versionCode 30), `CLAUDE.md`, `docs/ТЗ-ПЛАН.md`, `AI_*`.
-- **Тесты и сборка:** сервер `python3 -m unittest discover -s server/tests` — 15/15 OK; приложение `testDebugUnitTest` — 80:
-  77 прошли, 3 пропущены (два — нужен файл Владимира, `liveServer` — только на GitHub), 0 ошибок. Сайт проверен в Chromium
+- **Тесты и сборка (после объединения с 0.18.0):** сервер `python3 -m unittest discover -s server/tests` — 15/15 OK;
+  `assembleDebug` — успешно; приложение `testDebugUnitTest` — 82: 79 прошли, 3 пропущены (два — нужен файл Владимира, `liveServer` — только на GitHub), 0 ошибок. Сайт проверен в Chromium
   (Playwright) на местном сервере: вход кодом просмотра и кодом доски, колёсико, перетаскивание, легенда по разделу, сводка,
   CSV; на доске Владимира из Nebo (локально) — 11 тыс. штрихов, 39 картинок, ошибок в браузере нет.
 - **Проверка на планшете / в облаке:** не проверено (сервер выложится после слияния; живая проверка `smoke.py` проверит
