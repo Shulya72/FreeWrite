@@ -43,6 +43,10 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Отпечаток сертификата, которым подписаны все выпуски с 0.4.0 (он виден в любом APK — не секрет).
+      # Сборка с другим ключом не встала бы поверх у Владимира и коллег, поэтому такая сборка останавливается.
+      SIGNING_CERT_SHA256: d622357641f225cc0f05a034912d0efa478b7099a2a514fe2f2564ec449d8b9c
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -56,33 +60,22 @@ jobs:
 
       # Один и тот же ключ подписи между сборками, чтобы новая версия ставилась поверх старой.
       # Хранится в кэше Actions (в репозиторий не попадает); пароли — стандартные отладочные.
+      # Запасная копия — в закрытом хранилище Яндекс Облака (см. ниже).
       - name: Signing key
         uses: actions/cache@v5
         with:
           path: freewrite-debug.keystore
           key: freewrite-debug-keystore-v1
 
-      - name: Create signing key if missing
-        run: |
-          if [ ! -f freewrite-debug.keystore ]; then
-            echo "Создаю новый ключ подписи"
-            keytool -genkeypair -keystore freewrite-debug.keystore \
-              -storepass android -keypass android -alias androiddebugkey \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=FreeWrite Debug,O=FreeWrite,C=RU" > /dev/null
-          else
-            echo "Ключ подписи взят из кэша"
-          fi
-
-      # Адрес сервера общей доски берём из Яндекс Облака (робот freewrite-deploy) и вшиваем в APK.
-      # В журнал он не попадает. Не получилось — APK собирается без синхронизации.
-      - name: Sync server address
+      # Вход в Яндекс Облако роботом freewrite-deploy: копия ключа подписи и адрес сервера общей доски.
+      # В журнал не попадают ни ключ робота, ни номера, ни имена хранилищ.
+      - name: Yandex Cloud sign-in
         env:
           YC_SA_JSON_CREDENTIALS: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
           YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
         run: |
           if [ -z "$YC_SA_JSON_CREDENTIALS" ] || [ -z "$YC_FOLDER_ID" ]; then
-            echo "::warning::Нет секретов Яндекс Облака — APK без синхронизации"; exit 0
+            echo "::warning::Нет секретов Яндекс Облака — без копии ключа и без синхронизации"; exit 0
           fi
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yc -n > /dev/null
           umask 077
@@ -91,6 +84,89 @@ jobs:
           /opt/yc/bin/yc config set service-account-key "$RUNNER_TEMP/key.json"
           /opt/yc/bin/yc config set folder-id "$YC_FOLDER_ID"
           rm -f "$RUNNER_TEMP/key.json"
+          if ! /opt/yc/bin/yc iam create-token > /dev/null 2>&1; then
+            echo "::warning::Вход в Яндекс Облако не удался — без копии ключа и без синхронизации"; exit 0
+          fi
+          keys="freewrite-keys-$(printf '%s' "$YC_FOLDER_ID" | sha256sum | cut -c1-12)"
+          echo "::add-mask::$keys"
+          echo "KEYS_BUCKET=$keys" >> "$GITHUB_ENV"
+          echo "YC_OK=1" >> "$GITHUB_ENV"
+          echo "Вход в Яндекс Облако: работает"
+
+      # Кэш пропал (GitHub удаляет его, если к нему долго не обращались) — берём копию из Яндекс Облака.
+      - name: Signing key from Yandex Cloud (if cache is empty)
+        run: |
+          if [ -f freewrite-debug.keystore ]; then echo "Ключ подписи взят из кэша"; exit 0; fi
+          if [ "${YC_OK:-}" != "1" ]; then echo "::warning::Ключа нет в кэше, а Яндекс Облако недоступно"; exit 0; fi
+          token=$(/opt/yc/bin/yc iam create-token)
+          echo "::add-mask::$token"
+          if curl -sf -H "Authorization: Bearer $token" -o freewrite-debug.keystore \
+              "https://storage.yandexcloud.net/$KEYS_BUCKET/signing/freewrite-debug.keystore"; then
+            echo "Ключ подписи восстановлен из копии в Яндекс Облаке"
+          else
+            rm -f freewrite-debug.keystore
+            echo "::warning::Копии ключа подписи в Яндекс Облаке нет"
+          fi
+
+      - name: Create signing key if missing
+        run: |
+          if [ ! -f freewrite-debug.keystore ]; then
+            if [ -n "$SIGNING_CERT_SHA256" ]; then
+              echo "::error::Ключа подписи нет ни в кэше, ни в копии в Яндекс Облаке. APK с новым ключом не встанет поверх старой версии (придётся удалять FreeWrite и терять доски). Если так и задумано — очистите SIGNING_CERT_SHA256 в build.yml."
+              exit 1
+            fi
+            echo "Создаю новый ключ подписи"
+            keytool -genkeypair -keystore freewrite-debug.keystore \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=FreeWrite Debug,O=FreeWrite,C=RU" > /dev/null
+          fi
+
+      - name: Check signing key
+        run: |
+          got=$(keytool -list -v -keystore freewrite-debug.keystore -storepass android -alias androiddebugkey \
+            | awk '/SHA256:/ {print $2; exit}' | tr -d ':' | tr 'A-F' 'a-f')
+          if [ -n "$SIGNING_CERT_SHA256" ] && [ "$got" != "$SIGNING_CERT_SHA256" ]; then
+            echo "::error::Ключ подписи не тот (отпечаток $got) — APK не встал бы поверх. Сборка остановлена."
+            exit 1
+          fi
+          echo "Ключ подписи тот же, что у выпусков: $got"
+
+      # Запасная копия ключа — в закрытом хранилище Яндекс Облака (только чтение роботом, снаружи недоступно).
+      # Уже есть — сверяем; отличается — не перезаписываем, только предупреждаем.
+      - name: Signing key backup in Yandex Cloud
+        if: env.YC_OK == '1'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          yc=/opt/yc/bin/yc
+          if ! $yc storage bucket get --name "$KEYS_BUCKET" > /dev/null 2>&1; then
+            $yc storage bucket create --name "$KEYS_BUCKET" --max-size 10485760 > /dev/null
+            echo "Создано закрытое хранилище для копии ключа"
+          fi
+          token=$($yc iam create-token)
+          echo "::add-mask::$token"
+          url="https://storage.yandexcloud.net/$KEYS_BUCKET/signing/freewrite-debug.keystore"
+          code=$(curl -s -o "$RUNNER_TEMP/remote.keystore" -w '%{http_code}' -H "Authorization: Bearer $token" "$url" || true)
+          if [ "$code" = "200" ]; then
+            if cmp -s "$RUNNER_TEMP/remote.keystore" freewrite-debug.keystore; then
+              echo "Копия ключа подписи в Яндекс Облаке на месте и совпадает"
+            else
+              echo "::warning::Копия ключа в Яндекс Облаке отличается от ключа сборки — не перезаписываю"
+            fi
+          elif [ "$code" = "404" ]; then
+            curl -sf -X PUT -T freewrite-debug.keystore -H "Authorization: Bearer $token" "$url" > /dev/null
+            echo "Копия ключа подписи сохранена в Яндекс Облаке"
+          else
+            echo "::warning::Не удалось проверить копию ключа (ответ $code)"
+          fi
+          rm -f "$RUNNER_TEMP/remote.keystore"
+
+      # Адрес сервера общей доски берём из Яндекс Облака и вшиваем в APK.
+      # В журнал он не попадает. Не получилось — APK собирается без синхронизации.
+      - name: Sync server address
+        run: |
+          if [ "${YC_OK:-}" != "1" ]; then echo "::warning::Яндекс Облако недоступно — APK без синхронизации"; exit 0; fi
           url=$(/opt/yc/bin/yc serverless function get --name freewrite-sync --format json 2>/dev/null | jq -r '.http_invoke_url // empty' || true)
           if [ -z "$url" ]; then
             echo "::warning::Сервер freewrite-sync не найден — APK без синхронизации"; exit 0
