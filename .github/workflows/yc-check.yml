@@ -1,0 +1,57 @@
+name: Yandex Cloud check
+
+# Проверка доступа к Яндекс Облаку: робот freewrite-deploy входит по ключу из секрета
+# YC_SA_JSON_CREDENTIALS и только ЧИТАЕТ каталог (ничего не создаёт и не меняет).
+# В журнал попадают только названия и счётчики — ни ключа, ни номеров.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/yc-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install yc CLI
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yc -n
+          echo "/opt/yc/bin" >> "$GITHUB_PATH"
+
+      - name: Sign in as service account
+        env:
+          YC_SA_JSON_CREDENTIALS: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          if [ -z "$YC_SA_JSON_CREDENTIALS" ] || [ -z "$YC_FOLDER_ID" ]; then
+            echo "::error::Нет секрета YC_SA_JSON_CREDENTIALS или YC_FOLDER_ID"; exit 1
+          fi
+          umask 077
+          printf '%s' "$YC_SA_JSON_CREDENTIALS" > "$RUNNER_TEMP/key.json"
+          jq -e '.service_account_id and .private_key' "$RUNNER_TEMP/key.json" > /dev/null \
+            || { echo "::error::В секрете YC_SA_JSON_CREDENTIALS не файл авторизованного ключа"; rm -f "$RUNNER_TEMP/key.json"; exit 1; }
+          yc config profile create ci > /dev/null
+          yc config set service-account-key "$RUNNER_TEMP/key.json"
+          yc config set folder-id "$YC_FOLDER_ID"
+          rm -f "$RUNNER_TEMP/key.json"
+          yc iam create-token > /dev/null && echo "Вход роботом: работает"
+
+      - name: Read folder (no changes)
+        env:
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          fail=0
+          check() { local name="$1"; shift; if out=$("$@" 2>&1); then echo "$name: $out"; else echo "::error::$name — не удалось"; echo "$out" | head -5; fail=1; fi; }
+          check "Каталог" sh -c 'yc resource-manager folder get "$YC_FOLDER_ID" --format json | jq -r ".name + \" (\" + .status + \")\""'
+          check "Роли в каталоге" sh -c 'yc resource-manager folder list-access-bindings "$YC_FOLDER_ID" --format json | jq -r "[.[].role_id] | unique | join(\", \")"'
+          check "Сервисные аккаунты" sh -c 'yc iam service-account list --format json | jq -r "[.[].name] | join(\", \")"'
+          check "Функций" sh -c 'yc serverless function list --format json | jq length'
+          check "Баз YDB" sh -c 'yc ydb database list --format json | jq length'
+          check "Бакетов" sh -c 'yc storage bucket list --format json | jq length'
+          exit $fail
