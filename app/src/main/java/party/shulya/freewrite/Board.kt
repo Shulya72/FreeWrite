@@ -537,7 +537,7 @@ class Board(
             val b = Board(o.getString("id"), o.optString("title", "Доска"), o.optLong("created"), o.optLong("updated"))
             b.camX = o.optDouble("camX", 0.0).toFloat()
             b.camY = o.optDouble("camY", 0.0).toFloat()
-            b.camZ = o.optDouble("camZ", 1.0).toFloat().coerceIn(0.1f, 5f)
+            b.camZ = o.optDouble("camZ", 1.0).toFloat().coerceIn(BoardView.MIN_ZOOM, BoardView.MAX_ZOOM)
             o.optJSONArray("statuses")?.let { a -> for (i in 0 until a.length()) b.statuses += parseStatus(a.getJSONObject(i)) }
             if (b.statuses.isEmpty()) b.statuses.addAll(defaultStatuses()) // доски до 0.7.0
             o.optJSONArray("strokes")?.let { a -> for (i in 0 until a.length()) b.strokes += parseDrawing(a.getJSONObject(i)) }

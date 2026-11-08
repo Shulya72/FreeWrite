@@ -3,6 +3,7 @@ package party.shulya.freewrite
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import kotlin.math.max
 
 /**
  * Рисование штрихов — общее для листа записи и доски.
@@ -52,8 +53,8 @@ class InkPainter {
      * Контур строится один раз и хранится в рисунке. Ручка с разным нажимом рисуется отрезками
      * разной толщины; fast = true (доска издалека) — одним контуром ровной толщины, это намного быстрее.
      */
-    fun drawing(canvas: Canvas, d: Drawing, alpha: Int = 255, fast: Boolean = false) {
-        paint(canvas, d.kind, d.color, d.width, d.pts, d.uniform, fast, alpha) {
+    fun drawing(canvas: Canvas, d: Drawing, alpha: Int = 255, fast: Boolean = false, minWidth: Float = 0f) {
+        paint(canvas, d.kind, d.color, d.width, d.pts, d.uniform, fast, alpha, minWidth) {
             d.path ?: buildPath(d.kind, d.pts, d.uniform, Path()).also { d.path = it }
         }
     }
@@ -62,8 +63,8 @@ class InkPainter {
      * Рисунок по готовой копии (плитки доски рисуются в фоне): контур строится заново в свой [path],
      * в рисунке ничего не запоминается. У каждого фонового потока — свой InkPainter.
      */
-    fun drawRaw(canvas: Canvas, kind: String, color: Int, width: Float, pts: FloatArray, uniform: Boolean, fast: Boolean) {
-        paint(canvas, kind, color, width, pts, uniform, fast, 255) {
+    fun drawRaw(canvas: Canvas, kind: String, color: Int, width: Float, pts: FloatArray, uniform: Boolean, fast: Boolean, minWidth: Float = 0f) {
+        paint(canvas, kind, color, width, pts, uniform, fast, 255, minWidth) {
             path.reset()
             buildPath(kind, pts, uniform, path)
         }
@@ -71,25 +72,25 @@ class InkPainter {
 
     private inline fun paint(
         canvas: Canvas, kind: String, color: Int, width: Float, pts: FloatArray, uniform: Boolean, fast: Boolean, alpha: Int,
-        contour: () -> Path,
+        minWidth: Float, contour: () -> Path,
     ) {
         val n = pts.size / 3
         if (n == 0) return
         paint.color = color
         paint.alpha = if (kind == "marker") alpha * 80 / 255 else alpha
         if (n == 1) {
-            dot(canvas, pts[0], pts[1], width)
+            dot(canvas, pts[0], pts[1], max(width, minWidth))
             return
         }
         if (kind == "pen" && !fast && !uniform) {
             for (i in 1 until n) {
-                paint.strokeWidth = width * (0.45f + 1.1f * (pts[i * 3 - 1] + pts[i * 3 + 2]) / 2f)
+                paint.strokeWidth = max(width * (0.45f + 1.1f * (pts[i * 3 - 1] + pts[i * 3 + 2]) / 2f), minWidth)
                 canvas.drawLine(pts[i * 3 - 3], pts[i * 3 - 2], pts[i * 3], pts[i * 3 + 1], paint)
             }
             return
         }
         val p = contour()
-        paint.strokeWidth = if (kind == "pen" && uniform) width * (0.45f + 1.1f * pts[2]) else width
+        paint.strokeWidth = max(if (kind == "pen" && uniform) width * (0.45f + 1.1f * pts[2]) else width, minWidth)
         canvas.drawPath(p, paint)
     }
 

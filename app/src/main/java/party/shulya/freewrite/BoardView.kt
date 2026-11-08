@@ -188,7 +188,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     fun fitRect(l: Float, t: Float, r: Float, bt: Float) {
         if (width == 0 || r <= l || bt <= t) return
         val pad = Ui.dpf(context, 48f)
-        val z = min(width / ((r - l) + pad * 2 / b.camZ), height / ((bt - t) + pad * 2 / b.camZ)).coerceIn(0.1f, 3f)
+        val z = min(width / ((r - l) + pad * 2 / b.camZ), height / ((bt - t) + pad * 2 / b.camZ)).coerceIn(MIN_ZOOM, 3f)
         b.camZ = z
         b.camX = (l + r) / 2f - width / 2f / z
         b.camY = (t + bt) / 2f - height / 2f / z
@@ -370,6 +370,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         const val PEN_GRACE_MS = 700L
         /** Если перо пришло так скоро после касания пальцем, сдвиг доски пальцем отменяется. */
         const val PALM_REVERT_MS = 1500L
+
+        /**
+         * Насколько можно отдалить доску (1 %) и приблизить (500 %). Доска бесконечная: отдалить далеко нужно, чтобы
+         * большая доска (например, из Nebo — 3,5 × 5,5 м) не занимала весь экран и вокруг было видно свободное поле.
+         * Издалека штрихи — готовыми плитками ([BoardTiles]), так что это не тормозит.
+         */
+        const val MIN_ZOOM = 0.01f
+        const val MAX_ZOOM = 5f
     }
 
     /** Загрузчик картинок (уровни, фон, память) — задаёт экран доски. */
@@ -400,7 +408,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             b.camY = -Ui.dpf(context, 40f)
         } else {
             val pad = Ui.dpf(context, 40f)
-            val z = min(width / (bb.width() + pad * 2), height / (bb.height() + pad * 2)).coerceIn(0.1f, 2f)
+            val z = min(width / (bb.width() + pad * 2), height / (bb.height() + pad * 2)).coerceIn(MIN_ZOOM, 2f)
             b.camZ = z
             b.camX = bb.centerX() - width / 2f / z
             b.camY = bb.centerY() - height / 2f / z
@@ -1321,7 +1329,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         val c = ev.findPointerIndex(pinchB)
         if (a < 0 || c < 0) return
         val d = max(1f, hypot(ev.getX(a) - ev.getX(c), ev.getY(a) - ev.getY(c)))
-        val z = (pinchZ0 * d / pinchD0).coerceIn(0.1f, 5f)
+        val z = (pinchZ0 * d / pinchD0).coerceIn(MIN_ZOOM, MAX_ZOOM)
         val mx = (ev.getX(a) + ev.getX(c)) / 2f
         val my = (ev.getY(a) + ev.getY(c)) / 2f
         b.camZ = z
@@ -1362,7 +1370,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             val v = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
             if ((event.metaState and android.view.KeyEvent.META_CTRL_ON) != 0) {
                 val wxp = wx(event.x); val wyp = wy(event.y)
-                b.camZ = (b.camZ * (1f + v * 0.1f)).coerceIn(0.1f, 5f)
+                b.camZ = (b.camZ * (1f + v * 0.1f)).coerceIn(MIN_ZOOM, MAX_ZOOM)
                 b.camX = wxp - event.x / b.camZ
                 b.camY = wyp - event.y / b.camZ
             } else {
@@ -1434,7 +1442,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private val liveClip = RectF()
 
     /** Штрихи прямоугольника r напрямую (плитка там ещё не готова) — с обрезкой по r. */
-    private fun drawStrokesIn(canvas: Canvas, r: RectF, fast: Boolean, tiny: Float) {
+    private fun drawStrokesIn(canvas: Canvas, r: RectF, fast: Boolean, minW: Float) {
         liveClip.set(max(r.left, vis.left), max(r.top, vis.top), min(r.right, vis.right), min(r.bottom, vis.bottom))
         if (liveClip.isEmpty) return
         canvas.save()
@@ -1443,8 +1451,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             if (selDrawings.isNotEmpty() && d in selDrawings) continue
             val bb = d.bounds()
             if (bb.right < liveClip.left || bb.left > liveClip.right || bb.bottom < liveClip.top || bb.top > liveClip.bottom) continue
-            if (bb.width() < tiny && bb.height() < tiny) continue
-            painter.drawing(canvas, d, 255, fast)
+            painter.drawing(canvas, d, 255, fast, minW)
             liveCount++
         }
         canvas.restore()
@@ -1514,7 +1521,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         // Издалека ручка рисуется одним контуром ровной толщины — на глаз не отличить, а в разы быстрее.
         val fast = z < 0.6f
-        val tiny = 1.5f / z // меньше полутора пикселей — рисовать нечего
+        val minW = BoardTiles.MIN_PX / z // издалека штрих не тоньше ~0,8 пикселя — написанное видно, а не пропадает
         // Штрихи — готовыми плитками (FW-009): кадр не зависит от числа штрихов. Выделенные — поверх, напрямую.
         selDrawings.clear()
         liveCount = 0
@@ -1524,20 +1531,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             drawn += seen
             if ((capturing || plain) && seen < 600) {
                 // Снимок (кадр под пером, пипетка) при немногих штрихах — напрямую быстрее, чем из плиток.
-                drawStrokesIn(canvas, vis, fast, tiny)
+                drawStrokesIn(canvas, vis, fast, minW)
             } else {
                 val complete = capturing || plain || (!canvas.isHardwareAccelerated && !asyncTiles)
-                tiles.draw(canvas, vis, z, complete) { r -> drawStrokesIn(canvas, r, fast, tiny) }
+                tiles.draw(canvas, vis, z, complete) { r -> drawStrokesIn(canvas, r, fast, minW) }
             }
         } else {
-            drawStrokesIn(canvas, vis, fast, tiny)
+            drawStrokesIn(canvas, vis, fast, minW)
             drawn += b.strokes.size
         }
         if (selDrawings.isNotEmpty()) for (d in b.strokes) {
             if (d !in selDrawings) continue
             val r = d.bounds()
             if (!visible(r.left, r.top, r.right, r.bottom)) continue
-            painter.drawing(canvas, d, 255, fast)
+            painter.drawing(canvas, d, 255, fast, minW)
         }
         for (t in b.texts) {
             if (t.size * z < 2f) continue // буквы меньше 2 пикселей не видны

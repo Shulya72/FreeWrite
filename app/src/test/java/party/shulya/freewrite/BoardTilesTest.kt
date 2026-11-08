@@ -174,6 +174,59 @@ class BoardTilesTest {
         s.a.finish()
     }
 
+    private fun fingers(down: Long, t: Long, action: Int, vararg xy: Float): android.view.MotionEvent {
+        val n = xy.size / 2
+        val props = Array(n) { i -> android.view.MotionEvent.PointerProperties().apply { id = i; toolType = android.view.MotionEvent.TOOL_TYPE_FINGER } }
+        val coords = Array(n) { i -> android.view.MotionEvent.PointerCoords().apply { x = xy[i * 2]; y = xy[i * 2 + 1]; pressure = 0.5f; size = 0.05f } }
+        return android.view.MotionEvent.obtain(down, t, action, n, props, coords, 0, 0, 1f, 1f, 0, 0, android.view.InputDevice.SOURCE_TOUCHSCREEN, 0)
+    }
+
+    /** Щипок двумя пальцами: свести (отдалить) от расстояния 2·from до 2·to по горизонтали. */
+    private fun pinch(v: android.view.View, from: Float, to: Float) {
+        val cx = v.width / 2f; val cy = v.height / 2f
+        val d = android.os.SystemClock.uptimeMillis()
+        val pd = android.view.MotionEvent.ACTION_POINTER_DOWN or (1 shl android.view.MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        val pu = android.view.MotionEvent.ACTION_POINTER_UP or (1 shl android.view.MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        v.dispatchTouchEvent(fingers(d, d, android.view.MotionEvent.ACTION_DOWN, cx - from, cy))
+        v.dispatchTouchEvent(fingers(d, d + 10, pd, cx - from, cy, cx + from, cy))
+        for (i in 1..10) {
+            val r = from + (to - from) * i / 10f
+            v.dispatchTouchEvent(fingers(d, d + 10 + i * 12L, android.view.MotionEvent.ACTION_MOVE, cx - r, cy, cx + r, cy))
+        }
+        v.dispatchTouchEvent(fingers(d, d + 200, pu, cx - to, cy, cx + to, cy))
+        v.dispatchTouchEvent(fingers(d, d + 210, android.view.MotionEvent.ACTION_UP, cx - to, cy))
+        idle()
+    }
+
+    /** Доска бесконечная: отдалить можно до 1 % — большая доска становится маленькой, вокруг видно свободное поле. */
+    @Test
+    fun zoomOutFarAroundTheBoard() {
+        val b = board(6000)
+        val s = open(b)
+        val bd = s.a.board()
+        s.view.fitAll()
+        idle()
+        val zFit = bd.camZ
+        repeat(6) { pinch(s.view, 300f, 100f) } // каждый щипок — в 3 раза дальше
+        assertTrue("отдалили дальше прежних 10 %: z=${bd.camZ}", bd.camZ < 0.1f && bd.camZ < zFit / 5f)
+        assertEquals("предел — 1 %", BoardView.MIN_ZOOM, bd.camZ, 1e-4f)
+        s.settle()
+        assertEquals("издалека — из плиток", 0, s.view.liveCount)
+        val shot = s.draw()
+        save(shot, "zoom-out-1pct.png")
+        // Доска (4000×6000) при 1 % — около 40×60 пикселей: почти весь экран — свободное поле.
+        var inked = 0
+        for (j in 0 until shot.height step 4) for (i in 0 until shot.width step 4) {
+            val p = shot.getPixel(i, j)
+            if (Color.red(p) + Color.green(p) + Color.blue(p) < 600) inked++
+        }
+        val total = (shot.width / 4) * (shot.height / 4)
+        assertTrue("занято ${inked} из $total", inked > 0 && inked < total / 50)
+        // Масштаб сохраняется вместе с доской (раньше при чтении поднимался до 10 %).
+        s.a.board().let { bb -> BoardStore(ctx).save(bb); assertEquals(BoardView.MIN_ZOOM, BoardStore(ctx).load(bb.id)!!.camZ, 1e-4f) }
+        s.a.finish()
+    }
+
     @Test
     fun levelsAreNotSmallerThanScreen() {
         for (z in floatArrayOf(0.1f, 0.13f, 0.5f, 0.71f, 1f, 1.2f, 3f, 5f)) {
