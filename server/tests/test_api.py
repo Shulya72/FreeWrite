@@ -23,6 +23,7 @@ class MemoryStore:
         self.invites = {}
         self.objects = {}  # (board, id) -> row
         self.imgs = {}
+        self.views = {}
 
     def _auth(self, board_id, key):
         b = self.boards.get(board_id)
@@ -31,6 +32,26 @@ class MemoryStore:
         if not hmac.compare_digest(b["secret"].encode(), key.encode()):
             raise forbidden()
         return b
+
+    def _auth_read(self, board_id, key):
+        b = self.boards.get(board_id)
+        if b is None:
+            raise not_found()
+        vk = b.get("view_key") or ""
+        if not (hmac.compare_digest(b["secret"].encode(), key.encode()) or (vk and hmac.compare_digest(vk.encode(), key.encode()))):
+            raise forbidden()
+        return b
+
+    def find_view(self, code):
+        return self.views.get(code)
+
+    def set_view(self, board_id, key, code, vkey):
+        b = self._auth(board_id, key)
+        if b.get("view_code"):
+            return b["view_code"], b["view_key"]
+        b["view_code"], b["view_key"] = code, vkey
+        self.views[code] = board_id
+        return code, vkey
 
     def get_board(self, board_id):
         b = self.boards.get(board_id)
@@ -71,7 +92,7 @@ class MemoryStore:
         return seq, len(out)
 
     def pull(self, board_id, key, since, limit):
-        b = self._auth(board_id, key)
+        b = self._auth_read(board_id, key)
         rows = sorted((r for (bid, _), r in self.objects.items() if bid == board_id and r["seq"] > since),
                       key=lambda r: r["seq"])[:limit]
         return b["seq"], b["title"], rows
@@ -93,6 +114,8 @@ class MemoryStore:
         for k in [k for k in self.objects if k[0] == board_id]:
             del self.objects[k]
         del self.invites[b["invite"]]
+        if b.get("view_code"):
+            del self.views[b["view_code"]]
         del self.boards[board_id]
         return gone
 
@@ -148,7 +171,7 @@ class ApiTest(unittest.TestCase):
         return self.ok("create", board=BOARD, title=title, device="vlad01")
 
     def test_ping_get_and_raw(self):
-        res = main.handler({"httpMethod": "GET", "queryStringParameters": {}}, Ctx())
+        res = main.handler({"httpMethod": "GET", "queryStringParameters": {"op": "ping"}}, Ctx())
         self.assertEqual(200, res["statusCode"])
         self.assertTrue(json.loads(res["body"])["ok"])
         self.assertTrue(self.ok("ping", http=False)["ok"])
@@ -339,6 +362,66 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(1, r["images"])
         self.assertEqual({}, main._blob.data)
         status, _ = self.call("pull", board=BOARD, key=key, since=0)
+        self.assertEqual(404, status)
+
+    def test_site_page_in_browser(self):
+        """Открыли адрес в браузере (GET без op) — страница сайта; с op — как раньше JSON."""
+        res = main.handler({"httpMethod": "GET", "queryStringParameters": {"v": "ABCD-EFGH"}}, Ctx())
+        self.assertEqual(200, res["statusCode"])
+        self.assertTrue(res["headers"]["Content-Type"].startswith("text/html"))
+        self.assertIn("<title>FreeWrite", res["body"])
+        self.assertIn("view_link", res["body"])
+        res = main.handler({"httpMethod": "GET", "queryStringParameters": None}, Ctx())
+        self.assertIn("<!doctype html>", res["body"].lower())
+
+    def test_view_only_code(self):
+        """Код «только смотреть»: читать доску и картинки можно, править и удалять — нельзя."""
+        c = self.create()
+        key = c["key"]
+        self.ok("push", board=BOARD, key=key, device="vlad01",
+                changes=[{"id": "t1", "rev": rev(1000), "k": "text", "d": '{"id":"t1","text":"Захватка 1"}'}])
+        data = b"\xff\xd8 jpeg"
+        self.ok("img_put", board=BOARD, key=key, file="a.jpg", part=0, parts=1, size=len(data),
+                data=base64.b64encode(data).decode())
+        status, body = self.call("view_link", board=BOARD, key="чужой")
+        self.assertEqual(403, status)
+        link = self.ok("view_link", board=BOARD, key=key)
+        code = link["code"]
+        self.assertEqual(8, len(code))
+        self.assertNotEqual(c["invite"], code)
+        self.assertEqual(code, self.ok("view_link", board=BOARD, key=key)["code"], "второй раз — тот же код")
+        v = self.ok("view", code=code.lower()[:4] + "-" + code.lower()[4:])
+        self.assertEqual(BOARD, v["board"])
+        vkey = v["key"]
+        self.assertNotEqual(key, vkey)
+        self.assertEqual("Захватки", v["title"])
+        # Читать можно.
+        p = self.ok("pull", board=BOARD, key=vkey, since=0)
+        self.assertEqual(["t1"], [x["id"] for x in p["changes"]])
+        info = self.ok("info", board=BOARD, key=vkey)
+        self.assertTrue(info["view"])
+        self.assertNotIn("invite", info, "код для правки по ключу просмотра не выдаётся")
+        self.assertIn("invite", self.ok("info", board=BOARD, key=key))
+        self.assertEqual(["a.jpg"], self.ok("img_has", board=BOARD, key=vkey, files=["a.jpg"])["have"])
+        self.assertEqual(data, base64.b64decode(self.ok("img_get", board=BOARD, key=vkey, file="a.jpg", part=0)["data"]))
+        # Править, добавлять картинки, удалять и делать новые коды — нельзя.
+        for op, kw in [("push", dict(device="x", changes=[{"id": "t2", "rev": rev(2000), "k": "text", "d": "{}"}])),
+                       ("img_put", dict(file="b.jpg", part=0, parts=1, size=1, data=base64.b64encode(b"x").decode())),
+                       ("delete", {}), ("view_link", {})]:
+            status, body = self.call(op, board=BOARD, key=vkey, **kw)
+            self.assertEqual(403, status, op)
+        # Кодом просмотра нельзя войти в приложение (join) — понятное сообщение.
+        status, body = self.call("join", invite=code)
+        self.assertEqual(403, status)
+        self.assertEqual("view_only", body["error"])
+        status, body = self.call("view", code="ZZZZZZZZ")
+        self.assertEqual(404, status)
+        # Код для коллег в «view» не подходит.
+        status, body = self.call("view", code=c["invite"])
+        self.assertEqual(404, status)
+        # Доску убрали — код просмотра тоже.
+        self.ok("delete", board=BOARD, key=key)
+        status, body = self.call("view", code=code)
         self.assertEqual(404, status)
 
     def test_server_error_is_short(self):

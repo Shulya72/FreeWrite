@@ -12,6 +12,9 @@
 код (join) и получает тот же ключ. Все остальные запросы — с номером доски и ключом.
 
 Картинки — частями по 1 МБ в Object Storage (img_put / img_get), список готовых — img_has.
+
+Сайт для руководства (FW-003): GET без op — страница просмотра (viewer.html). Код «только смотреть»
+(view_link → view) даёт ключ, которым можно только читать доску и картинки (pull, info, img_has, img_get).
 """
 import base64
 import hmac
@@ -80,7 +83,8 @@ def _parse(event) -> dict:
         return event  # прямой вызов (integration=raw): событие — сам запрос
     if event.get("httpMethod") == "GET":
         q = event.get("queryStringParameters") or {}
-        return {"op": q.get("op", "ping")}
+        # Открыли адрес в браузере — страница сайта (её запросы — POST на этот же адрес).
+        return {"op": q["op"]} if q.get("op") else {"op": "page"}
     body = event.get("body") or ""
     if event.get("isBase64Encoded"):
         body = base64.b64decode(body).decode("utf-8")
@@ -132,6 +136,22 @@ def _check(board: dict, key: str) -> dict:
     if not hmac.compare_digest(board["secret"].encode(), key.encode()):
         raise forbidden()
     return board
+
+
+def _check_read(board: dict, key: str) -> dict:
+    """Читать — ключом доски или ключом «только смотреть»."""
+    if board is None:
+        raise not_found()
+    if hmac.compare_digest(board["secret"].encode(), key.encode()):
+        return board
+    vk = board.get("view_key") or ""
+    if not vk or not hmac.compare_digest(vk.encode(), key.encode()):
+        raise forbidden()
+    return board
+
+
+def _is_editor(board: dict, key: str) -> bool:
+    return hmac.compare_digest(board["secret"].encode(), key.encode())
 
 
 def _token(context) -> str:
@@ -193,6 +213,8 @@ def op_join(req, ctx):
     b = st.find_invite(code)
     board = st.get_board(b) if b else None
     if board is None:
+        if st.find_view(code):
+            raise ApiError(403, "view_only", "Это код только для просмотра — откройте доску на сайте")
         raise ApiError(404, "no_invite", "Код не найден — проверьте, нет ли опечатки")
     return {"board": board["board_id"], "key": board["secret"], "title": board["title"],
             "invite": board["invite"], "seq": board["seq"]}
@@ -200,9 +222,40 @@ def op_join(req, ctx):
 
 def op_info(req, ctx):
     b, key = _board(req)
-    board = _check(store().get_board(b), key)
-    return {"board": b, "title": board["title"], "invite": board["invite"], "seq": board["seq"],
-            "objects": board["n_objects"]}
+    board = _check_read(store().get_board(b), key)
+    out = {"board": b, "title": board["title"], "seq": board["seq"], "objects": board["n_objects"]}
+    if _is_editor(board, key):
+        out["invite"] = board["invite"]  # код для коллег (с правом править) — только тем, у кого ключ доски
+    else:
+        out["view"] = True
+    return out
+
+
+def op_view_link(req, ctx):
+    """Код «только смотреть» для сайта (руководству): создаётся один раз, потом — тот же."""
+    b, key = _board(req)
+    st = store()
+    _check(st.get_board(b), key)
+    for _ in range(5):
+        code = _new_invite()
+        if st.find_invite(code) is None and st.find_view(code) is None:
+            break
+    else:
+        raise ApiError(500, "invite", "Не удалось придумать код")
+    code, _vkey = st.set_view(b, key, code, secrets.token_urlsafe(18))
+    return {"board": b, "code": code}
+
+
+def op_view(req, ctx):
+    """Код «только смотреть» → доска и ключ для чтения."""
+    code = normalize_invite(_str(req, "code", limit=40))
+    st = store()
+    b = st.find_view(code) if len(code) == 8 else None
+    board = st.get_board(b) if b else None
+    if board is None or not board.get("view_key"):
+        raise ApiError(404, "no_view", "Код не найден — проверьте, нет ли опечатки")
+    return {"board": board["board_id"], "key": board["view_key"], "title": board["title"],
+            "seq": board["seq"], "view": True}
 
 
 def _changes(req) -> list:
@@ -277,7 +330,7 @@ def op_img_has(req, ctx):
     b, key = _board(req)
     files = _files(req)
     st = store()
-    _check(st.get_board(b), key)
+    _check_read(st.get_board(b), key)
     have = st.images(files)
     return {"have": sorted(have.keys())}
 
@@ -313,7 +366,7 @@ def op_img_get(req, ctx):
     b, key = _board(req)
     name = _str(req, "file", FILE_RE, limit=120)
     st = store()
-    _check(st.get_board(b), key)
+    _check_read(st.get_board(b), key)
     info = st.images([name]).get(name)
     if info is None:
         raise ApiError(404, "no_image", "Картинки нет на сервере")
@@ -347,7 +400,26 @@ OPS = {
     "img_put": op_img_put,
     "img_get": op_img_get,
     "delete": op_delete,
+    "view_link": op_view_link,
+    "view": op_view,
 }
+
+_PAGE = None
+
+
+def _page() -> dict:
+    """Страница сайта: один файл (разметка, оформление и код просмотра доски)."""
+    global _PAGE
+    if _PAGE is None:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer.html"), encoding="utf-8") as f:
+            _PAGE = f.read()
+    return {
+        "statusCode": 200,
+        "headers": {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache",
+                    "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"},
+        "body": _PAGE,
+        "isBase64Encoded": False,
+    }
 
 
 def handler(event, context):
@@ -355,6 +427,8 @@ def handler(event, context):
     try:
         req = _parse(event)
         op = req.get("op") if isinstance(req.get("op"), str) else "?"
+        if op == "page" and isinstance(event, dict) and event.get("httpMethod") == "GET":
+            return _page()
         fn = OPS.get(op)
         if fn is None:
             raise ApiError(400, "bad_op", "Неизвестный запрос")
