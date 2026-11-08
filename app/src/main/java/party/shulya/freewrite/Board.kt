@@ -534,6 +534,13 @@ class Board(
         /** Статусы новой доски: список ИД и список конструкций (Владимир правит их в «Статусы»). */
         fun defaultStatuses() = idStatuses() + conStatuses()
 
+        /** Список до 0.18 (id s0–s2 — как у старых меток 0, 1, 2). */
+        fun legacyStatuses() = listOf(
+            BoardStatus("s0", "Не сдано", Ui.BAD),
+            BoardStatus("s1", "В работе", Ui.WARN),
+            BoardStatus("s2", "Сдано", Ui.OK),
+        )
+
         /** Исполнительная документация (FW-011, список Владимира 08.11.2026). Номера одинаковые на всех планшетах. */
         fun idStatuses() = listOf(
             BoardStatus("i0", "Конструкция не принята", Ui.BAD),
@@ -668,7 +675,7 @@ class Board(
             b.camY = o.optDouble("camY", 0.0).toFloat()
             b.camZ = o.optDouble("camZ", 1.0).toFloat().coerceIn(BoardView.MIN_ZOOM, BoardView.MAX_ZOOM)
             o.optJSONArray("statuses")?.let { a -> for (i in 0 until a.length()) b.statuses += parseStatus(a.getJSONObject(i)) }
-            if (b.statuses.isEmpty()) b.statuses.addAll(defaultStatuses()) // доски до 0.7.0
+            if (b.statuses.isEmpty()) b.statuses.addAll(legacyStatuses()) // доски до 0.7.0: метки ссылаются на s0–s2
             o.optJSONArray("strokes")?.let { a -> for (i in 0 until a.length()) b.strokes += parseDrawing(a.getJSONObject(i)) }
             o.optJSONArray("texts")?.let { a -> for (i in 0 until a.length()) b.texts += parseText(a.getJSONObject(i)) }
             o.optJSONArray("images")?.let { a -> for (i in 0 until a.length()) b.images += parseImage(a.getJSONObject(i)) }
