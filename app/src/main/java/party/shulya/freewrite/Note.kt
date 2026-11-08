@@ -101,6 +101,17 @@ class Drawing(val kind: String, var color: Int, var width: Float, val pts: Float
 
 /** Быстрая запись чисел в JSON (округление до 0,1 — как раньше). */
 object JsonNum {
+    /** Строка в кавычках; простые (номера, отметки правок) — без лишней строки-копии, как JSONObject.quote. */
+    fun quote(sb: StringBuilder, s: String) {
+        for (c in s) {
+            if (c < ' ' || c == '"' || c == '\\' || c == '/' || c == '\u2028' || c == '\u2029') {
+                sb.append(JSONObject.quote(s))
+                return
+            }
+        }
+        sb.append('"').append(s).append('"')
+    }
+
     fun num(sb: StringBuilder, v: Float) {
         var r = (v * 10f).roundToInt()
         if (r < 0) { sb.append('-'); r = -r }

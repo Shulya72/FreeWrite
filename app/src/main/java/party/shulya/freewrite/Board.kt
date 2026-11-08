@@ -226,6 +226,19 @@ class Board(
      * поэтому сохранение и снимок для «Отменить» быстрые даже на большой доске.
      */
     fun toJsonString(withCamera: Boolean = true, stampDevice: String? = null, now: Long = System.currentTimeMillis()): String {
+        val parts = toJsonParts(withCamera, stampDevice, now)
+        var n = 0
+        for (p in parts) n += p.length
+        val sb = StringBuilder(n)
+        for (p in parts) sb.append(p)
+        return sb.toString()
+    }
+
+    /**
+     * Доска JSON по частям — те же строки, что [toJsonString], только не склеенные (FW-009): склейка и запись
+     * большой доски (мегабайты) идут в фоне, здесь — только готовые строки предметов и отметки правок.
+     */
+    fun toJsonParts(withCamera: Boolean = true, stampDevice: String? = null, now: Long = System.currentTimeMillis()): List<String> {
         // stampDevice — заодно отметить правки ([stamp]) тем же проходом: строки предметов уже готовы.
         val st = stampDevice?.let { Stamper(it, now) }
         if (st != null) {
@@ -233,7 +246,8 @@ class Board(
             st.check(ORDER_ID, fingerprint(statuses.joinToString(",") { it.id }))
             for (s in statuses) st.check(s.id, fingerprint(s.name + "\u0001" + s.color))
         }
-        val sb = StringBuilder(64 * 1024)
+        val out = ArrayList<String>(objectCount() * 2 + 32)
+        val sb = StringBuilder(1024)
         sb.append("{\"v\":2,\"kind\":\"board\",\"id\":").append(JSONObject.quote(id))
         sb.append(",\"title\":").append(JSONObject.quote(title))
         sb.append(",\"created\":").append(created).append(",\"updated\":").append(updated)
@@ -242,15 +256,16 @@ class Board(
             sb.append(",\"camZ\":").append(camZ.toDouble())
         }
         sb.append(",\"statuses\":").append(statusesJson())
+        out += sb.toString()
         fun <T> list(name: String, items: List<T>, id: (T) -> String, f: (T) -> String) {
-            sb.append(",\"").append(name).append("\":[")
+            out += ",\"$name\":["
             for ((i, it) in items.withIndex()) {
-                if (i > 0) sb.append(',')
+                if (i > 0) out += ","
                 val j = f(it)
                 st?.check(id(it), fingerprint(j))
-                sb.append(j)
+                out += j
             }
-            sb.append(']')
+            out += "]"
         }
         list("strokes", strokes, { it.id }) { it.json() }
         list("texts", texts, { it.id }) { textJson(it) }
@@ -260,10 +275,12 @@ class Board(
         list("callouts", callouts, { it.id }) { calloutJson(it) }
         if (frames.isNotEmpty()) list("frames", frames, { it.id }) { frameJson(it) }
         st?.finish()
-        sb.append(",\"sync\":")
-        sync.json(sb)
-        sb.append('}')
-        return sb.toString()
+        val tail = StringBuilder(sync.objs.size * 48 + 64)
+        tail.append(",\"sync\":")
+        sync.json(tail)
+        tail.append('}')
+        out += tail.toString()
+        return out
     }
 
     /**
@@ -615,7 +632,7 @@ class BoardStore(context: Context) {
     /** Сохранить сейчас (в этом потоке). */
     fun save(board: Board) {
         board.updated = System.currentTimeMillis()
-        write(board.id, nextSeq(), board.toJsonString(stampDevice = device), board.metaJson())
+        write(board.id, nextSeq(), board.toJsonParts(stampDevice = device), board.metaJson())
     }
 
     /**
@@ -629,11 +646,14 @@ class BoardStore(context: Context) {
     }
 
     /** Записать готовые строки доски. seq — номер снимка: более старый, чем уже записанный, пропускается. */
-    fun write(id: String, seq: Long, json: String, meta: String) {
+    fun write(id: String, seq: Long, json: String, meta: String) = write(id, seq, listOf(json), meta)
+
+    /** То же по частям ([Board.toJsonParts]): склеиваются прямо в файл, без строки в мегабайты. */
+    fun write(id: String, seq: Long, parts: List<String>, meta: String) {
         synchronized(lock) {
             if (seq < (written[id] ?: Long.MIN_VALUE)) return
             val tmp = File(dir, "$id.json.tmp")
-            tmp.writeText(json)
+            tmp.bufferedWriter(Charsets.UTF_8, 1 shl 16).use { w -> for (p in parts) w.write(p) }
             val target = File(dir, "$id.json")
             if (!tmp.renameTo(target)) {
                 target.writeText(tmp.readText())

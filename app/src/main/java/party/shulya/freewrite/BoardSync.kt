@@ -90,14 +90,14 @@ class BoardSync {
         for ((id, e) in objs) {
             if (!first) sb.append(',')
             first = false
-            sb.append(JSONObject.quote(id)).append(":[").append(e.hash).append(',').append(JSONObject.quote(e.rev)).append(']')
+            JsonNum.quote(sb, id); sb.append(":[").append(e.hash).append(','); JsonNum.quote(sb, e.rev); sb.append(']')
         }
         sb.append("},\"t\":{")
         first = true
         for ((id, r) in tomb) {
             if (!first) sb.append(',')
             first = false
-            sb.append(JSONObject.quote(id)).append(':').append(JSONObject.quote(r))
+            JsonNum.quote(sb, id); sb.append(':'); JsonNum.quote(sb, r)
         }
         sb.append("},\"pi\":[")
         first = true

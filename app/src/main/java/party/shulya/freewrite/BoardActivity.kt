@@ -293,6 +293,7 @@ class BoardActivity : Activity(), BoardView.Host {
         io.shutdown()
         saver.shutdown() // уже начатые сохранения дописываются
         images.close()
+        view.release()
         super.onDestroy()
     }
 
@@ -677,7 +678,8 @@ class BoardActivity : Activity(), BoardView.Host {
         pipetteSnap = null
         view.invalidate()
         handler.removeCallbacks(saveRunnable)
-        handler.postDelayed(saveRunnable, 500)
+        // Большая доска (тысячи штрихов) — сохраняем, когда правки утихнут, а не после каждого штриха.
+        handler.postDelayed(saveRunnable, if (board.objectCount() > 3000) 1500 else 500)
         remote?.kick()
     }
 
@@ -690,11 +692,12 @@ class BoardActivity : Activity(), BoardView.Host {
         board.updated = System.currentTimeMillis()
         val seq = BoardStore.nextSeq()
         val id = board.id
-        val json = board.toJsonString(stampDevice = store.device) // с отметками правок — для обмена с коллегами
+        // С отметками правок — для обмена с коллегами. Части склеиваются уже при записи, в фоне.
+        val parts = board.toJsonParts(stampDevice = store.device)
         val meta = board.metaJson()
         val write = Runnable {
             try {
-                store.write(id, seq, json, meta)
+                store.write(id, seq, parts, meta)
             } catch (t: Throwable) {
                 handler.post { Toast.makeText(this, "Не удалось сохранить: ${t.message}", Toast.LENGTH_LONG).show() }
             }

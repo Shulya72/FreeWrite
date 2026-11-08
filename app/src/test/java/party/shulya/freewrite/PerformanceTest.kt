@@ -95,7 +95,9 @@ class PerformanceTest {
             return android.view.MotionEvent.obtain(down, down + dt, action, 1, props, coords, 0, 0, 1f, 1f, 0, 0, android.view.InputDevice.SOURCE_STYLUS, 0)
         }
         view.dispatchTouchEvent(ev(android.view.MotionEvent.ACTION_DOWN, 300f, 900f, 0))
+        t = System.nanoTime()
         view.draw(canvas) // первый кадр штриха снимает картинку доски
+        println("BENCH ink-first-frame ms=${ms(t)}")
         t = System.nanoTime()
         for (i in 1..10) {
             view.dispatchTouchEvent(ev(android.view.MotionEvent.ACTION_MOVE, 300f + i * 8f, 900f + (i % 3) * 5f, i * 8L))
