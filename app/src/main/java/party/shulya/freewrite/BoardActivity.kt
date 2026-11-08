@@ -40,6 +40,7 @@ class BoardActivity : Activity(), BoardView.Host {
     private lateinit var engine: HandwritingEngine
     private val handler = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
+    private lateinit var pdf: PdfInsert
 
     private lateinit var root: LinearLayout
     private lateinit var view: BoardView
@@ -122,6 +123,7 @@ class BoardActivity : Activity(), BoardView.Host {
         buildUi()
         setContentView(root)
         RemoteSync.transport()?.let { remote = RemoteSync(this, it, remoteHost) }
+        pdf = PdfInsert(this, { hint(it, 3500) }) { blocks, asked -> placeImages(blocks, asked, sheets = true) }
         updateSubtitle()
         engine.start(this)
         // Без пера (телефон) начинаем с «Руки»: пальцем двигать и выбирать. С пером — с «Ручки».
@@ -129,6 +131,8 @@ class BoardActivity : Activity(), BoardView.Host {
         updateBanner()
         updateZoom()
         if (board.isEmpty && board.camX == 0f && board.camY == 0f) view.post { view.fitAll() }
+        // Прислали PDF или картинки через «Поделиться → FreeWrite» и выбрали эту доску.
+        intent.getStringArrayListExtra(EXTRA_INSERT)?.let { paths -> view.post { insertFiles(paths) } }
         if (intent.getBooleanExtra(EXTRA_SHOW_SPEED, false)) {
             showFrameMs = true
             view.post { view.fitAll(); handler.post(frameTicker) }
@@ -277,6 +281,7 @@ class BoardActivity : Activity(), BoardView.Host {
         handler.removeCallbacksAndMessages(null)
         engine.close()
         remote?.close()
+        pdf.close()
         io.shutdown()
         saver.shutdown() // уже начатые сохранения дописываются
         images.close()
@@ -361,7 +366,10 @@ class BoardActivity : Activity(), BoardView.Host {
             setOnClickListener { ColorKit.showPalette(this@BoardActivity, penColor, { setColor(it) }, { startPipette(forSelection = false) }) }
         })
         tools.addView(Ui.separator(this))
-        tools.addView(Ui.ToolButton(this, R.drawable.ic_image, "Картинка").apply { setOnClickListener { pickImage() } })
+        tools.addView(Ui.ToolButton(this, R.drawable.ic_image, "Картинка").apply {
+            tag = "board_tool_image"
+            setOnClickListener { insertMenu() }
+        })
         if (!phone) { tools.addView(undoButton); tools.addView(redoButton) }
         tools.addView(Ui.ToolButton(this, R.drawable.ic_fit, "Всё").apply { setOnClickListener { view.fitAll() } })
         tools.addView(Ui.ToolButton(this, R.drawable.ic_statuses, "Статусы").apply {
@@ -648,8 +656,57 @@ class BoardActivity : Activity(), BoardView.Host {
 
     // ---------------------------------------------------------------- картинки
 
-    private fun pickImage() {
+    /** «Картинка»: фото и чертежи из галереи или листы PDF. */
+    private fun insertMenu() {
         current?.let { commit(it) }
+        if (pdf.busy) { hint("Ещё готовлю листы PDF — подождите"); return }
+        AlertDialog.Builder(this)
+            .setTitle("Положить на доску")
+            .setItems(arrayOf("Картинки — фото, чертежи JPG", "PDF — листы проекта")) { _, which ->
+                if (which == 0) pickImage() else pickPdf()
+            }
+            .show()
+    }
+
+    private fun pickPdf() {
+        val i = Intent(Intent.ACTION_GET_CONTENT).setType("application/pdf").addCategory(Intent.CATEGORY_OPENABLE)
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent.createChooser(i, "Выберите PDF"), REQ_PDF)
+        } catch (t: Throwable) {
+            hint("Не нашлось приложения для выбора файла")
+        }
+    }
+
+    /** Открыть выбранный PDF: копия к себе (разрешение на чужой файл временное), дальше — выбор листов. */
+    private fun openPdf(uri: android.net.Uri) {
+        hint("Открываю PDF…", 3000)
+        io.execute {
+            val r = runCatching { BoardPdf.displayName(this, uri) to BoardPdf.copyIn(this, uri, ".pdf") }
+            handler.post {
+                if (isDestroyed) { r.getOrNull()?.second?.delete(); return@post }
+                r.onSuccess { (name, file) -> pdf.start(file, name) }
+                    .onFailure { hint("Не удалось открыть файл: ${it.message ?: it.javaClass.simpleName}") }
+            }
+        }
+    }
+
+    /** Файлы, присланные через «Поделиться → FreeWrite» (копии в нашей папке): картинки и PDF. */
+    private fun insertFiles(paths: List<String>) {
+        val files = paths.map { java.io.File(it) }.filter { it.isFile && BoardPdf.isIncoming(this, it) }
+        if (files.isEmpty()) return
+        val (pdfs, rest) = files.partition { BoardPdf.kindOf(it) == BoardPdf.Kind.PDF }
+        if (rest.isNotEmpty()) io.execute {
+            val blocks = rest.mapNotNull { f -> try { BoardImages.import(this, android.net.Uri.fromFile(f)) } catch (t: Throwable) { null } }
+            rest.forEach { it.delete() }
+            handler.post { if (!isDestroyed) placeImages(blocks, rest.size) }
+        }
+        // Один PDF за раз; остальные присланные PDF — после (по одному).
+        pdfs.firstOrNull()?.let { pdf.start(it, intent.getStringExtra(EXTRA_INSERT_NAME)) }
+        pdfs.drop(1).forEach { it.delete() }
+    }
+
+    private fun pickImage() {
         val i = Intent(Intent.ACTION_GET_CONTENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE)
             .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true) // можно выбрать сразу несколько чертежей
         try {
@@ -664,6 +721,7 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_PDF && resultCode == RESULT_OK) { data?.data?.let { openPdf(it) }; return }
         if (requestCode != REQ_IMAGE || resultCode != RESULT_OK || data == null) return
         val uris = ArrayList<android.net.Uri>()
         data.clipData?.let { c -> for (k in 0 until c.itemCount) c.getItemAt(k).uri?.let { uris += it } }
@@ -676,8 +734,8 @@ class BoardActivity : Activity(), BoardView.Host {
         }
     }
 
-    /** Разложить новые картинки рядами (до 4 в ряд) в середине экрана и выделить их. */
-    private fun placeImages(blocks: List<Triple<String, Int, Int>>, asked: Int) {
+    /** Разложить новые картинки (или листы PDF) рядами (до 4 в ряд) в середине экрана и выделить их. */
+    private fun placeImages(blocks: List<Triple<String, Int, Int>>, asked: Int, sheets: Boolean = false) {
         if (blocks.isEmpty()) { hint("Не удалось открыть картинку"); return }
         val z = board.camZ
         val maxW = dp(if (blocks.size == 1) 460f else 320f) / z
@@ -706,7 +764,9 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         changed()
         view.select(added)
-        if (blocks.size < asked) hint("Добавлено ${blocks.size} из $asked — остальные не открылись")
+        if (sheets) hint(if (blocks.size < asked) "Положено ${BoardPdf.sheets(blocks.size)} из $asked"
+            else "Положено: ${BoardPdf.sheets(blocks.size)}. Пальцами можно приблизить — чертёж чёткий", 4000)
+        else if (blocks.size < asked) hint("Добавлено ${blocks.size} из $asked — остальные не открылись")
         else if (blocks.size > 1) hint("Добавлено картинок: ${blocks.size}")
     }
 
@@ -1558,6 +1618,11 @@ class BoardActivity : Activity(), BoardView.Host {
         const val EXTRA_ID = "board_id"
         /** Сразу показывать скорость отрисовки (тестовая доска). */
         const val EXTRA_SHOW_SPEED = "show_speed"
+        /** Присланные файлы (пути копий в кэше), которые положить на доску. */
+        const val EXTRA_INSERT = "insert_files"
+        /** Имя присланного файла, как его видит человек. */
+        const val EXTRA_INSERT_NAME = "insert_name"
         private const val REQ_IMAGE = 42
+        private const val REQ_PDF = 43
     }
 }

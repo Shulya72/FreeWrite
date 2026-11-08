@@ -22,6 +22,10 @@
             <data android:mimeType="*/*" />
         </intent>
         <intent>
+            <action android:name="android.intent.action.GET_CONTENT" />
+            <data android:mimeType="application/pdf" />
+        </intent>
+        <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="application/octet-stream" />
         </intent>
@@ -70,6 +74,7 @@
         <!--
           Открыть файл доски (.freewrite) из Telegram, WhatsApp, почты, «Файлов»: новая доска
           добавляется, знакомая — в неё вливаются правки коллеги.
+          PDF и картинки через «Поделиться → На доску FreeWrite»: выбрать доску и положить на неё.
         -->
         <activity
             android:name=".ImportActivity"
@@ -106,6 +111,17 @@
                 <data android:mimeType="application/zip" />
                 <data android:mimeType="application/x-zip-compressed" />
                 <data android:mimeType="application/x-freewrite" />
+            </intent-filter>
+            <intent-filter android:label="На доску FreeWrite">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter android:label="На доску FreeWrite">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
 

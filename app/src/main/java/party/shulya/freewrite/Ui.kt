@@ -217,6 +217,17 @@ object Ui {
     /** «7 ноября». */
     fun shortDate(time: Long): String = SimpleDateFormat("d MMMM", ru).format(Date(time))
 
+    /** «1 предмет», «3 предмета», «12 предметов». */
+    fun plural(n: Int, one: String, few: String, many: String): String {
+        val m10 = n % 10; val m100 = n % 100
+        val w = when {
+            m10 == 1 && m100 != 11 -> one
+            m10 in 2..4 && m100 !in 12..14 -> few
+            else -> many
+        }
+        return "$n $w"
+    }
+
     fun longDate(time: Long): String = SimpleDateFormat("EEEE, d MMMM", ru).format(Date(time))
         .replaceFirstChar { it.uppercase() }
 

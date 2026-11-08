@@ -1082,7 +1082,12 @@ class ScreensSmokeTest {
     fun home_openBoardFileButton() {
         val activity = Robolectric.buildActivity(HomeActivity::class.java).setup().get()
         idle()
-        activity.window.decorView.findViewWithTag<View>("home_open_file").performClick()
+        // «⋮» → «Открыть файл доски».
+        activity.window.decorView.findViewWithTag<View>("home_menu").performClick()
+        idle()
+        val popup = org.robolectric.shadows.ShadowPopupMenu.getLatestPopupMenu()
+        val item = (0 until popup.menu.size()).map { popup.menu.getItem(it) }.first { it.title == "Открыть файл доски" }
+        shadowOf(popup).onMenuItemClickListener.onMenuItemClick(item)
         val i = shadowOf(activity).nextStartedActivity
         assertEquals(Intent.ACTION_CHOOSER, i.action)
         // Не файл доски — понятная ошибка, а не падение.

@@ -158,6 +158,16 @@ class PhoneTest {
 
     @Test
     fun homeFitsPhoneAndAsksName() {
+        // Общая доска с длинным названием и статусами, запись с задачами — как у Владимира.
+        val b = Board.create("Рабочая доска — секция 3, захватки и ИГС")
+        b.sync.remoteKey = "k"; b.sync.remoteInvite = "ABCDEFGH"
+        for (i in 0 until 3) b.stickers += BoardSticker(10f * i, 0f, b.statuses[2].id, 1f)
+        for (i in 0 until 3) b.stickers += BoardSticker(10f * i, 40f, b.statuses[1].id, 1f)
+        b.statuses[1].name = "Предъявлено заказчику"
+        for (i in 0 until 75) b.texts += BoardText(0f, 80f + i * 30f, 20f, "Надпись $i", Ui.INK)
+        BoardStore(ctx).save(b)
+        NoteStore(ctx).save(Note.create("Планёрка на объекте"))
+
         val controller = Robolectric.buildActivity(HomeActivity::class.java).setup()
         val a = controller.get()
         idle()
@@ -171,15 +181,33 @@ class PhoneTest {
         dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()
         assertEquals("Иван Петров", Profile.name(ctx))
+        val root = a.window.decorView
+        // В шапке — кружок с инициалами.
+        val avatar = root.findViewWithTag<ViewGroup>("home_profile")
+        val ini = (0 until avatar.childCount).map { avatar.getChildAt(it) }.filterIsInstance<android.widget.TextView>().first()
+        assertEquals("ИП", ini.text.toString())
 
-        // Кнопки внизу Ежедневника помещаются в ширину экрана (переносятся на вторую строку).
-        val foot = a.window.decorView.findViewWithTag<ViewGroup>("home_footer")
-        for (i in 0 until foot.childCount) {
-            val c = foot.getChildAt(i)
-            assertTrue("кнопка ${i + 1} не вылезает за край", c.right <= foot.width)
+        // Три плитки в ряд помещаются в ширину экрана.
+        val tiles = root.findViewWithTag<ViewGroup>("home_tiles")
+        assertEquals(3, tiles.childCount)
+        for (i in 0 until 3) assertTrue("плитка ${i + 1} не вылезает за край", tiles.getChildAt(i).right <= tiles.width)
+        assertTrue("плитки компактные", tiles.height < Ui.dp(ctx, 110f))
+
+        // Название доски не сжато статусами: занимает почти всю ширину строки.
+        val titles = ArrayList<android.widget.TextView>()
+        val texts = ArrayList<String>()
+        fun walk(v: View) {
+            if (v is android.widget.TextView) texts += v.text.toString()
+            if (v is android.widget.TextView && v.tag == "row_title") titles += v
+            if (v is ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))
         }
-        assertTrue("кнопки в две строки", (0 until foot.childCount).map { foot.getChildAt(it).top }.distinct().size >= 2)
-        shot(a.window.decorView, "phone-home.png")
+        walk(root)
+        val boardTitle = titles.first { it.text.startsWith("Рабочая доска") }
+        assertTrue("название доски широкое: ${boardTitle.width} из ${root.width}", boardTitle.width > root.width / 2)
+        assertEquals("две строки: доска и запись", 2, titles.size)
+        assertTrue("статусы видны: $texts", "3 предъявлено заказчику" in texts)
+        assertTrue("предметы по-русски: $texts", texts.any { it == "Общая доска · 81 предмет" })
+        shot(root, "phone-home.png")
         controller.pause().stop().destroy()
     }
 }

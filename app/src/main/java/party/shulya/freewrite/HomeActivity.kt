@@ -31,15 +31,20 @@ class HomeActivity : Activity() {
     private lateinit var updateButton: TextView
     private var release: Updater.Release? = null
     private var downloaded: File? = null
-    private var profileButton: Ui.ToolButton? = null
+    private var avatarText: TextView? = null
+    private var avatarIcon: ImageView? = null
+    private var phone = false
 
-    private fun profileLabel() = Profile.name(this).ifEmpty { "Как вас зовут?" }
+    /** Инициалы для кружка в шапке: «ВШ». */
+    private fun initials(): String {
+        val f = Profile.first(this).trim(); val l = Profile.last(this).trim()
+        return (f.take(1) + l.take(1)).uppercase()
+    }
 
     private fun refreshProfile() {
-        profileButton?.let { b ->
-            val caption = (0 until b.childCount).map { b.getChildAt(it) }.filterIsInstance<TextView>().firstOrNull()
-            caption?.text = profileLabel()
-        }
+        val ini = initials()
+        avatarText?.apply { text = ini; visibility = if (ini.isEmpty()) View.GONE else View.VISIBLE }
+        avatarIcon?.visibility = if (ini.isEmpty()) View.VISIBLE else View.GONE
     }
 
     private fun dp(v: Float) = Ui.dp(this, v)
@@ -48,6 +53,7 @@ class HomeActivity : Activity() {
         super.onCreate(savedInstanceState)
         store = NoteStore(this)
         boards = BoardStore(this)
+        phone = Input.isPhone(this)
         setContentView(buildUi())
         checkUpdates(silent = true)
         // Первый запуск: представиться (для общих досок). Можно «Позже».
@@ -61,24 +67,65 @@ class HomeActivity : Activity() {
         renderList()
     }
 
+    /**
+     * Ежедневник (0.12): компактная шапка (название, кружок с инициалами, меню «⋮»), три плитки
+     * «Запись / Доска / По коду», ниже — записи и доски по дням. На планшете то же, только просторнее
+     * и с подписями на плитках; ширина — не больше 760 dp.
+     */
     private fun buildUi(): View {
         val scroll = ScrollView(this).apply { setBackgroundColor(Ui.DESK); isFillViewport = true }
         val outer = FrameLayout(this)
+        val side = if (phone) 16f else 28f
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20f), dp(22f), dp(20f), dp(32f))
+            setPadding(dp(side), dp(if (phone) 14f else 24f), dp(side), dp(28f))
         }
-        outer.addView(col, FrameLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { gravity = Gravity.CENTER_HORIZONTAL })
+        val maxW = dp(760f)
+        val w = if (resources.displayMetrics.widthPixels > maxW) maxW else Ui.MATCH
+        outer.addView(col, FrameLayout.LayoutParams(w, Ui.WRAP).apply { gravity = Gravity.CENTER_HORIZONTAL })
         scroll.addView(outer)
 
-        // Шапка
-        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM }
+        // Шапка: FreeWrite и дата, справа — кружок с инициалами и «⋮».
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val brandCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val brand = SpannableString("FreeWrite").apply {
             setSpan(ForegroundColorSpan(Ui.ACCENT), 4, 9, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
-        head.addView(Ui.text(this, "", 30f, Ui.INK, bold = true).apply { text = brand }, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        head.addView(Ui.mono(this, Ui.longDate(System.currentTimeMillis()), 14f, Ui.INK2).apply { setPadding(0, 0, 0, dp(6f)) })
+        brandCol.addView(Ui.text(this, "", if (phone) 26f else 30f, Ui.INK, bold = true).apply { text = brand; includeFontPadding = false })
+        brandCol.addView(Ui.text(this, Ui.longDate(System.currentTimeMillis()), 14f, Ui.MUTED).apply { setPadding(0, dp(2f), 0, 0) })
+        head.addView(brandCol, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+
+        val avatar = FrameLayout(this).apply {
+            tag = "home_profile"
+            contentDescription = "Как вас зовут"
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(Ui.ACCENT_SOFT)
+            }
+            isClickable = true
+            setOnClickListener { Profile.ask(this@HomeActivity, required = false) { refreshProfile() } }
+        }
+        avatarText = Ui.text(this, "", 15f, Ui.ACCENT, bold = true).apply { gravity = Gravity.CENTER }
+        avatar.addView(avatarText, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
+        avatarIcon = ImageView(this).apply {
+            setImageResource(R.drawable.ic_person)
+            imageTintList = ColorStateList.valueOf(Ui.ACCENT)
+            setPadding(dp(9f), dp(9f), dp(9f), dp(9f))
+        }
+        avatar.addView(avatarIcon, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
+        head.addView(avatar, LinearLayout.LayoutParams(dp(40f), dp(40f)))
+        val more = ImageView(this).apply {
+            tag = "home_menu"
+            contentDescription = "Ещё"
+            setImageResource(R.drawable.ic_more)
+            imageTintList = ColorStateList.valueOf(Ui.INK2)
+            setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+            isClickable = true
+            setOnClickListener { v -> showMenu(v) }
+        }
+        head.addView(more, LinearLayout.LayoutParams(dp(40f), dp(40f)).apply { marginStart = dp(4f) })
         col.addView(head)
+        refreshProfile()
 
         // Плашка обновления
         updateBar = LinearLayout(this).apply {
@@ -94,71 +141,85 @@ class HomeActivity : Activity() {
             setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
             setOnClickListener { startUpdate() }
         }
-        updateBar.addView(updateText, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        updateBar.addView(updateText, LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginEnd = dp(8f) })
         updateBar.addView(updateButton)
         col.addView(updateBar, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(14f) })
 
-        // Две большие кнопки
-        val starts = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        starts.addView(startCard(R.drawable.ic_note, "Новая запись",
-            "Совещание, планёрка, звонок. Пишете от руки где угодно — слова сами собираются в текст.", true) { newNote() },
-            LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginEnd = dp(7f) })
-        starts.addView(startCard(R.drawable.ic_board, "Новая доска",
-            "Бесконечное поле: чертежи, надписи, метки статусов, выноски. Можно работать вместе с коллегами.", true) { newBoard() },
-            LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginStart = dp(7f) })
-        col.addView(starts, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(18f) })
+        // Три плитки: новая запись, новая доска, подключиться к общей доске по коду.
+        val tiles = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; tag = "home_tiles" }
+        val gap = dp(if (phone) 8f else 12f)
+        tiles.addView(tile(R.drawable.ic_note, if (phone) "Запись" else "Новая запись", "Совещание, звонок — от руки в текст", "home_new_note") { newNote() },
+            LinearLayout.LayoutParams(0, Ui.MATCH, 1f))
+        tiles.addView(tile(R.drawable.ic_board, if (phone) "Доска" else "Новая доска", "Чертежи, статусы, выноски", "home_new_board") { newBoard() },
+            LinearLayout.LayoutParams(0, Ui.MATCH, 1f).apply { marginStart = gap })
+        tiles.addView(tile(R.drawable.ic_join, "По коду", "К общей доске коллеги", "home_join") { joinDialog() },
+            LinearLayout.LayoutParams(0, Ui.MATCH, 1f).apply { marginStart = gap })
+        col.addView(tiles, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(if (phone) 16f else 22f) })
 
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(list, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(10f) })
-
-        // Низ: кнопки переносятся на следующую строку, если не помещаются (телефон).
-        val foot = Ui.FlowRow(this).apply { hGap = dp(4f); vGap = dp(6f); tag = "home_footer" }
-        profileButton = Ui.ToolButton(this, R.drawable.ic_person, profileLabel()).apply {
-            tag = "home_profile"
-            setOnClickListener { Profile.ask(this@HomeActivity, required = false) { refreshProfile() } }
-        }
-        foot.addView(profileButton)
-        foot.addView(Ui.ToolButton(this, R.drawable.ic_pulse, "Проверка планшета").apply {
-            setOnClickListener { startActivity(Intent(this@HomeActivity, DiagnosticsActivity::class.java)) }
-        })
-        foot.addView(Ui.ToolButton(this, R.drawable.ic_update, "Обновления").apply {
-            setOnClickListener { checkUpdates(silent = false) }
-        })
-        foot.addView(Ui.ToolButton(this, R.drawable.ic_open_file, "Открыть файл доски").apply {
-            tag = "home_open_file"
-            setOnClickListener { pickBoardFile() }
-        })
-        foot.addView(Ui.ToolButton(this, R.drawable.ic_cloud, "Подключиться по коду").apply {
-            tag = "home_join"
-            setOnClickListener { joinDialog() }
-        })
-        col.addView(foot, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(26f) })
-        col.addView(Ui.mono(this, "версия ${BuildConfig.VERSION_NAME}", 12f).apply {
-            gravity = Gravity.END
-            setPadding(0, dp(8f), dp(4f), 0)
+        col.addView(list, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
+        col.addView(Ui.text(this, "FreeWrite ${BuildConfig.VERSION_NAME}", 12f, Ui.MUTED).apply {
+            gravity = Gravity.CENTER
+            tag = "home_version"
+            setPadding(0, dp(18f), 0, 0)
         }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         return scroll
     }
 
-    private fun startCard(icon: Int, title: String, text: String, enabled: Boolean, onClick: () -> Unit): View {
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 16f)
-            setPadding(dp(16f), dp(16f), dp(16f), dp(14f))
-            isClickable = enabled
-            alpha = if (enabled) 1f else 0.6f
-            setOnClickListener { if (enabled) onClick() }
+    /** Плитка действия: на телефоне — значок и слово, на планшете — ещё и подпись. */
+    private fun tile(icon: Int, title: String, sub: String, tag: String, onClick: () -> Unit): View {
+        val t = LinearLayout(this).apply {
+            this.tag = tag
+            background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
+            isClickable = true
+            setOnClickListener { onClick() }
         }
         val ico = ImageView(this).apply {
             setImageResource(icon)
             imageTintList = ColorStateList.valueOf(Ui.ACCENT)
-            background = Ui.rounded(this@HomeActivity, Ui.ACCENT_SOFT, null, 12f)
-            setPadding(dp(9f), dp(9f), dp(9f), dp(9f))
+            background = Ui.rounded(this@HomeActivity, Ui.ACCENT_SOFT, null, 10f)
+            setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
         }
-        card.addView(ico, LinearLayout.LayoutParams(dp(44f), dp(44f)))
-        card.addView(Ui.text(this, title, 19f, Ui.INK, bold = true).apply { setPadding(0, dp(10f), 0, dp(4f)) })
-        card.addView(Ui.text(this, text, 14f, Ui.INK2))
-        return card
+        if (phone) {
+            t.orientation = LinearLayout.VERTICAL
+            t.gravity = Gravity.CENTER
+            t.setPadding(dp(6f), dp(12f), dp(6f), dp(10f))
+            t.addView(ico, LinearLayout.LayoutParams(dp(38f), dp(38f)))
+            t.addView(Ui.text(this, title, 14f, Ui.INK, bold = true).apply {
+                gravity = Gravity.CENTER; isSingleLine = true; setPadding(0, dp(6f), 0, 0)
+            })
+        } else {
+            t.orientation = LinearLayout.HORIZONTAL
+            t.gravity = Gravity.CENTER_VERTICAL
+            t.setPadding(dp(14f), dp(14f), dp(12f), dp(14f))
+            t.addView(ico, LinearLayout.LayoutParams(dp(44f), dp(44f)))
+            val c = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12f), 0, 0, 0) }
+            c.addView(Ui.text(this, title, 17f, Ui.INK, bold = true).apply { isSingleLine = true })
+            c.addView(Ui.text(this, sub, 13f, Ui.INK2).apply { maxLines = 2 })
+            t.addView(c, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        }
+        return t
+    }
+
+    /** «⋮»: файл доски, обновления, проверка устройства; внизу — версия. */
+    private fun showMenu(anchor: View) {
+        val m = android.widget.PopupMenu(this, anchor)
+        m.menu.add(0, MENU_OPEN_FILE, 0, "Открыть файл доски")
+        m.menu.add(0, MENU_UPDATES, 1, "Проверить обновления")
+        m.menu.add(0, MENU_CHECK, 2, if (phone) "Проверка устройства" else "Проверка планшета")
+        m.menu.add(0, MENU_PROFILE, 3, Profile.name(this).ifEmpty { "Как вас зовут?" })
+        m.menu.add(0, 0, 4, "Версия ${BuildConfig.VERSION_NAME}").isEnabled = false
+        m.setOnMenuItemClickListener { onMenu(it.itemId); true }
+        m.show()
+    }
+
+    private fun onMenu(id: Int) {
+        when (id) {
+            MENU_OPEN_FILE -> pickBoardFile()
+            MENU_UPDATES -> checkUpdates(silent = false)
+            MENU_CHECK -> startActivity(Intent(this, DiagnosticsActivity::class.java))
+            MENU_PROFILE -> Profile.ask(this, required = false) { refreshProfile() }
+        }
     }
 
     private fun renderList() {
@@ -168,9 +229,11 @@ class HomeActivity : Activity() {
             store.list().map { n -> n.created to { noteRow(n) } } +
                 boards.list().map { b -> b.created to { boardRow(b) } }
         if (entries.isEmpty()) {
-            list.addView(Ui.text(this, "Записей пока нет. Нажмите «Новая запись» и пишите от руки в любом месте листа.", 15f, Ui.INK2).apply {
-                setPadding(dp(2f), dp(18f), dp(2f), dp(4f))
-            })
+            list.addView(Ui.text(this, "Здесь появятся ваши записи и доски. «Запись» — пишите от руки, слова соберутся в текст. " +
+                "«Доска» — чертежи и статусы. «По коду» — общая доска коллеги.", 15f, Ui.INK2).apply {
+                background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
+                setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+            }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(16f) })
             return
         }
         var lastDay = -1L
@@ -178,37 +241,61 @@ class HomeActivity : Activity() {
             val day = Ui.startOfDay(created)
             if (day != lastDay) {
                 lastDay = day
-                list.addView(Ui.text(this, Ui.dayTitle(created).uppercase(), 12f, Ui.MUTED, bold = true).apply {
-                    letterSpacing = 0.06f
-                    setPadding(dp(2f), dp(18f), 0, dp(8f))
+                list.addView(Ui.text(this, Ui.dayTitle(created), 13f, Ui.MUTED, bold = true).apply {
+                    setPadding(dp(4f), dp(16f), 0, dp(6f))
                 })
             }
             list.addView(row(), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { bottomMargin = dp(8f) })
         }
     }
 
-    private fun boardRow(b: BoardMeta): View {
+    /**
+     * Строка записи или доски: значок, название на всю ширину (время справа), под ним подпись,
+     * ещё ниже — счётчики статусов (переносятся на следующую строку, ничего не сжимается).
+     */
+    private fun entryRow(icon: Int, title: String, time: Long, sub: String, chips: List<TextView>): LinearLayout {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 12f)
-            setPadding(dp(14f), dp(12f), dp(14f), dp(12f))
+            background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
+            setPadding(dp(12f), dp(12f), dp(14f), dp(12f))
+            isClickable = true
+        }
+        val ico = ImageView(this).apply {
+            setImageResource(icon)
+            imageTintList = ColorStateList.valueOf(Ui.ACCENT)
+            background = Ui.rounded(this@HomeActivity, Ui.ACCENT_SOFT, null, 10f)
+            setPadding(dp(7f), dp(7f), dp(7f), dp(7f))
+        }
+        row.addView(ico, LinearLayout.LayoutParams(dp(36f), dp(36f)).apply { topMargin = dp(1f) })
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12f), 0, 0, 0) }
+        val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        line.addView(Ui.text(this, title, 16f, Ui.INK, bold = true).apply {
+            isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END; tag = "row_title"
+        }, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        line.addView(Ui.text(this, Ui.time(time), 13f, Ui.MUTED).apply { setPadding(dp(8f), 0, 0, 0) })
+        col.addView(line)
+        if (sub.isNotEmpty()) col.addView(Ui.text(this, sub, 13f, Ui.MUTED).apply {
+            isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(0, dp(1f), 0, 0)
+        })
+        if (chips.isNotEmpty()) {
+            val flow = Ui.FlowRow(this).apply { hGap = dp(6f); vGap = dp(6f); setPadding(0, dp(7f), 0, 0) }
+            for (c in chips) flow.addView(c.apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END })
+            col.addView(flow, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
+        row.addView(col, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        return row
+    }
+
+    private fun boardRow(b: BoardMeta): View {
+        val kind = if (b.shared) "Общая доска" else "Доска"
+        val sub = if (b.items == 0) "$kind · пустая" else "$kind · " + Ui.plural(b.items, "предмет", "предмета", "предметов")
+        // Счётчики по статусам доски (до трёх самых частых).
+        val chips = b.counts.filter { it.third > 0 }.sortedByDescending { it.third }.take(3)
+            .map { (name, color, n) -> Ui.chip(this, "$n ${name.lowercase()}", Board.statusFg(color), Board.statusBg(color)) }
+        return entryRow(if (b.shared) R.drawable.ic_cloud else R.drawable.ic_board, b.title, b.created, sub, chips).apply {
             setOnClickListener { openBoard(b.id) }
             setOnLongClickListener { boardMenu(b); true }
         }
-        row.addView(Ui.mono(this, Ui.time(b.created), 13f, Ui.INK2), LinearLayout.LayoutParams(dp(58f), Ui.WRAP))
-        val what = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        what.addView(Ui.text(this, b.title, 16f, Ui.INK, bold = true).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END })
-        val items = b.items
-        val kind = if (b.shared) "общая доска" else "доска"
-        what.addView(Ui.text(this, if (items == 0) "$kind · пустая" else "$kind · предметов: $items", 13f, Ui.MUTED))
-        row.addView(what, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        // Счётчики по статусам доски (до трёх самых частых).
-        val counts = b.counts.filter { it.third > 0 }.sortedByDescending { it.third }
-        for ((name, color, n) in counts.take(3)) {
-            row.addView(Ui.chip(this, "$n ${name.lowercase()}", Board.statusFg(color), Board.statusBg(color)), chipParams())
-        }
-        return row
     }
 
     private fun openBoard(id: String) {
@@ -399,28 +486,14 @@ class HomeActivity : Activity() {
     }
 
     private fun noteRow(n: Note): View {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 12f)
-            setPadding(dp(14f), dp(12f), dp(14f), dp(12f))
+        val chips = ArrayList<TextView>()
+        if (n.tasksDone > 0) chips += Ui.chip(this, "${n.tasksDone} сдано", Ui.OK, Ui.OK_SOFT)
+        if (n.tasksOpen > 0) chips += Ui.chip(this, "${n.tasksOpen} не сдано", Ui.BAD, Ui.BAD_SOFT)
+        return entryRow(R.drawable.ic_note, n.title, n.created, n.preview.ifEmpty { "Запись" }, chips).apply {
             setOnClickListener { open(n.id) }
             setOnLongClickListener { noteMenu(n); true }
         }
-        row.addView(Ui.mono(this, Ui.time(n.created), 13f, Ui.INK2), LinearLayout.LayoutParams(dp(58f), Ui.WRAP))
-        val what = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        what.addView(Ui.text(this, n.title, 16f, Ui.INK, bold = true).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END })
-        val preview = n.preview
-        if (preview.isNotEmpty()) {
-            what.addView(Ui.text(this, preview, 13f, Ui.MUTED).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END })
-        }
-        row.addView(what, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        if (n.tasksDone > 0) row.addView(Ui.chip(this, "${n.tasksDone} сдано", Ui.OK, Ui.OK_SOFT), chipParams())
-        if (n.tasksOpen > 0) row.addView(Ui.chip(this, "${n.tasksOpen} не сдано", Ui.BAD, Ui.BAD_SOFT), chipParams())
-        return row
     }
-
-    private fun chipParams() = LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { marginStart = dp(6f) }
 
     private fun open(id: String) {
         startActivity(Intent(this, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, id))
@@ -529,5 +602,9 @@ class HomeActivity : Activity() {
 
     companion object {
         private const val REQ_BOARD_FILE = 41
+        private const val MENU_OPEN_FILE = 1
+        private const val MENU_UPDATES = 2
+        private const val MENU_CHECK = 3
+        private const val MENU_PROFILE = 4
     }
 }

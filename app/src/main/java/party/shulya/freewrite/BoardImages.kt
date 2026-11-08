@@ -272,10 +272,10 @@ class BoardImages(context: Context, private val onReady: () -> Unit) {
         }
 
         /** Сохранить готовую картинку (тестовая доска): оригинал + копии. */
-        fun importBitmap(context: Context, bmp: Bitmap): Triple<String, Int, Int> {
+        fun importBitmap(context: Context, bmp: Bitmap, quality: Int = 85): Triple<String, Int, Int> {
             val dir = File(context.filesDir, "note_images").apply { mkdirs() }
             val name = UUID.randomUUID().toString() + ".jpg"
-            File(dir, name).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+            File(dir, name).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, quality, it) }
             makeLevels(dir, name)
             return Triple(name, bmp.width, bmp.height)
         }
