@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from errors import ApiError
+from fw_errors import ApiError
 
 HOST = "https://storage.yandexcloud.net"
 

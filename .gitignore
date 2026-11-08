@@ -10,3 +10,5 @@ captures/
 *.aab
 *.keystore
 *.jks
+__pycache__/
+*.pyc

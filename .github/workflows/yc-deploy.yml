@@ -57,7 +57,7 @@ jobs:
       - name: New function version
         run: |
           cd server
-          zip -q ../server.zip index.py store_ydb.py blob.py errors.py requirements.txt
+          zip -q ../server.zip index.py fw_store.py fw_blob.py fw_errors.py requirements.txt
           cd ..
           LOGOPT=""
           [ "${LOGGING:-1}" = "1" ] || LOGOPT="--no-logging"

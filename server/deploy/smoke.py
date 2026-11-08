@@ -91,7 +91,7 @@ try:
     p = ok("pull", board=board, key=key, since=0)
     by = {x["id"]: x for x in p["changes"]}
     check(p["seq"] == 5 and len(by) == 3 and not p["more"], "получено 3 предмета, последний номер 5")
-    check("сдано" in by["t1"]["d"], "у надписи — поздняя правка")
+    check("сдано" in json.loads(by["t1"]["d"])["text"], "у надписи — поздняя правка")
     check(by["s1"].get("x") == 1, "удаление штриха дошло")
     check(p["title"] == "Проверка — секция 3", "название доски обновилось")
     check(ok("pull", board=board, key=key, since=5)["changes"] == [], "новых правок после последней нет")

@@ -14,7 +14,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import index as main  # noqa: E402
-from errors import ApiError, forbidden, not_found  # noqa: E402
+from fw_errors import ApiError, forbidden, not_found  # noqa: E402
 
 
 class MemoryStore:
