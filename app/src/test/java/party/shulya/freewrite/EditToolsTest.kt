@@ -276,4 +276,102 @@ class EditToolsTest {
         assertEquals(2, board().fills.size)
         controller.pause().stop().destroy()
     }
+
+    @Test
+    fun legendHighlightsOneStatus() {
+        val b0 = Board.create("Захватки")
+        for (i in 0 until 3) b0.stickers += BoardSticker(100f + i * 200f, 100f, "s2", 1f)
+        for (i in 0 until 2) b0.stickers += BoardSticker(100f + i * 200f, 400f, "s1", 1f)
+        b0.callouts += BoardCallout(900f, 600f, 1f, "Захватка №7", "s2").apply { addLeader(1500f, 900f) }
+        BoardStore(ctx).save(b0)
+        val controller = open(b0)
+        val a = controller.get()
+        idle()
+        val root = a.window.decorView
+        val view = find(root)
+        root.findViewWithTag<View>("board_statuses").performClick()
+        idle()
+        assertEquals(View.VISIBLE, root.findViewWithTag<View>("legend").visibility)
+        fun count(row: Int): String {
+            val r = root.findViewWithTag<ViewGroup>("legend_row_$row")
+            return (r.getChildAt(r.childCount - 1) as android.widget.TextView).text.toString()
+        }
+        assertEquals("«Сдано»: 3 метки и выноска", "4", count(2))
+        assertEquals("2", count(1))
+        root.findViewWithTag<View>("legend_row_2").performClick()
+        idle()
+        assertEquals("s2", view.highlight)
+        root.findViewWithTag<View>("legend_show").performClick()
+        idle()
+        // Камера показывает все «Сдано» — и метки, и выноску с её указателем.
+        assertTrue(view.wx(0f) <= 100f && view.wx(view.width.toFloat()) >= 1500f)
+        shot(root, "legend.png")
+        root.findViewWithTag<View>("legend_row_2").performClick()
+        idle()
+        assertNull("ещё касание — показать всё", view.highlight)
+        root.findViewWithTag<View>("legend_row_1").performClick()
+        root.findViewWithTag<View>("legend_close").performClick()
+        idle()
+        assertEquals(View.GONE, root.findViewWithTag<View>("legend").visibility)
+        assertNull("легенду закрыли — подсветка снята", view.highlight)
+        controller.pause().stop().destroy()
+    }
+
+    @Test
+    fun sectionMovesWithContentsAndListJumps() {
+        val b0 = boardWithDrawing() // чертёж 400×300 в (100, 100)
+        val store = BoardStore(ctx)
+        val bb = store.load(b0.id)!!
+        bb.texts += BoardText(900f, 200f, 28f, "Снаружи", Ui.INK)
+        store.save(bb)
+        val controller = open(bb)
+        val a = controller.get()
+        idle()
+        val root = a.window.decorView
+        val view = find(root)
+        fun board() = field(a, "board") as Board
+
+        // «Раздел»: рамка пером вокруг чертежа → название.
+        root.findViewWithTag<View>("board_tool_frame").performClick()
+        drag(view, MotionEvent.TOOL_TYPE_STYLUS, view.sx(60f), view.sy(60f), view.sx(560f), view.sy(460f))
+        val dlg = ShadowAlertDialog.getLatestAlertDialog()
+        dlg.window!!.decorView.findViewWithTag<android.widget.EditText>("frame_title").setText("Секция 3")
+        dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+        idle()
+        assertEquals(1, board().frames.size)
+        val f = board().frames[0]
+        assertEquals("Секция 3", f.title)
+        assertEquals(60f, f.x, 1f)
+        assertEquals(listOf<Any>(f), view.selection.toList())
+        shot(root, "section.png")
+
+        // Тянуть за ярлык пальцем — раздел переезжает вместе с чертежом; надпись снаружи — на месте.
+        afterPen()
+        val lab = view.frameLabelRect(f, android.graphics.RectF())
+        tap(view, MotionEvent.TOOL_TYPE_FINGER, lab.centerX(), lab.centerY()) // касание выделенного — можно тянуть
+        drag(view, MotionEvent.TOOL_TYPE_FINGER, lab.centerX(), lab.centerY(), lab.centerX() + 200f, lab.centerY() + 100f)
+        val dx = 200f / board().camZ
+        assertEquals(60f + dx, f.x, 1f)
+        assertEquals("чертёж внутри уехал вместе с разделом", 100f + dx, board().images[0].x, 1f)
+        assertEquals("надпись снаружи на месте", 900f, board().texts[0].x, 0.01f)
+
+        // Сохраняется, уходит коллегам (вид «frame»), читается.
+        val again = Board.fromJson(JSONObject(board().toJsonString()))
+        assertEquals("Секция 3", again.frames[0].title)
+        board().stamp("vlad01")
+        assertTrue(Remote.pending(board()).any { it.kind == "frame" && it.id == f.id })
+
+        // «Разделы» → переход: раздел целиком на экране.
+        view.clearSelection()
+        view.fitRect(2000f, 2000f, 2500f, 2400f)
+        root.findViewWithTag<View>("board_sections").performClick()
+        idle()
+        val list = ShadowAlertDialog.getLatestAlertDialog()
+        assertEquals(1, list.listView.adapter.count)
+        assertTrue(list.listView.adapter.getItem(0).toString().startsWith("Секция 3"))
+        list.listView.performItemClick(null, 0, 0L)
+        idle()
+        assertTrue("раздел на экране", view.wx(0f) <= f.x && view.wx(view.width.toFloat()) >= f.x + f.w)
+        controller.pause().stop().destroy()
+    }
 }

@@ -80,12 +80,78 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onPinTap(img: BoardImage) {}
         /** «Заливка» по точкам: уже поставленные точки (x, y, x, y…) для показа; null — точек нет. */
         fun fillDraft(): FloatArray? = null
+        /** «Раздел»: провели рамку от угла до угла (рамка на доске). */
+        fun onFrameCreate(l: Float, t: Float, r: Float, b: Float) {}
     }
 
     enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL }
     class Hit(val kind: Kind, val index: Int)
 
-    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP }
+    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP, FRAME_DRAG }
+
+    // ---- Легенда (0.14): подсветить метки и выноски одного статуса, остальное притушить ----
+    var highlight: String? = null
+        set(v) { field = v; sceneValid = false; invalidate() }
+
+    // ---- Разделы (0.14) ----
+    private val frameDown = PointF()
+    private val frameNow = PointF()
+    private val frameText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = Ui.dpf(context, 13f); color = Ui.INK; typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+
+    /** Ярлык раздела с названием — над левым верхним углом рамки (на экране, всегда одного размера). */
+    fun frameLabelRect(f: BoardFrame, out: RectF): RectF {
+        val pad = Ui.dpf(context, 7f)
+        val h = Ui.dpf(context, 24f)
+        val w = frameText.measureText(f.title.ifEmpty { "Раздел" }) + pad * 2
+        val l = sx(f.x); val bt = sy(f.y) - Ui.dpf(context, 3f)
+        out.set(l, bt - h, l + w, bt)
+        return out
+    }
+
+    /** Раздел под точкой экрана: по ярлыку (border = true — и по краю рамки). */
+    fun frameAt(px: Float, py: Float, border: Boolean): BoardFrame? {
+        val r = RectF()
+        for (i in b.frames.indices.reversed()) {
+            val f = b.frames[i]
+            if (frameLabelRect(f, r).contains(px, py)) return f
+        }
+        if (!border) return null
+        val d = Ui.dpf(context, 10f)
+        for (i in b.frames.indices.reversed()) {
+            val f = b.frames[i]
+            val l = sx(f.x); val t = sy(f.y); val rr = sx(f.x + f.w); val bt = sy(f.y + f.h)
+            val inX = px >= l - d && px <= rr + d
+            val inY = py >= t - d && py <= bt + d
+            if (!inX || !inY) continue
+            if (kotlin.math.abs(px - l) <= d || kotlin.math.abs(px - rr) <= d || kotlin.math.abs(py - t) <= d || kotlin.math.abs(py - bt) <= d) return f
+        }
+        return null
+    }
+
+    /** Что лежит внутри раздела (середина предмета внутри рамки). */
+    fun frameContents(f: BoardFrame): List<Any> {
+        val out = ArrayList<Any>()
+        val r = RectF()
+        fun inside(o: Any) { boundsOf(o, r); if (r.centerX() >= f.x && r.centerX() <= f.x + f.w && r.centerY() >= f.y && r.centerY() <= f.y + f.h) out += o }
+        b.images.forEach { inside(it) }; b.fills.forEach { inside(it) }; b.strokes.forEach { inside(it) }
+        b.texts.forEach { inside(it) }; b.stickers.forEach { inside(it) }; b.callouts.forEach { inside(it) }
+        b.frames.forEach { if (it !== f) inside(it) }
+        return out
+    }
+
+    /** Показать на экране рамку доски (с полями). */
+    fun fitRect(l: Float, t: Float, r: Float, bt: Float) {
+        if (width == 0 || r <= l || bt <= t) return
+        val pad = Ui.dpf(context, 48f)
+        val z = min(width / ((r - l) + pad * 2 / b.camZ), height / ((bt - t) + pad * 2 / b.camZ)).coerceIn(0.1f, 3f)
+        b.camZ = z
+        b.camX = (l + r) / 2f - width / 2f / z
+        b.camY = (t + bt) / 2f - height / 2f / z
+        host.onCameraChanged()
+        invalidate()
+    }
 
     // ---- Обрезка картинки (0.13) ----
     /** Картинку обрезают: видна целиком (скрытое — бледно), рамка с ручками по краям и углам. */
@@ -306,6 +372,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (d in b.strokes) { var i = 0; while (i + 1 < d.pts.size) { add(d.pts[i], d.pts[i + 1]); i += 3 } }
         for (x in b.texts) { add(x.x, x.y - x.size); add(x.x + textWidth(x), textBottom(x)) }
         for (m in b.images) { add(m.x, m.y); add(m.x + m.w, m.y + m.h) }
+        for (fr in b.frames) { add(fr.x, fr.y); add(fr.x + fr.w, fr.y + fr.h) }
         for (s in b.stickers) { add(s.x, s.y); add(s.x + stickerW(s), s.y + s.h) }
         for (f in b.fills) { var i = 0; while (i + 1 < f.pts.size) { add(f.pts[i], f.pts[i + 1]); i += 2 } }
         for (c in b.callouts) {
@@ -466,12 +533,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     /** То, что можно выделить, в точке: метки, выноски, надписи, штрихи, заливки (поверх картинок), картинки. */
     fun selectableAt(x: Float, y: Float): Any? {
+        frameAt(sx(x), sy(y), border = false)?.let { return it } // ярлык раздела
         val h = hitAt(x, y)
         if (h != null && h.kind != Kind.IMAGE) return objectOf(h)
         val s = strokeAt(x, y)
         if (s >= 0) return b.strokes[s]
         val f = fillAt(x, y)
         if (f >= 0) return b.fills[f]
+        frameAt(sx(x), sy(y), border = true)?.let { return it } // край рамки раздела
         return h?.let { objectOf(it) }
     }
 
@@ -531,6 +600,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         is Drawing -> b.strokes.any { it === o }
         is BoardFill -> b.fills.any { it === o }
         is BoardCallout -> b.callouts.any { it === o }
+        is BoardFrame -> b.frames.any { it === o }
         else -> false
     }
 
@@ -542,6 +612,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             is BoardCallout -> calloutRect(o, out)
             is BoardFill -> out.set(o.bounds())
             is Drawing -> out.set(o.bounds())
+            is BoardFrame -> out.set(o.x, o.y, o.x + o.w, o.y + o.h)
             else -> out.setEmpty()
         }
         return out
@@ -568,9 +639,16 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private val dragStart = PointF()
     private val pinchMid0 = PointF()
 
-    private fun captureOrigs() {
+    /** withContents — раздел переносится вместе со всем, что внутри (при переносе, не при изменении размера). */
+    private fun captureOrigs(withContents: Boolean = false) {
         origs.clear()
-        for (o in selection) {
+        val objs = ArrayList<Any>(selection)
+        if (withContents) {
+            val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Any, Boolean>())
+            seen.addAll(selection)
+            for (f in selection.filterIsInstance<BoardFrame>()) for (o in frameContents(f)) if (seen.add(o)) objs += o
+        }
+        for (o in objs) {
             origs += when (o) {
                 is BoardText -> Orig(o, floatArrayOf(o.x, o.y, o.size), 0f)
                 is BoardImage -> Orig(o, floatArrayOf(o.x, o.y, o.w, o.h), 0f)
@@ -578,6 +656,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 is Drawing -> Orig(o, o.pts.copyOf(), o.width)
                 is BoardFill -> Orig(o, o.pts.copyOf(), 0f)
                 is BoardCallout -> Orig(o, floatArrayOf(o.x, o.y, o.scale) + o.leaders.toFloatArray(), 0f)
+                is BoardFrame -> Orig(o, floatArrayOf(o.x, o.y, o.w, o.h), 0f)
                 else -> continue
             }
         }
@@ -593,6 +672,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             when (val o = or.obj) {
                 is BoardText -> { o.x = tx(a[0]); o.y = ty(a[1]); o.size = a[2] * s }
                 is BoardImage -> { o.x = tx(a[0]); o.y = ty(a[1]); o.w = a[2] * s; o.h = a[3] * s }
+                is BoardFrame -> { o.x = tx(a[0]); o.y = ty(a[1]); o.w = a[2] * s; o.h = a[3] * s }
                 is BoardSticker -> { o.x = tx(a[0]); o.y = ty(a[1]); o.scale = a[2] * s }
                 is Drawing -> {
                     var i = 0
@@ -655,6 +735,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     private fun insideSelection(x: Float, y: Float): Boolean {
         val bb = selectionBounds() ?: return false
+        // Ярлык выделенного раздела (он над рамкой) — тоже «внутри»: за него раздел и тянут.
+        if (selection.any { it is BoardFrame && frameLabelRect(it, rect).contains(sx(x), sy(y)) }) return true
         val pad = Ui.dpf(context, 6f) / b.camZ
         return x >= bb.left - pad && x <= bb.right + pad && y >= bb.top - pad && y <= bb.bottom + pad
     }
@@ -681,6 +763,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (o in b.strokes) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.texts) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.stickers) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
+        for (o in b.frames) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         select(out)
     }
 
@@ -711,7 +794,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                     lasso.clear()
                     startPinch(ev)
                 } else if (finger && !activeIsPen && host.fingerWrites() &&
-                    (mode == Mode.INK || mode == Mode.ERASE || mode == Mode.CALLOUT_DRAG || mode == Mode.STATUS || mode == Mode.NONE)) {
+                    (mode == Mode.INK || mode == Mode.ERASE || mode == Mode.CALLOUT_DRAG || mode == Mode.FRAME_DRAG || mode == Mode.STATUS || mode == Mode.NONE)) {
                     // Палец рисовал, лёг второй — значит, двигают или приближают доску: штрих не нужен.
                     cancelTouchAction()
                     startPinch(ev)
@@ -847,7 +930,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             // (даже поверх чертежа или линии: иначе на плотной доске ничего не обвести).
             parent?.requestDisallowInterceptTouchEvent(true)
             if (insideSelection(x, y)) {
-                captureOrigs()
+                captureOrigs(withContents = true)
                 dragStart.set(x, y)
                 mode = Mode.MOVE_SEL
                 if (!pen) postDelayed(longPress, 550)
@@ -861,7 +944,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         if (!pen) {
             // Палец («Рука»): выделенное (если его выделили касанием) — двигать, иначе — двигать доску.
             if ((fingerArmed || (hand && isPen(tool))) && insideSelection(x, y)) {
-                captureOrigs()
+                captureOrigs(withContents = true)
                 dragStart.set(x, y)
                 mode = Mode.MOVE_SEL
             } else {
@@ -880,6 +963,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             calloutDown.set(x, y)
             calloutNow.set(x, y)
             mode = Mode.CALLOUT_DRAG
+            return
+        }
+        if (t == BoardActivity.Tool.FRAME && tool != MotionEvent.TOOL_TYPE_ERASER) {
+            frameDown.set(x, y)
+            frameNow.set(x, y)
+            mode = Mode.FRAME_DRAG
             return
         }
         if (tool == MotionEvent.TOOL_TYPE_ERASER || t == BoardActivity.Tool.ERASER) {
@@ -980,6 +1069,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 calloutNow.set(wx(sxp), wy(syp))
                 invalidate()
             }
+            Mode.FRAME_DRAG -> {
+                frameNow.set(wx(sxp), wy(syp))
+                invalidate()
+            }
             Mode.LEADER -> {
                 if (!moved) return
                 val c = leaderCallout ?: return
@@ -1032,6 +1125,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
             Mode.PAN -> if (quick && !moved && cropping == null) tapAt(wx(sxp), wy(syp))
             Mode.CROP -> if (editStarted) host.onDragEnd()
+            Mode.FRAME_DRAG -> {
+                val x = wx(sxp); val y = wy(syp)
+                if (kotlin.math.abs(x - frameDown.x) * b.camZ > Ui.dpf(context, 40f) && kotlin.math.abs(y - frameDown.y) * b.camZ > Ui.dpf(context, 40f)) {
+                    host.onFrameCreate(min(x, frameDown.x), min(y, frameDown.y), max(x, frameDown.x), max(y, frameDown.y))
+                } else {
+                    host.onFrameCreate(0f, 0f, 0f, 0f) // слишком маленькая — подсказать
+                }
+            }
             Mode.MOVE_SEL, Mode.RESIZE -> {
                 if (editStarted) {
                     host.onDragEnd()
@@ -1294,6 +1395,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         drawGrid(canvas, z)
         for (m in b.images) if (visible(m.x, m.y, m.x + m.w, m.y + m.h)) { drawImage(canvas, m, z); drawn++ }
         for (f in b.fills) { val r = f.bounds(); if (visible(r.left, r.top, r.right, r.bottom)) { drawFill(canvas, f, z); drawn++ } }
+        for (fr in b.frames) if (visible(fr.x, fr.y, fr.x + fr.w, fr.y + fr.h)) {
+            linePaint.color = Ui.INK2
+            linePaint.alpha = 170
+            linePaint.strokeWidth = Ui.dpf(context, 1.5f) / z
+            canvas.drawRect(fr.x, fr.y, fr.x + fr.w, fr.y + fr.h, linePaint)
+            linePaint.alpha = 255
+            drawn++
+        }
         // Издалека ручка рисуется одним контуром ровной толщины — на глаз не отличить, а в разы быстрее.
         val fast = z < 0.6f
         val tiny = 1.5f / z // меньше полутора пикселей — рисовать нечего
@@ -1319,6 +1428,15 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         for (c in b.callouts) if (calloutVisible(c)) { drawCallout(canvas, c, z); drawn++ }
         for (s in b.stickers) if (visible(s.x, s.y, s.x + stickerW(s), s.y + s.h)) { drawSticker(canvas, s); drawn++ }
+        highlight?.let { sid ->
+            // Подсветка статуса: всё притушить, метки и выноски этого статуса — поверх.
+            fillPaint.color = Ui.PAPER
+            fillPaint.alpha = 190
+            canvas.drawRect(vis, fillPaint)
+            fillPaint.alpha = 255
+            for (c in b.callouts) if (c.sid == sid && calloutVisible(c)) drawCallout(canvas, c, z)
+            for (s in b.stickers) if (s.sid == sid && visible(s.x, s.y, s.x + stickerW(s), s.y + s.h)) drawSticker(canvas, s)
+        }
         if (mode == Mode.CALLOUT_DRAG && hypot(calloutNow.x - calloutDown.x, calloutNow.y - calloutDown.y) * z > slop) {
             dashPaint.strokeWidth = Ui.dpf(context, 1.5f) / z
             dashPaint.pathEffect = DashPathEffect(floatArrayOf(Ui.dpf(context, 6f) / z, Ui.dpf(context, 4f) / z), 0f)
@@ -1326,6 +1444,11 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         if (!plain) drawSelection(canvas, z)
         if (!plain) cropping?.let { if (exists(it)) drawCropFrame(canvas, it, z) }
+        if (!plain && mode == Mode.FRAME_DRAG) {
+            dashPaint.strokeWidth = Ui.dpf(context, 1.5f) / z
+            dashPaint.pathEffect = DashPathEffect(floatArrayOf(Ui.dpf(context, 6f) / z, Ui.dpf(context, 4f) / z), 0f)
+            canvas.drawRect(min(frameDown.x, frameNow.x), min(frameDown.y, frameNow.y), max(frameDown.x, frameNow.x), max(frameDown.y, frameNow.y), dashPaint)
+        }
         if (!plain && !capturing) drawFillDraft(canvas, z)
         val pendingStyle = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z)
         for (s in host.pendingStrokes()) painter.stroke(canvas, s, pendingStyle, 255)
@@ -1346,7 +1469,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawPath(lassoPath, dashPaint)
         }
         canvas.restore()
-        if (!plain && !capturing) drawPins(canvas)
+        if (!plain) drawFrameLabels(canvas)
+        if (!plain) drawPins(canvas)
         if (!plain && !capturing) hover?.let {
             when {
                 host.tool() == BoardActivity.Tool.PIPETTE -> pipetteRing(context, canvas, it.x, it.y, host.pipetteColor(it.x, it.y))
@@ -1504,6 +1628,24 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         canvas.drawRoundRect(mx - bar / 2, rect.bottom - th / 2, mx + bar / 2, rect.bottom + th / 2, th, th, fillPaint)
         canvas.drawRoundRect(rect.left - th / 2, my - bar / 2, rect.left + th / 2, my + bar / 2, th, th, fillPaint)
         canvas.drawRoundRect(rect.right - th / 2, my - bar / 2, rect.right + th / 2, my + bar / 2, th, th, fillPaint)
+    }
+
+    /** Ярлыки разделов с названиями (на экране, всегда читаются — и издалека). */
+    private fun drawFrameLabels(canvas: Canvas) {
+        val r = RectF()
+        val pad = Ui.dpf(context, 7f)
+        for (f in b.frames) {
+            if (!visible(f.x, f.y - Ui.dpf(context, 30f) / b.camZ, f.x + f.w, f.y + f.h)) continue
+            frameLabelRect(f, r)
+            val sel = selection.any { it === f }
+            fillPaint.color = if (sel) Ui.ACCENT else Ui.PAPER
+            canvas.drawRoundRect(r, Ui.dpf(context, 6f), Ui.dpf(context, 6f), fillPaint)
+            linePaint.color = if (sel) Ui.ACCENT else Ui.INK2
+            linePaint.strokeWidth = Ui.dpf(context, 1f)
+            canvas.drawRoundRect(r, Ui.dpf(context, 6f), Ui.dpf(context, 6f), linePaint)
+            frameText.color = if (sel) Color.WHITE else Ui.INK
+            canvas.drawText(f.title.ifEmpty { "Раздел" }, r.left + pad, r.bottom - Ui.dpf(context, 7.5f), frameText)
+        }
     }
 
     /** Булавки закреплённых картинок (в координатах экрана — всегда одного размера). */

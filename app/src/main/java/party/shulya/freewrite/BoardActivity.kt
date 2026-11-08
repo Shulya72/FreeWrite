@@ -32,7 +32,7 @@ import kotlin.math.roundToInt
  */
 class BoardActivity : Activity(), BoardView.Host {
 
-    enum class Tool { HAND, WRITE, TEXT, PEN, MARKER, SHAPE, FILL, ERASER, SELECT, STATUS, CALLOUT, PIPETTE }
+    enum class Tool { HAND, WRITE, TEXT, PEN, MARKER, SHAPE, FILL, ERASER, SELECT, STATUS, CALLOUT, FRAME, PIPETTE }
 
     private lateinit var store: BoardStore
     private lateinit var noteStore: NoteStore
@@ -53,6 +53,8 @@ class BoardActivity : Activity(), BoardView.Host {
     private lateinit var selBar: LinearLayout
     /** Панель режима: обрезка картинки или заливка по точкам (вверху посередине). */
     private lateinit var modeBar: LinearLayout
+    /** Легенда статусов: числа и подсветка одного статуса. */
+    private lateinit var legend: LinearLayout
     /** «Заливка» по точкам: поставленные точки x, y, x, y… */
     private val fillPts = ArrayList<Float>()
     private val toolButtons = HashMap<Tool, Ui.ToolButton>()
@@ -184,6 +186,7 @@ class BoardActivity : Activity(), BoardView.Host {
             titleView.text = board.title
             view.pruneSelection()
             checkCrop()
+            if (legend.visibility == View.VISIBLE) buildLegend()
             view.invalidate()
             val who = authors.entries.sortedByDescending { it.value }.joinToString(", ") { "${it.key} — ${it.value}" }
             hint(if (who.isNotEmpty()) "Правки: $who" else "Пришли правки коллег: $changed", 3500)
@@ -339,9 +342,9 @@ class BoardActivity : Activity(), BoardView.Host {
         val tools = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         // Без пера главное — двигать, метки, выноски, надписи с клавиатуры; с пером — письмо и рисование.
         val order = if (stylus) listOf(Tool.HAND, Tool.WRITE, Tool.PEN, Tool.MARKER, Tool.SHAPE, Tool.STATUS,
-            Tool.CALLOUT, Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.TEXT)
+            Tool.CALLOUT, Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.TEXT, Tool.FRAME)
         else listOf(Tool.HAND, Tool.STATUS, Tool.CALLOUT, Tool.TEXT, Tool.PEN, Tool.MARKER, Tool.SHAPE,
-            Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.WRITE)
+            Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.FRAME, Tool.WRITE)
         for (t in order) when (t) {
             Tool.HAND -> addTool(tools, t, R.drawable.ic_hand, "Рука")
             Tool.TEXT -> addTool(tools, t, R.drawable.ic_text, "Текст")
@@ -354,6 +357,7 @@ class BoardActivity : Activity(), BoardView.Host {
             Tool.FILL -> addTool(tools, t, R.drawable.ic_fill, "Заливка")
             Tool.ERASER -> addTool(tools, t, R.drawable.ic_eraser, "Ластик")
             Tool.SELECT -> addTool(tools, t, R.drawable.ic_lasso, "Выделить")
+            Tool.FRAME -> addTool(tools, t, R.drawable.ic_frame, "Раздел")
             Tool.PIPETTE -> {}
         }
         // Три последних цвета и «Цвет» — палитра из 24 цветов и пипетка.
@@ -379,7 +383,11 @@ class BoardActivity : Activity(), BoardView.Host {
         tools.addView(Ui.ToolButton(this, R.drawable.ic_fit, "Всё").apply { setOnClickListener { view.fitAll() } })
         tools.addView(Ui.ToolButton(this, R.drawable.ic_statuses, "Статусы").apply {
             tag = "board_statuses"
-            setOnClickListener { statusesDialog() }
+            setOnClickListener { toggleLegend() }
+        })
+        tools.addView(Ui.ToolButton(this, R.drawable.ic_sections, "Разделы").apply {
+            tag = "board_sections"
+            setOnClickListener { sectionsDialog() }
         })
         if (!phone) tools.addView(cloudButton)
         tools.addView(Ui.ToolButton(this, R.drawable.ic_share, "Файлом").apply {
@@ -479,6 +487,24 @@ class BoardActivity : Activity(), BoardView.Host {
         area.addView(modeScroll, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = dp(10f)
         })
+        // Легенда статусов (кнопка «Статусы»): справа внизу, над подсказками.
+        legend = LinearLayout(this).apply {
+            tag = "legend"
+            orientation = LinearLayout.VERTICAL
+            background = Ui.rounded(this@BoardActivity, Ui.PAPER, Ui.RULE, 14f)
+            elevation = dp(4f).toFloat()
+            setPadding(dp(12f), dp(8f), dp(8f), dp(10f))
+            visibility = View.GONE
+        }
+        val legendScroll = object : android.widget.ScrollView(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val maxH = (resources.displayMetrics.heightPixels * 0.45f).toInt()
+                super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(maxH, MeasureSpec.AT_MOST))
+            }
+        }.apply { addView(legend); clipToPadding = false }
+        area.addView(legendScroll, FrameLayout.LayoutParams(minOf(dp(290f), resources.displayMetrics.widthPixels - dp(24f)), Ui.WRAP).apply {
+            gravity = Gravity.BOTTOM or Gravity.END; setMargins(0, 0, dp(12f), dp(60f))
+        })
         root.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
         bottomTools?.let { tools ->
             // Телефон: инструменты внизу, под большим пальцем.
@@ -511,6 +537,7 @@ class BoardActivity : Activity(), BoardView.Host {
             Tool.STATUS -> hint("Коснитесь $penWord — метка статуса. Касание метки — следующий статус, подержать — список", 3500)
             Tool.FILL -> hint("Касайтесь $penWord углов захватки по очереди, касание первой точки — залить. Или обведите одним движением.$two", 4500)
             Tool.CALLOUT -> hint("Проведите $penWord от места на чертеже туда, где будет надпись.$two", 4000)
+            Tool.FRAME -> hint("Проведите $penWord рамку от угла до угла — получится раздел с названием.$two", 4000)
             Tool.SELECT -> hint("Обведите, что выделить. Касание — один объект. Доску двигать — двумя пальцами", 3500)
             Tool.SHAPE -> hint("Нарисуйте линию, стрелку, квадрат, круг или треугольник — станет ровной фигурой.$two", 3500)
             Tool.PEN, Tool.MARKER, Tool.WRITE, Tool.ERASER -> if (!stylus) hint("Один палец — ${if (t == Tool.ERASER) "стирать" else "рисовать"}, два пальца — двигать и приближать доску", 3000)
@@ -644,6 +671,7 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     private fun changed() {
+        if (::legend.isInitialized && legend.visibility == View.VISIBLE) buildLegend()
         view.pruneSelection()
         pipetteSnap = null
         view.invalidate()
@@ -1135,6 +1163,130 @@ class BoardActivity : Activity(), BoardView.Host {
             .show()
     }
 
+    // ---------------------------------------------------------------- разделы
+
+    override fun onFrameCreate(l: Float, t: Float, r: Float, b: Float) {
+        if (r <= l || b <= t) { hint("Проведите рамку побольше — от угла до угла раздела"); return }
+        frameTitleDialog("Раздел ${board.frames.size + 1}", "Новый раздел") { title ->
+            pushUndo()
+            val f = BoardFrame(l, t, r - l, b - t, title)
+            board.frames += f
+            changed()
+            view.select(listOf(f))
+            hint("Раздел «$title». Тянуть за ярлык — переносится вместе со всем внутри. «Разделы» — быстрый переход", 4500)
+            backToHand()
+        }
+    }
+
+    private fun frameTitleDialog(current: String, heading: String, done: (String) -> Unit) {
+        val edit = EditText(this).apply {
+            setText(current); setSelectAllOnFocus(true); selectAll(); isSingleLine = true; tag = "frame_title"
+            hint = "Например: Секция 3, Корпус 1"
+        }
+        val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
+        val d = AlertDialog.Builder(this)
+            .setTitle(heading)
+            .setView(box)
+            .setPositiveButton("Готово") { _, _ -> done(edit.text.toString().trim().ifEmpty { current }) }
+            .setNegativeButton("Отмена", null)
+            .create()
+        d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        d.show()
+        edit.requestFocus()
+    }
+
+    /** «Разделы»: список разделов доски сверху вниз, касание — показать раздел целиком. */
+    private fun sectionsDialog() {
+        val frames = board.frames.sortedWith(compareBy({ (it.y / 200f).toInt() }, { it.x }))
+        if (frames.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("Разделы")
+                .setMessage("Разделов пока нет. Инструмент «Раздел» — проведите рамку от угла до угла и дайте название: «Секция 3», «Корпус 1». Потом здесь — быстрый переход.")
+                .setPositiveButton("Понятно", null).show()
+            return
+        }
+        val names = frames.map { f ->
+            val inside = view.frameContents(f).size
+            if (inside == 0) f.title else "${f.title}  ·  ${Ui.plural(inside, "предмет", "предмета", "предметов")}"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Разделы — перейти")
+            .setItems(names) { _, i -> val f = frames[i]; view.clearSelection(); view.fitRect(f.x, f.y, f.x + f.w, f.y + f.h) }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    // ---------------------------------------------------------------- легенда статусов
+
+    private fun toggleLegend() {
+        if (legend.visibility == View.VISIBLE) {
+            legend.visibility = View.GONE
+            view.highlight = null
+        } else {
+            buildLegend()
+            legend.visibility = View.VISIBLE
+        }
+    }
+
+    /** Легенда: статусы с числами меток и выносок; касание — подсветить только этот статус. */
+    private fun buildLegend() {
+        legend.removeAllViews()
+        val hl = view.highlight?.takeIf { id -> board.statuses.any { it.id == id } }
+        if (hl == null && view.highlight != null) view.highlight = null
+        val head = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        head.addView(Ui.text(this, "Статусы", 15f, Ui.INK, bold = true), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        head.addView(Ui.text(this, "Изменить", 13f, Ui.ACCENT, bold = true).apply {
+            tag = "legend_edit"; setPadding(dp(8f), dp(6f), dp(8f), dp(6f)); setOnClickListener { statusesDialog() }
+        })
+        head.addView(Ui.text(this, "✕", 16f, Ui.INK2).apply {
+            tag = "legend_close"; setPadding(dp(8f), dp(4f), dp(6f), dp(4f)); setOnClickListener { toggleLegend() }
+        })
+        legend.addView(head)
+        legend.addView(Ui.text(this, if (hl == null) "Касание — показать только этот статус" else "Остальное притушено. Ещё касание — показать всё",
+            12f, Ui.MUTED).apply { setPadding(0, 0, 0, dp(6f)) })
+        for ((i, st) in board.statuses.withIndex()) {
+            val on = st.id == hl
+            val row = LinearLayout(this).apply {
+                tag = "legend_row_$i"
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(8f), dp(7f), dp(8f), dp(7f))
+                background = if (on) Ui.rounded(this@BoardActivity, Ui.ACCENT_SOFT, Ui.ACCENT, 10f) else null
+                isClickable = true
+                setOnClickListener {
+                    view.highlight = if (on) null else st.id
+                    buildLegend()
+                    if (!on) hint("${st.name}: ${board.countStatus(st.id)}", 1500)
+                }
+            }
+            row.addView(dot(st.color), LinearLayout.LayoutParams(dp(14f), dp(14f)))
+            row.addView(Ui.text(this, st.name, 14f, Ui.INK).apply { setPadding(dp(10f), 0, dp(8f), 0); maxLines = 2 },
+                LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+            row.addView(Ui.text(this, board.countStatus(st.id).toString(), 14f, if (on) Ui.ACCENT else Ui.INK2, bold = true))
+            legend.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
+        if (hl != null) {
+            val n = board.countStatus(hl)
+            legend.addView(Ui.pill(this, "Показать все ($n)", Color.WHITE, Ui.ACCENT).apply {
+                tag = "legend_show"
+                setOnClickListener { showStatus(hl) }
+            }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(8f) })
+        }
+    }
+
+    /** Камера — на все метки и выноски статуса. */
+    private fun showStatus(sid: String) {
+        val r = android.graphics.RectF()
+        var first = true
+        fun add(o: Any) { val b = view.boundsOf(o, android.graphics.RectF()); if (first) { r.set(b); first = false } else r.union(b) }
+        board.stickers.filter { it.sid == sid }.forEach { add(it) }
+        board.callouts.filter { it.sid == sid }.forEach { c ->
+            add(c)
+            var i = 0
+            while (i + 1 < c.leaders.size) { r.union(c.leaders[i], c.leaders[i + 1]); i += 2 }
+        }
+        if (first) { hint("С этим статусом пока ничего нет"); return }
+        view.fitRect(r.left, r.top, r.right, r.bottom)
+    }
+
     override fun onDragStart() { pushUndo() }
     override fun onDragEnd() { changed() }
     override fun onDragCancel() {
@@ -1163,6 +1315,7 @@ class BoardActivity : Activity(), BoardView.Host {
             sel[0] is BoardSticker -> "Метка"
             sel[0] is BoardCallout -> "Выноска"
             sel[0] is BoardFill -> "Заливка"
+            sel[0] is BoardFrame -> "Раздел «${(sel[0] as BoardFrame).title}»"
             else -> "Рисунок"
         }
         // На общей доске — кто и когда правил выделенное.
@@ -1195,6 +1348,13 @@ class BoardActivity : Activity(), BoardView.Host {
         if (sel.size == 1 && sel[0] is BoardSticker) {
             buttons += Ui.pill(this, "Статус", Ui.INK, Ui.DESK).apply { tag = "sel_status"; setOnClickListener { chooseStatus(sel[0]) } }
         }
+        if (sel.size == 1 && sel[0] is BoardFrame) {
+            val f = sel[0] as BoardFrame
+            buttons += Ui.pill(this, "Название", Ui.INK, Ui.DESK).apply {
+                tag = "sel_edit"
+                setOnClickListener { frameTitleDialog(f.title, "Название раздела") { t -> pushUndo(); f.title = t; changed(); buildSelectionBar() } }
+            }
+        }
         if (sel.size == 1 && sel[0] is BoardImage) {
             buttons += Ui.pill(this, "Обрезать", Ui.INK, Ui.DESK).apply { tag = "sel_crop"; setOnClickListener { startCrop(sel[0] as BoardImage) } }
         }
@@ -1204,7 +1364,9 @@ class BoardActivity : Activity(), BoardView.Host {
         if (sel.any { it is Drawing && isClosed(it) }) {
             buttons += Ui.pill(this, "Залить", Ui.INK, Ui.DESK).apply { tag = "sel_fill"; setOnClickListener { fillSelectedShapes() } }
         }
-        buttons += Ui.pill(this, "Копия", Ui.INK, Ui.DESK).apply { tag = "sel_copy"; setOnClickListener { duplicateSelection() } }
+        if (!sel.all { it is BoardFrame }) {
+            buttons += Ui.pill(this, "Копия", Ui.INK, Ui.DESK).apply { tag = "sel_copy"; setOnClickListener { duplicateSelection() } }
+        }
         if (sel.any { it is BoardText || it is Drawing || it is BoardFill }) {
             buttons += Ui.pill(this, "Цвет", Ui.INK, Ui.DESK).apply { tag = "sel_color"; setOnClickListener { recolorSelection() } }
         }
@@ -1222,6 +1384,7 @@ class BoardActivity : Activity(), BoardView.Host {
         is BoardSticker -> o.id
         is BoardFill -> o.id
         is BoardCallout -> o.id
+        is BoardFrame -> o.id
         else -> null
     }
 
@@ -1338,6 +1501,7 @@ class BoardActivity : Activity(), BoardView.Host {
         board.strokes.removeAll { d -> sel.any { it === d } }
         board.fills.removeAll { f -> sel.any { it === f } }
         board.callouts.removeAll { c -> sel.any { it === c } }
+        board.frames.removeAll { f -> sel.any { it === f } }
         view.clearSelection()
         changed()
     }

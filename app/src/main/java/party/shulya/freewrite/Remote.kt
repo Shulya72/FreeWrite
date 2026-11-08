@@ -94,6 +94,7 @@ object Remote {
         for (k in board.stickers) add(k.id, "sticker") { Board.stickerJson(k) }
         for (f in board.fills) add(f.id, "fill") { f.json() }
         for (c in board.callouts) add(c.id, "callout") { Board.calloutJson(c) }
+        for (fr in board.frames) add(fr.id, "frame") { Board.frameJson(fr) }
         for ((id, r) in s.tomb) {
             if (r.isNotEmpty() && r > after && s.seenRemote[id] != r) out += Change(id, r, "", null)
         }
@@ -181,6 +182,7 @@ object Remote {
         board.stickers.removeAll { it.id == id }
         board.fills.removeAll { it.id == id }
         board.callouts.removeAll { it.id == id }
+        board.frames.removeAll { it.id == id }
         if (board.statuses.size > 1) board.statuses.removeAll { it.id == id }
     }
 
@@ -216,6 +218,7 @@ object Remote {
                 val def = board.statuses.firstOrNull()?.id ?: "s0"
                 put(board.callouts, Board.parseCallout(j, def).also { it.id = r.id }) { it.id }
             }
+            "frame" -> put(board.frames, Board.parseFrame(j).also { it.id = r.id }) { it.id }
             else -> {} // вид из будущей версии — пропускаем
         }
     }

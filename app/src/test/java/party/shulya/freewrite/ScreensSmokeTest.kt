@@ -737,8 +737,10 @@ class ScreensSmokeTest {
         fun positive() = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
             .getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
 
-        // «Статусы» → три своих статуса.
+        // «Статусы» → легенда → «Изменить» → три своих статуса.
         root.findViewWithTag<View>("board_statuses").performClick()
+        idle()
+        root.findViewWithTag<View>("legend_edit").performClick()
         idle()
         val statusesRoot = latestDialogRoot()
         for ((name, color) in listOf("Сдали опалубку" to 7, "Забетонировано" to 3, "Сняли опалубку" to 5)) {

@@ -156,6 +156,14 @@ class BoardFill(val pts: FloatArray, var color: Int, var alpha: Float = DEFAULT_
  * x, y — левый верхний угол рамки; scale — размер (ставится «в рост» масштаба); leaders — концы
  * указателей (x, y подряд).
  */
+/**
+ * Раздел (0.14): рамка с названием — «Секция 3», «Корпус 1». Список разделов — быстрый переход.
+ * Перенос раздела переносит и всё, что внутри.
+ */
+class BoardFrame(var x: Float, var y: Float, var w: Float, var h: Float, var title: String) {
+    var id: String = Ids.next()
+}
+
 class BoardCallout(var x: Float, var y: Float, var scale: Float, var title: String, var sid: String) {
     var id: String = Ids.next()
     val leaders = ArrayList<Float>()
@@ -184,6 +192,7 @@ class Board(
     val stickers = ArrayList<BoardSticker>()
     val fills = ArrayList<BoardFill>()
     val callouts = ArrayList<BoardCallout>()
+    val frames = ArrayList<BoardFrame>()
     val statuses = ArrayList<BoardStatus>()
     var camX = 0f
     var camY = 0f
@@ -210,7 +219,7 @@ class Board(
 
     val isEmpty: Boolean
         get() = strokes.isEmpty() && texts.isEmpty() && images.isEmpty() && stickers.isEmpty() &&
-            fills.isEmpty() && callouts.isEmpty()
+            fills.isEmpty() && callouts.isEmpty() && frames.isEmpty()
 
     /**
      * Доска в JSON одной строкой. Тяжёлые части (рисунки, заливки) берутся готовыми строками —
@@ -249,6 +258,7 @@ class Board(
         list("stickers", stickers, { it.id }) { stickerJson(it) }
         list("fills", fills, { it.id }) { it.json() }
         list("callouts", callouts, { it.id }) { calloutJson(it) }
+        if (frames.isNotEmpty()) list("frames", frames, { it.id }) { frameJson(it) }
         st?.finish()
         sb.append(",\"sync\":")
         sync.json(sb)
@@ -270,6 +280,7 @@ class Board(
         for (s in stickers) f(s.id, fingerprint(stickerJson(s)))
         for (fl in fills) f(fl.id, fingerprint(fl.json()))
         for (c in callouts) f(c.id, fingerprint(calloutJson(c)))
+        for (fr in frames) f(fr.id, fingerprint(frameJson(fr)))
     }
 
     fun entryHashes(): HashMap<String, Long> {
@@ -278,7 +289,7 @@ class Board(
         return m
     }
 
-    fun objectCount() = strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + statuses.size
+    fun objectCount() = strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + frames.size + statuses.size
 
     /**
      * Отметить правки перед сохранением: у изменённых и новых предметов — новая отметка времени,
@@ -340,6 +351,7 @@ class Board(
         for (s in stickers) fix(s.id) { stickerJson(s) }?.let { s.id = it }
         for (fl in fills) fix(fl.id) { fl.json() }?.let { fl.id = it }
         for (c in callouts) fix(c.id) { calloutJson(c) }?.let { c.id = it }
+        for (fr in frames) fix(fr.id) { frameJson(fr) }?.let { fr.id = it }
     }
 
     fun toJson(withCamera: Boolean = true): JSONObject = JSONObject(toJsonString(withCamera))
@@ -367,6 +379,7 @@ class Board(
         Array(stickers.size) { stickerJson(stickers[it]) },
         Array(fills.size) { fills[it].json() },
         Array(callouts.size) { calloutJson(callouts[it]) },
+        Array(frames.size) { frameJson(frames[it]) },
     )
 
     /** Вернуть доску к снимку. Неизменённые рисунки и заливки берутся как есть, без разбора JSON. */
@@ -387,6 +400,7 @@ class Board(
         for (j in snap.images) b.images += parseImage(JSONObject(j))
         for (j in snap.stickers) b.stickers += parseSticker(JSONObject(j))
         for (j in snap.callouts) b.callouts += parseCallout(JSONObject(j), b.statuses[0].id)
+        for (j in snap.frames) b.frames += parseFrame(JSONObject(j))
         return b
     }
 
@@ -445,6 +459,13 @@ class Board(
             sb.append('}')
             return sb.toString()
         }
+
+        fun frameJson(fr: BoardFrame): String =
+            "{\"id\":${q(fr.id)},\"x\":${f(fr.x)},\"y\":${f(fr.y)},\"w\":${f(fr.w)},\"h\":${f(fr.h)},\"title\":${JSONObject.quote(fr.title)}}"
+
+        fun parseFrame(j: JSONObject) = BoardFrame(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(),
+            j.optDouble("w", 400.0).toFloat().coerceAtLeast(1f), j.optDouble("h", 300.0).toFloat().coerceAtLeast(1f),
+            j.optString("title", "Раздел")).also { it.id = jid(j) }
 
         fun parseStatus(j: JSONObject) = BoardStatus(j.optString("id", newStatusId()), j.optString("name", "Статус"), j.optInt("color", Ui.INK2))
 
@@ -508,6 +529,7 @@ class Board(
             o.optJSONArray("stickers")?.let { a -> for (i in 0 until a.length()) b.stickers += parseSticker(a.getJSONObject(i)) }
             o.optJSONArray("fills")?.let { a -> for (i in 0 until a.length()) parseFill(a.getJSONObject(i))?.let { b.fills += it } }
             o.optJSONArray("callouts")?.let { a -> for (i in 0 until a.length()) b.callouts += parseCallout(a.getJSONObject(i), b.statuses[0].id) }
+            o.optJSONArray("frames")?.let { a -> for (i in 0 until a.length()) b.frames += parseFrame(a.getJSONObject(i)) }
             b.sync = BoardSync.parse(o.optJSONObject("sync"))
             b.fixIds()
             return b
@@ -537,6 +559,7 @@ class BoardSnapshot(
     val stickers: Array<String>,
     val fills: Array<String>,
     val callouts: Array<String>,
+    val frames: Array<String> = emptyArray(),
 )
 
 /** Сводка доски для Ежедневника: название, даты, сколько предметов, счётчики статусов. */
