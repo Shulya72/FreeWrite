@@ -298,6 +298,13 @@ class NeboTest {
         val b = BoardStore(ctx).load(r.boardIds[0])!!
         val json = File(ctx.filesDir, "boards/${b.id}.json").length()
         println("NEBO: файл доски ${json / 1024} КБ")
+        // Для проверки сайта на своём компьютере: выгрузить доску и картинки (NEBO_EXPORT=папка).
+        System.getenv("NEBO_EXPORT")?.let { out ->
+            val dir = File(out).apply { mkdirs() }
+            File(ctx.filesDir, "boards/${b.id}.json").copyTo(File(dir, "board.json"), overwrite = true)
+            val imgs = File(dir, "images").apply { mkdirs() }
+            for (m in b.images) File(ctx.filesDir, "note_images/${m.file}").copyTo(File(imgs, m.file), overwrite = true)
+        }
         val a = Robolectric.buildActivity(BoardActivity::class.java,
             Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b.id).putExtra(BoardActivity.EXTRA_FIT, true)).setup().get()
         idle()

@@ -452,13 +452,45 @@ class HomeActivity : Activity() {
             .show()
     }
 
+    /**
+     * Сайт для компьютера (FW-003): ссылка на просмотр общей доски — отправить себе и открыть на компьютере.
+     * Руководству — «Ссылка для руководства» на самом сайте (по ней ничего не изменить).
+     */
+    private fun showSite(id: String) {
+        val b = boards.load(id) ?: return
+        val link = Remote.siteLink(BuildConfig.SYNC_URL, b.sync.remoteInvite)
+        if (link == null) {
+            AlertDialog.Builder(this).setMessage("В этой сборке приложения нет адреса сервера.").setPositiveButton("Понятно", null).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Открыть на компьютере")
+            .setMessage("Доска «${b.title}» на сайте — смотреть с компьютера (только просмотр, обновляется сама):\n\n$link\n\n" +
+                "Отправьте ссылку себе (например, в Telegram) и откройте на компьютере. Ссылка с кодом доски — только для себя.\n" +
+                "Руководству — кнопка «Ссылка для руководства» на сайте: по ней доску можно только смотреть.")
+            .setPositiveButton("Отправить себе") { _, _ ->
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Доска «${b.title}» — FreeWrite на компьютере: $link")
+                }, "Отправить ссылку"))
+            }
+            .setNeutralButton("Скопировать") { _, _ ->
+                getSystemService(android.content.ClipboardManager::class.java)
+                    ?.setPrimaryClip(android.content.ClipData.newPlainText("FreeWrite", link))
+                Toast.makeText(this, "Ссылка скопирована", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
     private fun boardMenu(b: BoardMeta) {
-        val items = if (b.shared) arrayOf("Переименовать", "Удалить", "Поделиться файлом", "Код для коллег")
+        val items = if (b.shared) arrayOf("Переименовать", "Удалить", "Поделиться файлом", "Код для коллег", "Открыть на компьютере")
         else arrayOf("Переименовать", "Удалить", "Поделиться файлом")
         AlertDialog.Builder(this)
             .setTitle(b.title)
             .setItems(items) { _, which ->
-                if (which == 3) {
+                if (which == 4) {
+                    showSite(b.id)
+                } else if (which == 3) {
                     showCode(b.id)
                 } else if (which == 2) {
                     shareBoard(b.id)

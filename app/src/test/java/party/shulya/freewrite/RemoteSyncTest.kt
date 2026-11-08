@@ -335,4 +335,13 @@ class RemoteSyncTest {
         assertTrue(got.sync.isShared)
         controller.pause().stop().destroy()
     }
+
+    /** Ссылка на сайт просмотра (FW-003): адрес сервера + код доски. */
+    @Test
+    fun siteLinkForComputer() {
+        assertEquals("https://functions.example/abc?v=ABCD-EFGH", Remote.siteLink("https://functions.example/abc", "ABCDEFGH"))
+        assertEquals("https://functions.example/abc?v=ABCD-EFGH", Remote.siteLink("https://functions.example/abc/?op=1", "ABCDEFGH"))
+        assertEquals(null, Remote.siteLink("", "ABCDEFGH"))
+        assertEquals(null, Remote.siteLink("https://functions.example/abc", ""))
+    }
 }

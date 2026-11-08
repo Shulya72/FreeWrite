@@ -120,6 +120,21 @@ try:
     check(ok("img_has", board=board, key=key, files=[name])["have"] == [name], "картинка 1 МБ+ выгружена двумя частями")
     back = b"".join(base64.b64decode(ok("img_get", board=board, key=key, file=name, part=i)["data"]) for i in range(2))
     check(back == data, "картинка скачана обратно без изменений")
+
+    # Сайт для руководства (FW-003): страница в браузере и код «только смотреть».
+    with urllib.request.urlopen(urllib.request.Request(URL + "?v=TEST-CODE", method="GET"), timeout=60) as r:
+        html = r.read().decode("utf-8", "replace")
+        check(r.status == 200 and "text/html" in r.headers.get("Content-Type", "") and "<title>FreeWrite" in html,
+              "сайт: адрес в браузере открывает страницу")
+    code = ok("view_link", board=board, key=key)["code"]
+    check(len(code) == 8 and code != c["invite"], "код «только смотреть» выдан")
+    v = ok("view", code=code)
+    check(v["board"] == board and v["key"] != key, "по коду просмотра — ключ для чтения")
+    check(len(ok("pull", board=board, key=v["key"], since=0)["changes"]) > 0, "по ключу просмотра доску можно читать")
+    status, body = call("push", board=board, key=v["key"], changes=[t1])
+    check(status == 403, "по ключу просмотра править нельзя")
+    status, body = call("join", invite=code)
+    check(status == 403 and body.get("error") == "view_only", "кодом просмотра в приложение не войти")
 finally:
     r = ok("delete", board=board, key=key)
     print("OK временная доска удалена (картинок: %s)" % r.get("images"))
