@@ -24,9 +24,13 @@ def call(op, **kw):
     except urllib.error.HTTPError as e:
         body = e.read()
         try:
-            return e.code, json.loads(body)
+            o = json.loads(body)
         except ValueError:
-            return e.code, {"error": "http", "message": body[:200].decode("utf-8", "replace")}
+            o = {"error": "http", "message": body[:300].decode("utf-8", "replace")}
+        if isinstance(o, dict) and "error" not in o:
+            # Ошибка самой платформы функций (502): errorMessage / errorType.
+            o = {"error": o.get("errorType", "platform"), "message": str(o.get("errorMessage", o))[:300]}
+        return e.code, o
 
 
 def ok(op, **kw):
@@ -56,7 +60,7 @@ for attempt in range(12):
     status, body = call("ping")
     if status == 200 and body.get("ok"):
         break
-    print("сервер ещё не готов (%s %s), жду…" % (status, body.get("error")))
+    print("сервер ещё не готов (%s %s: %s), жду…" % (status, body.get("error"), body.get("message", "")[:300]))
     time.sleep(10)
 else:
     fail("сервер не отвечает на ping")

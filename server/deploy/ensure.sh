@@ -16,7 +16,7 @@ if [ -z "$SA_ID" ]; then
 fi
 mask "$SA_ID"
 BINDINGS=$(yc resource-manager folder list-access-bindings "$YC_FOLDER_ID" --format json)
-for role in ydb.editor storage.editor; do
+for role in ydb.editor storage.editor logging.writer; do
   if jq -e --arg r "$role" --arg s "$SA_ID" 'any(.[]; .role_id == $r and .subject.id == $s)' <<<"$BINDINGS" > /dev/null; then
     echo "Роль $role у робота сервера: есть"
   else
@@ -56,7 +56,15 @@ else
 fi
 out BUCKET "$BUCKET"
 
-# 4. Функция-сервер, открытая для вызова из приложения (доступ к доскам — по ключам досок).
+# 4. Группа журналов по умолчанию (туда пишет функция; бесплатно до 5 ГБ в месяц, хранение 3 дня).
+if ! yc logging group get --name default > /dev/null 2>&1; then
+  yc logging group create --name default --retention-period 72h > /dev/null
+  echo "Создана группа журналов default"
+else
+  echo "Группа журналов default: есть"
+fi
+
+# 5. Функция-сервер, открытая для вызова из приложения (доступ к доскам — по ключам досок).
 if ! yc serverless function get --name freewrite-sync --format json > /dev/null 2>&1; then
   yc serverless function create --name freewrite-sync --description "Сервер общей доски FreeWrite" > /dev/null
   echo "Создана функция freewrite-sync"
