@@ -280,9 +280,11 @@ class EditToolsTest {
     @Test
     fun legendHighlightsOneStatus() {
         val b0 = Board.create("Захватки")
-        for (i in 0 until 3) b0.stickers += BoardSticker(100f + i * 200f, 100f, "s2", 1f)
-        for (i in 0 until 2) b0.stickers += BoardSticker(100f + i * 200f, 400f, "s1", 1f)
-        b0.callouts += BoardCallout(900f, 600f, 1f, "Захватка №7", "s2").apply { addLeader(1500f, 900f) }
+        val ids = b0.statuses(BoardStatus.ID)
+        val cons = b0.statuses(BoardStatus.CON)
+        for (i in 0 until 3) b0.stickers += BoardSticker(100f + i * 200f, 100f, ids[2].id, 1f)
+        for (i in 0 until 2) b0.stickers += BoardSticker(100f + i * 200f, 400f, ids[1].id, 1f)
+        b0.callouts += BoardCallout(900f, 600f, 1f, "Захватка №7", cons[2].id).apply { addLeader(1500f, 900f) }
         BoardStore(ctx).save(b0)
         val controller = open(b0)
         val a = controller.get()
@@ -296,15 +298,17 @@ class EditToolsTest {
             val r = root.findViewWithTag<ViewGroup>("legend_row_$row")
             return (r.getChildAt(r.childCount - 1) as android.widget.TextView).text.toString()
         }
-        assertEquals("«Сдано»: 3 метки и выноска", "4", count(2))
+        // Строки легенды: сначала 5 статусов ИД, потом 5 конструкций.
+        assertEquals("3 метки «${ids[2].name}»", "3", count(2))
         assertEquals("2", count(1))
+        assertEquals("выноска — в списке конструкций", "1", count(5 + 2))
         root.findViewWithTag<View>("legend_row_2").performClick()
         idle()
-        assertEquals("s2", view.highlight)
+        assertEquals(ids[2].id, view.highlight)
         root.findViewWithTag<View>("legend_show").performClick()
         idle()
-        // Камера показывает все «Сдано» — и метки, и выноску с её указателем.
-        assertTrue(view.wx(0f) <= 100f && view.wx(view.width.toFloat()) >= 1500f)
+        // Камера показывает все метки этого статуса.
+        assertTrue(view.wx(0f) <= 100f && view.wx(view.width.toFloat()) >= 500f)
         shot(root, "legend.png")
         root.findViewWithTag<View>("legend_row_2").performClick()
         idle()

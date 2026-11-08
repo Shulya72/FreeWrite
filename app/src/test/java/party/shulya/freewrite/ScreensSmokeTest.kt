@@ -197,9 +197,10 @@ class ScreensSmokeTest {
         b.texts += BoardText(100f, 230f, 24f, "Фундамент", Ui.INK)
         b.texts += BoardText(300f, 230f, 24f, "Колонны 2 эт.", Ui.INK)
         b.texts += BoardText(500f, 420f, 24f, "Перекрытие", Ui.INK)
-        b.stickers += BoardSticker(100f, 250f, "s2", 1.2f)
-        b.stickers += BoardSticker(300f, 250f, "s1", 1.2f)
-        b.stickers += BoardSticker(500f, 440f, "s0", 1.2f)
+        val ids = b.statuses(BoardStatus.ID)
+        b.stickers += BoardSticker(100f, 250f, ids[4].id, 1.2f)
+        b.stickers += BoardSticker(300f, 250f, ids[1].id, 1.2f)
+        b.stickers += BoardSticker(500f, 440f, ids[0].id, 1.2f)
         // «Фото» — картинка, нарисованная прямо в тесте.
         val bmp = Bitmap.createBitmap(640, 440, Bitmap.Config.ARGB_8888)
         Canvas(bmp).apply {
@@ -245,7 +246,7 @@ class ScreensSmokeTest {
         root.findViewWithTag<View>("board_tool_status").performClick()
         tap(view, MotionEvent.TOOL_TYPE_STYLUS, view.width * 0.5f, view.height * 0.85f)
         assertEquals(4, board().stickers.size)
-        assertEquals("s0", board().stickers.last().sid)
+        assertEquals(board().firstStatus(BoardStatus.ID), board().stickers.last().sid)
 
         // Пальцем по метке — следующий статус («В работе»). (Пауза: сразу после пера палец считается ладонью.)
         afterPen()
@@ -253,7 +254,7 @@ class ScreensSmokeTest {
         val sx = (s.x + view.stickerW(s) / 2 - board().camX) * board().camZ
         val sy = (s.y + s.h / 2 - board().camY) * board().camZ
         tap(view, MotionEvent.TOOL_TYPE_FINGER, sx, sy)
-        assertEquals("s1", board().stickers.last().sid)
+        assertEquals(board().statuses(BoardStatus.ID)[1].id, board().stickers.last().sid)
 
         // Палец двигает доску.
         val camX0 = board().camX
@@ -701,7 +702,8 @@ class ScreensSmokeTest {
         // Доска до 0.7.0: метки с числом статуса, без списка статусов.
         val old = org.json.JSONObject("""{"id":"old1","title":"Старая","stickers":[{"x":1,"y":2,"status":2,"scale":1}]}""")
         val b = Board.fromJson(old)
-        assertEquals(listOf("Не сдано", "В работе", "Сдано"), b.statuses.map { it.name })
+        assertEquals(listOf("Не сдано", "В работе", "Сдано"), b.statuses(BoardStatus.ID).map { it.name })
+        assertEquals("список конструкций добавлен", 5, b.statuses(BoardStatus.CON).size)
         assertEquals("Сдано", b.status(b.stickers[0].sid).name)
         // Свои статусы, заливка, выноска — сохраняются и читаются обратно.
         b.statuses += BoardStatus("own", "Сдали опалубку", ColorKit.PALETTE[7])
@@ -713,7 +715,7 @@ class ScreensSmokeTest {
         assertEquals(8, back.fills[0].pts.size)
         assertEquals("Захватка №1 от 11.09.26", back.callouts[0].title)
         assertEquals(2, back.callouts[0].leaderCount)
-        assertEquals("own", back.nextStatus("Сдано".let { back.statuses.first { s -> s.name == it }.id }))
+        assertEquals("own", back.nextStatus("Сдано".let { back.statuses.first { s -> s.name == it }.id }, BoardStatus.ID))
         assertEquals(1, back.countStatus("own"))
     }
 
@@ -744,7 +746,7 @@ class ScreensSmokeTest {
         idle()
         val statusesRoot = latestDialogRoot()
         for ((name, color) in listOf("Сдали опалубку" to 7, "Забетонировано" to 3, "Сняли опалубку" to 5)) {
-            statusesRoot.findViewWithTag<View>("status_add").performClick()
+            statusesRoot.findViewWithTag<View>("status_add_con").performClick()
             idle()
             val d = latestDialogRoot()
             d.findViewWithTag<android.widget.EditText>("status_name").setText(name)
@@ -753,7 +755,8 @@ class ScreensSmokeTest {
             idle()
         }
         assertEquals(listOf("Сдали опалубку", "Забетонировано", "Сняли опалубку"), board().statuses.takeLast(3).map { it.name })
-        assertEquals(6, findAll(statusesRoot) { it.tag == "status_row" }.size)
+        assertEquals("ИД 5 + конструкции 5 + три своих", 13, findAll(statusesRoot) { it.tag == "status_row" }.size)
+        assertTrue("свои — в списке конструкций", board().statuses.takeLast(3).all { it.group == BoardStatus.CON })
         screenshot(statusesRoot.rootView, "board-statuses.png")
         org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().dismiss()
         org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()?.dismiss()
