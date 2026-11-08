@@ -41,7 +41,9 @@ ID_RE = re.compile(r"^[A-Za-z0-9~_-]{1,64}$")
 REV_RE = re.compile(r"^[0-9]{13}\.[0-9]{4}\.[A-Za-z0-9]{1,16}$")
 DEVICE_RE = re.compile(r"^[A-Za-z0-9]{1,16}$")
 FILE_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}$")
-KINDS = {"stroke", "text", "image", "sticker", "fill", "callout", "status", "meta", ""}
+# Вид предмета — латиница до 16 букв: новые виды из будущих версий приложения (раздел «frame» с 0.14,
+# дальше — другие) проходят без обновления сервера; сервер их не разбирает, только хранит.
+KIND_RE = re.compile(r"^[a-z]{0,16}$")
 INVITE_ABC = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 _store = None
@@ -215,7 +217,7 @@ def _changes(req) -> list:
         rev = _str(c, "rev", REV_RE)
         deleted = bool(c.get("x"))
         kind = _str(c, "k", required=False, limit=16)
-        if kind not in KINDS:
+        if not KIND_RE.match(kind):
             raise ApiError(400, "bad_k", "Неизвестный вид предмета")
         body = "" if deleted else _str(c, "d", limit=MAX_BODY)
         prev = best.get(cid)

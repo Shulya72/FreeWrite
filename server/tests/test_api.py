@@ -272,7 +272,8 @@ class ApiTest(unittest.TestCase):
         bad = [
             [{"id": "t1", "rev": "вчера", "k": "text", "d": "{}"}],
             [{"id": "../x", "rev": rev(1), "k": "text", "d": "{}"}],
-            [{"id": "t1", "rev": rev(1), "k": "virus", "d": "{}"}],
+            [{"id": "t1", "rev": rev(1), "k": "<script>", "d": "{}"}],
+            [{"id": "t1", "rev": rev(1), "k": "averyveryverylongkind", "d": "{}"}],
             [{"id": "t1", "rev": rev(1), "k": "text", "d": "z" * (main.MAX_BODY + 1)}],
             [{"id": "t%d" % i, "rev": rev(1), "k": "text", "d": "{}"} for i in range(main.MAX_CHANGES + 1)],
             "не список",
@@ -280,6 +281,15 @@ class ApiTest(unittest.TestCase):
         for changes in bad:
             status, _ = self.call("push", board=BOARD, key=key, changes=changes)
             self.assertEqual(400, status)
+
+    def test_new_kinds_from_newer_app_are_kept(self):
+        # Раздел (0.14) и другие будущие виды: сервер не разбирает, только хранит и отдаёт.
+        key = self.create()["key"]
+        body = json.dumps({"id": "f1", "x": 0, "y": 0, "w": 800, "h": 600, "title": "Секция 3"}, ensure_ascii=False)
+        self.ok("push", board=BOARD, key=key, device="vlad01", changes=[{"id": "f1", "rev": rev(5), "k": "frame", "d": body}])
+        rows = self.ok("pull", board=BOARD, key=key, since=0)["changes"]
+        self.assertEqual(["frame"], [r["k"] for r in rows])
+        self.assertEqual("Секция 3", json.loads(rows[0]["d"])["title"])
 
     def test_images_in_parts(self):
         key = self.create()["key"]
