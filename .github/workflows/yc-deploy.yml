@@ -1,0 +1,75 @@
+name: Yandex Cloud deploy
+
+# Выкладка сервера FreeWrite (папка server/) в Яндекс Облако — каталог из секрета YC_FOLDER_ID.
+# 1) проверки сервера без облака; 2) вход роботом freewrite-deploy (ключ — секрет
+# YC_SA_JSON_CREDENTIALS); 3) создать, чего нет: робот сервера, база YDB, хранилище картинок,
+# функция; 4) новая версия функции; 5) живая проверка с временной доской.
+# Репозиторий публичный: номера, адреса и ключи в журнал не попадают (::add-mask::).
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'server/**'
+      - '.github/workflows/yc-deploy.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yc-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Server tests (no cloud)
+        run: python3 -m unittest discover -s server/tests -v
+
+      - name: Install yc CLI
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yc -n
+          echo "/opt/yc/bin" >> "$GITHUB_PATH"
+
+      - name: Sign in as service account
+        env:
+          YC_SA_JSON_CREDENTIALS: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          umask 077
+          printf '%s' "$YC_SA_JSON_CREDENTIALS" > "$RUNNER_TEMP/key.json"
+          yc config profile create ci > /dev/null
+          yc config set service-account-key "$RUNNER_TEMP/key.json"
+          yc config set folder-id "$YC_FOLDER_ID"
+          rm -f "$RUNNER_TEMP/key.json"
+          yc iam create-token > /dev/null && echo "Вход роботом: работает"
+
+      - name: Cloud resources (create if missing)
+        env:
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: bash server/deploy/ensure.sh
+
+      - name: New function version
+        run: |
+          cd server
+          zip -q ../server.zip main.py store_ydb.py blob.py errors.py requirements.txt
+          cd ..
+          yc serverless function version create \
+            --function-name freewrite-sync \
+            --runtime python312 \
+            --entrypoint main.handler \
+            --memory 256m \
+            --execution-timeout 20s \
+            --service-account-id "$SA_ID" \
+            --source-path server.zip \
+            --environment "YDB_ENDPOINT=$YDB_ENDPOINT,YDB_DATABASE=$YDB_DATABASE,BUCKET=$BUCKET" \
+            --format json > "$RUNNER_TEMP/version.json"
+          echo "Новая версия функции: $(jq -r .status "$RUNNER_TEMP/version.json")"
+
+      - name: Live check
+        run: python3 server/deploy/smoke.py
