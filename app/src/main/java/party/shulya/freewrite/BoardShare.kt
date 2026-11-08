@@ -130,6 +130,9 @@ object BoardShare {
         return file
     }
 
+    /** Имя картинки без папок и служебных знаков (из файла или с сервера). */
+    fun isSafeImageName(name: String) = SAFE_NAME.matches(name)
+
     /** Название для имени файла: без знаков, которые нельзя в именах файлов. */
     fun safeTitle(t: String): String =
         t.replace(Regex("[\\\\/:*?\"<>|\\n\\r\\t]"), "_").trim().take(60).ifEmpty { "Доска" }

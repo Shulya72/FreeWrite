@@ -109,6 +109,10 @@ class HomeActivity : Activity() {
             tag = "home_open_file"
             setOnClickListener { pickBoardFile() }
         })
+        foot.addView(Ui.ToolButton(this, R.drawable.ic_cloud, "Подключиться по коду").apply {
+            tag = "home_join"
+            setOnClickListener { joinDialog() }
+        })
         foot.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         foot.addView(Ui.mono(this, "версия ${BuildConfig.VERSION_NAME}", 12f))
         col.addView(foot, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(26f) })
@@ -244,6 +248,74 @@ class HomeActivity : Activity() {
         if (requestCode == REQ_BOARD_FILE && resultCode == RESULT_OK && uri != null) {
             startActivity(Intent(this, ImportActivity::class.java).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
         }
+    }
+
+    /** Подключиться к общей доске коллеги по коду-приглашению. */
+    private fun joinDialog() {
+        val t = RemoteSync.transport()
+        if (t == null) {
+            Toast.makeText(this, "В этой сборке нет адреса сервера — обновите FreeWrite", Toast.LENGTH_LONG).show()
+            return
+        }
+        val edit = EditText(this).apply {
+            hint = "Например, ABCD-EFGH"
+            isSingleLine = true
+            tag = "join_code"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20f), dp(8f), dp(20f), 0)
+            addView(Ui.text(this@HomeActivity, "Код доски — у коллеги: на доске кнопка «Совместно».", 14f, Ui.INK2))
+            addView(edit)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Подключиться к общей доске")
+            .setView(box)
+            .setPositiveButton("Подключиться") { _, _ -> join(t, edit.text.toString()) }
+            .setNegativeButton("Отмена", null)
+            .create()
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        dialog.show()
+        edit.requestFocus()
+    }
+
+    private fun join(t: SyncTransport, code: String) {
+        if (code.isBlank()) return
+        val progress = AlertDialog.Builder(this)
+            .setTitle("Подключаюсь…")
+            .setMessage("Получаю доску с сервера. Картинки догрузятся, когда доска откроется.")
+            .setCancelable(false)
+            .show()
+        Thread {
+            val r = runCatching {
+                val j = Remote.join(t, code.trim())
+                j to Remote.pull(t, j.boardId, j.key, 0)
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                progress.dismiss()
+                r.onSuccess { (j, pulled) ->
+                    val now = System.currentTimeMillis()
+                    // Своей копии доски нет — пустая (без статусов: они придут с сервера).
+                    val b = boards.load(j.boardId) ?: Board(j.boardId, j.title.ifEmpty { "Общая доска" }, now, now)
+                    b.sync.remoteKey = j.key
+                    b.sync.remoteInvite = j.invite
+                    b.sync.remoteSeq = 0
+                    b.sync.pushedRev = ""
+                    Remote.apply(b, pulled.rows)
+                    b.sync.remoteSeq = pulled.next
+                    boards.save(b)
+                    renderList()
+                    Toast.makeText(this, "Подключено: «${b.title}»", Toast.LENGTH_LONG).show()
+                    openBoard(b.id)
+                }.onFailure { e ->
+                    val msg = (e as? SyncException)?.message ?: "Нет связи с сервером. Проверьте интернет."
+                    AlertDialog.Builder(this).setTitle("Не удалось подключиться").setMessage(msg)
+                        .setPositiveButton("Понятно", null).show()
+                }
+            }
+        }.start()
     }
 
     private fun shareBoard(id: String) {

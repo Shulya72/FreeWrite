@@ -14,6 +14,10 @@ android {
         targetSdk = 34
         versionCode = 18
         versionName = "0.9.0"
+        // Адрес сервера общей доски (функция в Яндекс Облаке). Подставляется при сборке в GitHub
+        // Actions из облака (в репозитории его нет); пусто — синхронизация недоступна в этой сборке.
+        val syncUrl = System.getenv("FREEWRITE_SYNC_URL").orEmpty().trim()
+        buildConfigField("String", "SYNC_URL", "\"" + syncUrl.replace("\"", "") + "\"")
     }
 
     signingConfigs {

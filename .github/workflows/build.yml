@@ -74,6 +74,31 @@ jobs:
             echo "Ключ подписи взят из кэша"
           fi
 
+      # Адрес сервера общей доски берём из Яндекс Облака (робот freewrite-deploy) и вшиваем в APK.
+      # В журнал он не попадает. Не получилось — APK собирается без синхронизации.
+      - name: Sync server address
+        env:
+          YC_SA_JSON_CREDENTIALS: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          if [ -z "$YC_SA_JSON_CREDENTIALS" ] || [ -z "$YC_FOLDER_ID" ]; then
+            echo "::warning::Нет секретов Яндекс Облака — APK без синхронизации"; exit 0
+          fi
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yc -n > /dev/null
+          umask 077
+          printf '%s' "$YC_SA_JSON_CREDENTIALS" > "$RUNNER_TEMP/key.json"
+          /opt/yc/bin/yc config profile create ci > /dev/null
+          /opt/yc/bin/yc config set service-account-key "$RUNNER_TEMP/key.json"
+          /opt/yc/bin/yc config set folder-id "$YC_FOLDER_ID"
+          rm -f "$RUNNER_TEMP/key.json"
+          url=$(/opt/yc/bin/yc serverless function get --name freewrite-sync --format json 2>/dev/null | jq -r '.http_invoke_url // empty' || true)
+          if [ -z "$url" ]; then
+            echo "::warning::Сервер freewrite-sync не найден — APK без синхронизации"; exit 0
+          fi
+          echo "::add-mask::$url"
+          echo "FREEWRITE_SYNC_URL=$url" >> "$GITHUB_ENV"
+          echo "Адрес сервера общей доски получен"
+
       - name: Build APK
         env:
           FREEWRITE_DEBUG_KEYSTORE: ${{ github.workspace }}/freewrite-debug.keystore

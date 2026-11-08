@@ -39,6 +39,23 @@ class BoardSync {
     /** Картинки, которые у коллег уже есть (отправляли или получили) — «только новое» их не шлёт. */
     val peerImages = HashSet<String>()
 
+    // ---- общая доска на сервере (0.10) ----
+
+    /** Ключ доски на сервере; пусто — доска не на сервере. */
+    var remoteKey = ""
+    /** Код-приглашение для коллег. */
+    var remoteInvite = ""
+    /** До какого номера правки (seq сервера) правки уже получены. */
+    var remoteSeq = 0L
+    /** Все свои правки с отметкой не позже этой уже на сервере. */
+    var pushedRev = ""
+    /** Картинки, которые уже есть на сервере. */
+    val uploadedImages = HashSet<String>()
+    /** Отметки правок, только что полученных с сервера (их не надо отправлять обратно). Не сохраняется. */
+    val seenRemote = HashMap<String, String>()
+
+    val isShared: Boolean get() = remoteKey.isNotEmpty()
+
     var clockMs = 0L
         private set
     var clockN = 0
@@ -86,7 +103,22 @@ class BoardSync {
             first = false
             sb.append(JSONObject.quote(f))
         }
-        sb.append("]}")
+        sb.append(']')
+        if (isShared) {
+            sb.append(",\"r\":{\"k\":").append(JSONObject.quote(remoteKey))
+            sb.append(",\"i\":").append(JSONObject.quote(remoteInvite))
+            sb.append(",\"s\":").append(remoteSeq)
+            sb.append(",\"p\":").append(JSONObject.quote(pushedRev))
+            sb.append(",\"u\":[")
+            first = true
+            for (f in uploadedImages) {
+                if (!first) sb.append(',')
+                first = false
+                sb.append(JSONObject.quote(f))
+            }
+            sb.append("]}")
+        }
+        sb.append('}')
     }
 
     companion object {
@@ -110,6 +142,13 @@ class BoardSync {
                 while (it.hasNext()) { val id = it.next(); s.tomb[id] = m.optString(id, "") }
             }
             o.optJSONArray("pi")?.let { a -> for (i in 0 until a.length()) s.peerImages += a.optString(i) }
+            o.optJSONObject("r")?.let { r ->
+                s.remoteKey = r.optString("k", "")
+                s.remoteInvite = r.optString("i", "")
+                s.remoteSeq = r.optLong("s")
+                s.pushedRev = r.optString("p", "")
+                r.optJSONArray("u")?.let { a -> for (i in 0 until a.length()) s.uploadedImages += a.optString(i) }
+            }
             return s
         }
 

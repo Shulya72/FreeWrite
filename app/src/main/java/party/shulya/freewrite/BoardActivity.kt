@@ -74,6 +74,10 @@ class BoardActivity : Activity(), BoardView.Host {
     private val shapeTool = ShapeTool()
     /** Сколько раз в эту доску вливали файлы к моменту загрузки — чтобы заметить новый файл коллеги. */
     private var loadedImports = 0
+    /** Синхронизация с сервером (null — в этой сборке сервер не настроен). */
+    private var remote: RemoteSync? = null
+    private lateinit var subtitleView: TextView
+    private var syncState: RemoteSync.State? = null
 
     // ---------------------------------------------------------------- письмо в текст на месте
 
@@ -112,6 +116,8 @@ class BoardActivity : Activity(), BoardView.Host {
         engine.onChanged = { updateBanner() }
         buildUi()
         setContentView(root)
+        RemoteSync.transport()?.let { remote = RemoteSync(this, it, remoteHost) }
+        updateSubtitle()
         engine.start(this)
         setTool(Tool.PEN)
         updateBanner()
@@ -126,12 +132,14 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onPause() {
         current?.let { commit(it) }
         saveNow(sync = true)
+        remote?.stop()
         super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
         if (BoardStore.importCount(board.id) != loadedImports) reloadAfterImport()
+        remote?.start()
     }
 
     /** Пока экран был свёрнут, в доску влили файл коллеги — перечитать (камера остаётся своя). */
@@ -146,6 +154,96 @@ class BoardActivity : Activity(), BoardView.Host {
         view.clearSelection()
         view.invalidate()
         hint("Доска обновлена правками из файла")
+        remote?.kick(500)
+    }
+
+    // ---------------------------------------------------------------- общая доска на сервере
+
+    private val remoteHost = object : RemoteSync.Host {
+        override fun board(): Board = board
+        override fun canApply(): Boolean = current == null && committing.isEmpty() && view.isIdle
+        override fun saveBoard() = saveNow()
+        override fun onRemoteApplied(changed: Int) {
+            // Отмена после чужих правок вернула бы их назад у всех — поэтому её история сбрасывается.
+            undoStack.clear(); redoStack.clear()
+            titleView.text = board.title
+            view.pruneSelection()
+            view.invalidate()
+            hint("Пришли правки коллег: $changed")
+        }
+        override fun onImagesArrived() { view.invalidate() }
+        override fun onSyncState(state: RemoteSync.State) {
+            syncState = state
+            updateSubtitle()
+        }
+    }
+
+    private fun updateSubtitle() {
+        val st = syncState
+        if (!board.sync.isShared) {
+            subtitleView.text = "доска · бесконечное поле"
+            subtitleView.setTextColor(Ui.MUTED)
+            return
+        }
+        subtitleView.text = "общая доска · " + (st?.text ?: "подключаюсь…")
+        subtitleView.setTextColor(if (st?.error == true) Ui.BAD else if (st?.busy == true) Ui.WARN else Ui.OK)
+    }
+
+    /** «Совместно»: сделать доску общей или показать код для коллег. */
+    private fun cloudDialog() {
+        val r = remote
+        if (r == null) {
+            AlertDialog.Builder(this).setTitle("Совместная работа")
+                .setMessage("В этой сборке FreeWrite нет адреса сервера. Обновите приложение.")
+                .setPositiveButton("Понятно", null).show()
+            return
+        }
+        if (!board.sync.isShared) {
+            AlertDialog.Builder(this)
+                .setTitle("Совместная работа")
+                .setMessage("Доска будет храниться на сервере FreeWrite (Яндекс Облако). Коллеги подключаются " +
+                    "по коду и видят правки друг друга через несколько секунд — пока доска открыта и есть интернет. " +
+                    "Картинки тоже уйдут на сервер.")
+                .setPositiveButton("Сделать общей") { _, _ ->
+                    hint("Выкладываю доску на сервер…")
+                    r.publish { invite, error ->
+                        if (invite != null) showInvite(invite, first = true)
+                        else AlertDialog.Builder(this).setMessage(error).setPositiveButton("Понятно", null).show()
+                    }
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+            return
+        }
+        showInvite(board.sync.remoteInvite, first = false)
+    }
+
+    private fun showInvite(invite: String, first: Boolean) {
+        val code = Remote.prettyInvite(invite)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24f), dp(8f), dp(24f), 0)
+        }
+        box.addView(Ui.text(this, if (first) "Доска теперь общая. Код для коллег:" else "Код для коллег:", 15f, Ui.INK2))
+        box.addView(Ui.text(this, code, 30f, Ui.ACCENT, bold = true).apply {
+            tag = "invite_code"
+            setTextIsSelectable(true)
+            setPadding(0, dp(6f), 0, dp(6f))
+        })
+        box.addView(Ui.text(this, "Коллега: Ежедневник → «Подключиться по коду» → ввести код.", 14f, Ui.INK2))
+        syncState?.let { box.addView(Ui.text(this, "Состояние: " + it.text, 13f, if (it.error) Ui.BAD else Ui.MUTED).apply { setPadding(0, dp(8f), 0, 0) }) }
+        AlertDialog.Builder(this)
+            .setTitle("Общая доска «${board.title}»")
+            .setView(box)
+            .setPositiveButton("Поделиться кодом") { _, _ ->
+                val text = "Подключись к доске «${board.title}» в FreeWrite: Ежедневник → «Подключиться по коду» → $code"
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text)
+                }, "Отправить код"))
+            }
+            .setNeutralButton("Обновить сейчас") { _, _ -> remote?.syncNow() }
+            .setNegativeButton("Закрыть", null)
+            .show()
     }
 
     /** «Поделиться»: доска файлом в Telegram, WhatsApp, почту — коллега откроет его в FreeWrite. */
@@ -157,6 +255,7 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         engine.close()
+        remote?.close()
         io.shutdown()
         saver.shutdown() // уже начатые сохранения дописываются
         images.close()
@@ -186,7 +285,12 @@ class BoardActivity : Activity(), BoardView.Host {
         row.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(titleView)
-            addView(Ui.mono(this@BoardActivity, "доска · бесконечное поле", 11f).apply { setPadding(dp(4f), 0, dp(10f), 0) })
+            subtitleView = Ui.mono(this@BoardActivity, "доска · бесконечное поле", 11f).apply {
+                setPadding(dp(4f), 0, dp(10f), 0)
+                tag = "board_subtitle"
+                isSingleLine = true
+            }
+            addView(subtitleView)
             setOnClickListener { rename() }
         })
         row.addView(Ui.separator(this))
@@ -221,6 +325,10 @@ class BoardActivity : Activity(), BoardView.Host {
         row.addView(Ui.ToolButton(this, R.drawable.ic_statuses, "Статусы").apply {
             tag = "board_statuses"
             setOnClickListener { statusesDialog() }
+        })
+        row.addView(Ui.ToolButton(this, R.drawable.ic_cloud, "Совместно").apply {
+            tag = "board_cloud"
+            setOnClickListener { cloudDialog() }
         })
         row.addView(Ui.ToolButton(this, R.drawable.ic_share, "Поделиться").apply {
             tag = "board_share"
@@ -441,6 +549,7 @@ class BoardActivity : Activity(), BoardView.Host {
         view.invalidate()
         handler.removeCallbacks(saveRunnable)
         handler.postDelayed(saveRunnable, 500)
+        remote?.kick()
     }
 
     /**

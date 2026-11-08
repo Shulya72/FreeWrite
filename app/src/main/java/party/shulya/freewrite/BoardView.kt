@@ -131,6 +131,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     }
 
     private var mode = Mode.NONE
+
+    /** Никакого жеста сейчас нет — доску можно менять извне (правки коллег с сервера). */
+    val isIdle: Boolean get() = mode == Mode.NONE
     private var activePointer = MotionEvent.INVALID_POINTER_ID
     private var activeIsPen = false
     private var downX = 0f
