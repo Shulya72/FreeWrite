@@ -93,15 +93,27 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         val since = s.remoteSeq
         if (changes.isNotEmpty()) host.onSyncState(State("отправляю…", busy = true))
         net.execute {
+            // Отметка последней дошедшей пачки: если связь оборвётся посреди большой выгрузки,
+            // в следующий раз продолжим с этого места, а не с начала.
             var pushedTo: String? = null
             try {
-                pushedTo = Remote.push(transport, boardId, key, device, changes)
+                Remote.push(transport, boardId, key, device, changes) { pushedTo = it }
                 val pulled = Remote.pull(transport, boardId, key, since)
-                main.post { finish(boardId, pushedTo, pulled, null) }
+                val done = pushedTo
+                main.post { finish(boardId, done, pulled, null) }
             } catch (t: Throwable) {
-                main.post { finish(boardId, pushedTo, null, t) }
+                val done = pushedTo
+                main.post { finish(boardId, done, null, t) }
             }
         }
+    }
+
+    /** Уход с экрана доски: отправить несохранённое на сервер сразу, не дожидаясь паузы. */
+    fun flush() {
+        main.removeCallbacks(kickRunnable)
+        if (!host.board().sync.isShared || closed) return
+        val b = host.board()
+        if (Remote.pending(b).isNotEmpty() || running) syncNow()
     }
 
     private fun finish(boardId: String, pushedTo: String?, pulled: Remote.Pulled?, error: Throwable?) {

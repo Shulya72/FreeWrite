@@ -312,6 +312,7 @@ class Board(
     fun metaJson(): String = JSONObject().apply {
         put("id", id); put("title", title); put("created", created); put("updated", updated)
         put("items", strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size)
+        if (sync.isShared) put("shared", true)
         put("statuses", JSONArray().apply {
             for (st in statuses) put(JSONObject().apply { put("name", st.name); put("color", st.color); put("n", countStatus(st.id)) })
         })
@@ -485,12 +486,15 @@ class BoardMeta(
     val items: Int,
     /** Название, цвет, сколько меток и выносок. */
     val counts: List<Triple<String, Int, Int>>,
+    /** Общая доска (на сервере). */
+    val shared: Boolean = false,
 ) {
     companion object {
         fun parse(o: JSONObject): BoardMeta {
             val a = o.optJSONArray("statuses") ?: JSONArray()
             val counts = (0 until a.length()).map { val j = a.getJSONObject(it); Triple(j.optString("name"), j.optInt("color"), j.optInt("n")) }
-            return BoardMeta(o.getString("id"), o.optString("title", "Доска"), o.optLong("created"), o.optLong("updated"), o.optInt("items"), counts)
+            return BoardMeta(o.getString("id"), o.optString("title", "Доска"), o.optLong("created"), o.optLong("updated"),
+                o.optInt("items"), counts, o.optBoolean("shared"))
         }
     }
 }

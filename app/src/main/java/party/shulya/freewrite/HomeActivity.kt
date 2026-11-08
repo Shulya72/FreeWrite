@@ -179,7 +179,8 @@ class HomeActivity : Activity() {
         val what = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         what.addView(Ui.text(this, b.title, 16f, Ui.INK, bold = true).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END })
         val items = b.items
-        what.addView(Ui.text(this, if (items == 0) "доска · пустая" else "доска · предметов: $items", 13f, Ui.MUTED))
+        val kind = if (b.shared) "общая доска" else "доска"
+        what.addView(Ui.text(this, if (items == 0) "$kind · пустая" else "$kind · предметов: $items", 13f, Ui.MUTED))
         row.addView(what, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         // Счётчики по статусам доски (до трёх самых частых).
         val counts = b.counts.filter { it.third > 0 }.sortedByDescending { it.third }

@@ -132,6 +132,7 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onPause() {
         current?.let { commit(it) }
         saveNow(sync = true)
+        remote?.flush()
         remote?.stop()
         super.onPause()
     }

@@ -82,7 +82,7 @@ class RemoteSyncTest {
         assertEquals(a.entryHashes(), b.entryHashes())
     }
 
-    private fun exchange(t: SyncTransport) {
+    private fun exchange(t: SyncTransport): Board {
         val (va, kb) = twoTablets(t)
         val a = va.board
         val b = kb.board
@@ -119,6 +119,7 @@ class RemoteSyncTest {
         // Ещё круг — ничего не меняется.
         assertEquals(0, cycle(t, va, 5000))
         assertEquals(0, cycle(t, kb, 5000))
+        return a
     }
 
     @Test
@@ -201,8 +202,10 @@ class RemoteSyncTest {
         assumeTrue("адреса сервера нет — проверка пропущена", url.startsWith("https://"))
         val t = HttpTransport(url)
         assertTrue(Remote.ping(t).optBoolean("ok"))
-        exchange(t)
-        println("LIVE сервер: обмен двух планшетов прошёл")
+        val b = exchange(t)
+        // Убрать временную доску с сервера.
+        t.call(org.json.JSONObject().put("op", "delete").put("board", b.id).put("key", b.sync.remoteKey))
+        println("LIVE сервер: обмен двух планшетов прошёл, временная доска удалена")
     }
 
     @Test
