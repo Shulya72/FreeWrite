@@ -27,20 +27,25 @@ class RemoteSyncTest {
 
     private val ctx get() = RuntimeEnvironment.getApplication()
 
+    @org.junit.Before
+    fun named() = Profile.save(ctx, "Владимир", "Шульмин")
+
     @After
     fun tearDown() {
         RemoteSync.testTransport = null
     }
 
     /** Один «планшет»: своя доска и свой номер устройства. */
-    private class Tablet(val board: Board, val device: String)
+    private class Tablet(val board: Board, val device: String) {
+        val name get() = if (device == "vlad01") "Владимир Шульмин" else "Николай Иванов"
+    }
 
     /** Цикл синхронизации, как у RemoteSync (без потоков): отметить, отправить, получить, влить. */
     private fun cycle(t: SyncTransport, tab: Tablet, now: Long): Int {
         val b = tab.board
         b.stamp(tab.device, now)
         val s = b.sync
-        Remote.push(t, b.id, s.remoteKey, tab.device, Remote.pending(b))?.let { if (it > s.pushedRev) s.pushedRev = it }
+        Remote.push(t, b.id, s.remoteKey, tab.device, Remote.pending(b), tab.name)?.let { if (it > s.pushedRev) s.pushedRev = it }
         val p = Remote.pull(t, b.id, s.remoteKey, s.remoteSeq)
         val n = Remote.apply(b, p.rows)
         s.remoteSeq = maxOf(s.remoteSeq, p.next)
@@ -125,6 +130,25 @@ class RemoteSyncTest {
     @Test
     fun twoTabletsThroughServer() {
         exchange(FakeServer())
+    }
+
+    @Test
+    fun authorOfChangesIsKnown() {
+        val t = FakeServer()
+        val (va, kb) = twoTablets(t)
+        assertEquals("коллега знает, кто выложил", "Владимир Шульмин", kb.board.sync.members["vlad01"])
+        kb.board.texts += BoardText(1f, 2f, 24f, "От Николая", Ui.INK)
+        kb.board.texts[0].text = "Правка Николая"
+        kb.board.stamp(kb.device, 3000)
+        val s = kb.board.sync
+        Remote.push(t, kb.board.id, s.remoteKey, kb.device, Remote.pending(kb.board), kb.name)?.let { s.pushedRev = it }
+        val p = Remote.pull(t, va.board.id, va.board.sync.remoteKey, va.board.sync.remoteSeq)
+        val authors = HashMap<String, Int>()
+        assertEquals(2, Remote.apply(va.board, p.rows, authors))
+        assertEquals(mapOf("Николай Иванов" to 2), authors)
+        assertEquals("Николай Иванов", va.board.sync.members["kolya2"])
+        // Участники сохраняются вместе с доской.
+        assertEquals("Николай Иванов", Board.fromJson(org.json.JSONObject(va.board.toJsonString())).sync.members["kolya2"])
     }
 
     @Test

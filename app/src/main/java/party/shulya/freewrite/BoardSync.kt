@@ -51,6 +51,9 @@ class BoardSync {
     var pushedRev = ""
     /** Картинки, которые уже есть на сервере. */
     val uploadedImages = HashSet<String>()
+    /** Участники общей доски: номер планшета → имя (из правок с сервера). */
+    val members = HashMap<String, String>()
+
     /** Отметки правок, только что полученных с сервера (их не надо отправлять обратно). Не сохраняется. */
     val seenRemote = HashMap<String, String>()
 
@@ -104,6 +107,16 @@ class BoardSync {
             sb.append(JSONObject.quote(f))
         }
         sb.append(']')
+        if (members.isNotEmpty()) {
+            sb.append(",\"mb\":{")
+            first = true
+            for ((d, n) in members) {
+                if (!first) sb.append(',')
+                first = false
+                sb.append(JSONObject.quote(d)).append(':').append(JSONObject.quote(n))
+            }
+            sb.append('}')
+        }
         if (isShared) {
             sb.append(",\"r\":{\"k\":").append(JSONObject.quote(remoteKey))
             sb.append(",\"i\":").append(JSONObject.quote(remoteInvite))
@@ -142,6 +155,10 @@ class BoardSync {
                 while (it.hasNext()) { val id = it.next(); s.tomb[id] = m.optString(id, "") }
             }
             o.optJSONArray("pi")?.let { a -> for (i in 0 until a.length()) s.peerImages += a.optString(i) }
+            o.optJSONObject("mb")?.let { m ->
+                val it = m.keys()
+                while (it.hasNext()) { val d = it.next(); s.members[d] = m.optString(d) }
+            }
             o.optJSONObject("r")?.let { r ->
                 s.remoteKey = r.optString("k", "")
                 s.remoteInvite = r.optString("i", "")

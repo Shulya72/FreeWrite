@@ -228,7 +228,8 @@ def op_push(req, ctx):
     """Отправить правки. Принимаются только более поздние, чем на сервере."""
     b, key = _board(req)
     changes = _changes(req)
-    seq, applied = store().push(b, key, changes, _device(req), now_ms(), MAX_OBJECTS)
+    author = _str(req, "author", required=False, limit=80).strip()
+    seq, applied = store().push(b, key, changes, _device(req), now_ms(), MAX_OBJECTS, author)
     return {"seq": seq, "applied": applied, "ignored": len(changes) - applied}
 
 
@@ -246,6 +247,8 @@ def op_pull(req, ctx):
         if out and size > MAX_PULL_BYTES:
             break
         e = {"id": r["id"], "rev": r["rev"], "k": r["kind"], "s": r["seq"]}
+        if r.get("author"):
+            e["a"] = r["author"]
         if r["deleted"]:
             e["x"] = 1
         else:

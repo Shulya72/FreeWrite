@@ -73,7 +73,9 @@ class ImportActivity : Activity() {
         card.addView(message)
         buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
         card.addView(buttons, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        outer.addView(card, FrameLayout.LayoutParams(dp(520f), Ui.WRAP).apply { gravity = Gravity.CENTER })
+        // По ширине экрана, но не шире 520 dp (на телефоне — с полями по краям).
+        val w = minOf(dp(520f), resources.displayMetrics.widthPixels - dp(32f))
+        outer.addView(card, FrameLayout.LayoutParams(w, Ui.WRAP).apply { gravity = Gravity.CENTER })
         return outer
     }
 

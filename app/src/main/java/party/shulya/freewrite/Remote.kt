@@ -59,8 +59,14 @@ object Remote {
     /** Правка для сервера: data = null — удаление. */
     class Change(val id: String, val rev: String, val kind: String, val data: String?)
 
-    /** Правка с сервера. */
-    class Row(val id: String, val rev: String, val kind: String, val data: String?, val seq: Long)
+    /** Правка с сервера (author — имя того, кто правил, если он представился). */
+    class Row(val id: String, val rev: String, val kind: String, val data: String?, val seq: Long, val author: String = "")
+
+    /** Номер планшета из отметки правки. */
+    fun deviceOf(rev: String): String = rev.substringAfterLast('.', "")
+
+    /** Время правки из отметки (мс). */
+    fun timeOf(rev: String): Long = rev.substringBefore('.').toLongOrNull() ?: 0L
 
     class Pulled(val rows: List<Row>, val next: Long, val seq: Long, val title: String)
 
@@ -124,11 +130,12 @@ object Remote {
      * Влить правки с сервера в доску (в главном потоке). Свои правки новее — остаются (уйдут на сервер).
      * Возвращает, сколько предметов изменилось.
      */
-    fun apply(board: Board, rows: List<Row>): Int {
+    fun apply(board: Board, rows: List<Row>, authors: MutableMap<String, Int>? = null): Int {
         val s = board.sync
         val take = LinkedHashMap<String, Row>()
         for (r in rows) {
             s.observe(r.rev)
+            if (r.author.isNotBlank()) deviceOf(r.rev).takeIf { it.isNotEmpty() }?.let { s.members[it] = r.author }
             val lr = s.rev(r.id)
             if (lr != null && r.rev <= lr) {
                 if (r.rev == lr) s.seenRemote[r.id] = r.rev
@@ -146,15 +153,16 @@ object Remote {
         var n = 0
         for (r in take.values) {
             s.seenRemote[r.id] = r.rev
+            val who = r.author.ifBlank { "коллега" }
             if (r.data == null) {
                 s.objs.remove(r.id)
                 s.tomb[r.id] = r.rev
-                if (before[r.id] != null && after[r.id] == null) n++
+                if (before[r.id] != null && after[r.id] == null) { n++; authors?.merge(who, 1, Int::plus) }
             } else {
                 val h = after[r.id] ?: continue
                 s.objs[r.id] = BoardSync.Entry(h, r.rev)
                 s.tomb.remove(r.id)
-                if (!r.id.startsWith("~") && before[r.id] != h) n++
+                if (!r.id.startsWith("~") && before[r.id] != h) { n++; authors?.merge(who, 1, Int::plus) }
             }
         }
         return n
@@ -234,7 +242,7 @@ object Remote {
 
     /** Отправить правки пачками. Возвращает отметку последней отправленной правки (или null). */
     fun push(t: SyncTransport, boardId: String, key: String, device: String, changes: List<Change>,
-             onBatch: (String) -> Unit = {}): String? {
+             author: String = "", onBatch: (String) -> Unit = {}): String? {
         var last: String? = null
         for (b in batches(changes)) {
             val arr = JSONArray()
@@ -243,7 +251,7 @@ object Remote {
                 if (c.data == null) o.put("x", 1) else o.put("d", c.data)
                 arr.put(o)
             }
-            t.call(req("push", boardId, key).put("device", device).put("changes", arr))
+            t.call(req("push", boardId, key).put("device", device).put("author", author).put("changes", arr))
             last = b.last().rev
             onBatch(last)
         }
@@ -264,7 +272,7 @@ object Remote {
             for (i in 0 until a.length()) {
                 val c = a.getJSONObject(i)
                 rows += Row(c.getString("id"), c.getString("rev"), c.optString("k"),
-                    if (c.optInt("x") == 1) null else c.optString("d"), c.optLong("s"))
+                    if (c.optInt("x") == 1) null else c.optString("d"), c.optLong("s"), c.optString("a"))
             }
             cur = maxOf(cur, o.optLong("next", cur))
             if (!o.optBoolean("more")) break

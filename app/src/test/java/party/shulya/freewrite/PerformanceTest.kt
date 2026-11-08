@@ -31,6 +31,9 @@ class PerformanceTest {
 
     private val ctx get() = RuntimeEnvironment.getApplication()
 
+    @org.junit.Before
+    fun tabletWithPen() = Input.markStylus(ctx)
+
     private fun ms(t0: Long) = (System.nanoTime() - t0) / 1e6
 
     @Test

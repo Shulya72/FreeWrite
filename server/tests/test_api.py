@@ -50,7 +50,7 @@ class MemoryStore:
         self.invites[invite] = board_id
         return True
 
-    def push(self, board_id, key, changes, device, now, max_objects):
+    def push(self, board_id, key, changes, device, now, max_objects, author=""):
         b = self._auth(board_id, key)
         seq, count, out = b["seq"], b["n_objects"], []
         for c in changes:
@@ -60,7 +60,7 @@ class MemoryStore:
             if old is None:
                 count += 1
             seq += 1
-            out.append(dict(c, seq=seq))
+            out.append(dict(c, seq=seq, author=author))
         if count > max_objects:
             raise ApiError(507, "full", "full")
         for r in out:
@@ -198,7 +198,7 @@ class ApiTest(unittest.TestCase):
         text = {"id": "t1", "rev": rev(1000), "k": "text", "d": '{"id":"t1","text":"Захватка 1"}'}
         stroke = {"id": "s1", "rev": rev(1000, 1), "k": "stroke", "d": '{"id":"s1","pts":[1,2,3]}'}
         title = {"id": "~title", "rev": rev(1000, 2), "k": "meta", "d": '{"title":"Секция 3"}'}
-        r = self.ok("push", board=BOARD, key=key, device="vlad01", changes=[text, stroke, title])
+        r = self.ok("push", board=BOARD, key=key, device="vlad01", author="Владимир Шульмин", changes=[text, stroke, title])
         self.assertEqual((3, 3, 0), (r["seq"], r["applied"], r["ignored"]))
         # Повтор того же — ничего не меняет.
         r = self.ok("push", board=BOARD, key=key, changes=[text, stroke])
@@ -222,6 +222,8 @@ class ApiTest(unittest.TestCase):
         by = {c["id"]: c for c in p["changes"]}
         self.assertEqual(3, len(by))
         self.assertIn("сдано", by["t1"]["d"])
+        self.assertEqual("Владимир Шульмин", by["~title"]["a"])   # автор правки
+        self.assertNotIn("a", by["t1"])                          # правка без имени — без автора
         self.assertEqual(1, by["s1"]["x"])
         self.assertNotIn("d", by["s1"])
         self.assertEqual([3, 4, 5], [c["s"] for c in p["changes"]])

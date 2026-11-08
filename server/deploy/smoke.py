@@ -78,7 +78,7 @@ try:
     t1 = {"id": "t1", "rev": rev(now), "k": "text", "d": json.dumps({"id": "t1", "text": "Захватка №1"})}
     s1 = {"id": "s1", "rev": rev(now, 1), "k": "stroke", "d": json.dumps({"id": "s1", "pts": [1, 2, 0.5]})}
     ti = {"id": "~title", "rev": rev(now, 2), "k": "meta", "d": json.dumps({"title": "Проверка — секция 3"})}
-    r = ok("push", board=board, key=key, device="smoke1", changes=[t1, s1, ti])
+    r = ok("push", board=board, key=key, device="smoke1", author="Проверка Сервера", changes=[t1, s1, ti])
     check(r["applied"] == 3 and r["seq"] == 3, "отправлены 3 правки")
     r = ok("push", board=board, key=key, changes=[t1, s1])
     check(r["applied"] == 0, "повтор тех же правок ничего не меняет")
@@ -94,6 +94,7 @@ try:
     check("сдано" in json.loads(by["t1"]["d"])["text"], "у надписи — поздняя правка")
     check(by["s1"].get("x") == 1, "удаление штриха дошло")
     check(p["title"] == "Проверка — секция 3", "название доски обновилось")
+    check(by["~title"].get("a") == "Проверка Сервера", "у правки виден автор")
     check(ok("pull", board=board, key=key, since=5)["changes"] == [], "новых правок после последней нет")
 
     many = [{"id": "m%04d" % i, "rev": rev(now + 3000, i), "k": "stroke", "d": "{}"} for i in range(700)]

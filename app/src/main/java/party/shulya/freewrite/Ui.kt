@@ -94,6 +94,58 @@ object Ui {
         }
     }
 
+    /**
+     * Ряд, который переносит элементы на следующую строку, если не помещаются (узкий экран
+     * телефона). Элементы в строке выровнены по нижнему краю.
+     */
+    class FlowRow(ctx: Context) : ViewGroup(ctx) {
+        var hGap = 0
+        var vGap = 0
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val maxW = MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight
+            val limit = if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.UNSPECIFIED) Int.MAX_VALUE else maxW
+            var x = 0; var y = 0; var rowH = 0; var widest = 0
+            for (i in 0 until childCount) {
+                val c = getChildAt(i)
+                if (c.visibility == GONE) continue
+                c.measure(MeasureSpec.makeMeasureSpec(maxOf(0, maxW), if (limit == Int.MAX_VALUE) MeasureSpec.UNSPECIFIED else MeasureSpec.AT_MOST),
+                    MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
+                if (x > 0 && x + c.measuredWidth > limit) { x = 0; y += rowH + vGap; rowH = 0 }
+                x += c.measuredWidth + hGap
+                rowH = maxOf(rowH, c.measuredHeight)
+                widest = maxOf(widest, x - hGap)
+            }
+            setMeasuredDimension(resolveSize(widest + paddingLeft + paddingRight, widthMeasureSpec),
+                resolveSize(y + rowH + paddingTop + paddingBottom, heightMeasureSpec))
+        }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            val limit = r - l - paddingLeft - paddingRight
+            // Сначала разбить на строки, потом расставить (по нижнему краю строки).
+            val rows = ArrayList<MutableList<View>>()
+            var cur = ArrayList<View>(); var x = 0
+            for (i in 0 until childCount) {
+                val c = getChildAt(i)
+                if (c.visibility == GONE) continue
+                if (cur.isNotEmpty() && x + c.measuredWidth > limit) { rows += cur; cur = ArrayList(); x = 0 }
+                cur += c; x += c.measuredWidth + hGap
+            }
+            if (cur.isNotEmpty()) rows += cur
+            var y = paddingTop
+            for (row in rows) {
+                val h = row.maxOf { it.measuredHeight }
+                var cx = paddingLeft
+                for (c in row) {
+                    val top = y + h - c.measuredHeight
+                    c.layout(cx, top, cx + c.measuredWidth, top + c.measuredHeight)
+                    cx += c.measuredWidth + hGap
+                }
+                y += h + vGap
+            }
+        }
+    }
+
     fun separator(ctx: Context): View = View(ctx).apply {
         setBackgroundColor(RULE)
         layoutParams = LinearLayout.LayoutParams(dp(ctx, 1f), MATCH).apply {

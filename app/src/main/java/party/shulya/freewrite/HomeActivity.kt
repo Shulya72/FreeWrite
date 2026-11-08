@@ -31,6 +31,16 @@ class HomeActivity : Activity() {
     private lateinit var updateButton: TextView
     private var release: Updater.Release? = null
     private var downloaded: File? = null
+    private var profileButton: Ui.ToolButton? = null
+
+    private fun profileLabel() = Profile.name(this).ifEmpty { "Как вас зовут?" }
+
+    private fun refreshProfile() {
+        profileButton?.let { b ->
+            val caption = (0 until b.childCount).map { b.getChildAt(it) }.filterIsInstance<TextView>().firstOrNull()
+            caption?.text = profileLabel()
+        }
+    }
 
     private fun dp(v: Float) = Ui.dp(this, v)
 
@@ -40,6 +50,10 @@ class HomeActivity : Activity() {
         boards = BoardStore(this)
         setContentView(buildUi())
         checkUpdates(silent = true)
+        // Первый запуск: представиться (для общих досок). Можно «Позже».
+        if (!Profile.isSet(this) && !Profile.skipped(this)) {
+            window.decorView.post { if (!isFinishing) Profile.ask(this, required = false) { refreshProfile() } }
+        }
     }
 
     override fun onResume() {
@@ -87,18 +101,23 @@ class HomeActivity : Activity() {
         // Две большие кнопки
         val starts = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         starts.addView(startCard(R.drawable.ic_note, "Новая запись",
-            "Совещание, планёрка, звонок. Пишете пером где угодно — слова сами собираются в текст.", true) { newNote() },
+            "Совещание, планёрка, звонок. Пишете от руки где угодно — слова сами собираются в текст.", true) { newNote() },
             LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginEnd = dp(7f) })
         starts.addView(startCard(R.drawable.ic_board, "Новая доска",
-            "Бесконечное поле: картинки, схемы, надписи, метки «сдано / не сдано». Пальцем двигаете, пером пишете.", true) { newBoard() },
+            "Бесконечное поле: чертежи, надписи, метки статусов, выноски. Можно работать вместе с коллегами.", true) { newBoard() },
             LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginStart = dp(7f) })
         col.addView(starts, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(18f) })
 
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(list, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(10f) })
 
-        // Низ: проверка планшета, обновления, версия
-        val foot = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        // Низ: кнопки переносятся на следующую строку, если не помещаются (телефон).
+        val foot = Ui.FlowRow(this).apply { hGap = dp(4f); vGap = dp(6f); tag = "home_footer" }
+        profileButton = Ui.ToolButton(this, R.drawable.ic_person, profileLabel()).apply {
+            tag = "home_profile"
+            setOnClickListener { Profile.ask(this@HomeActivity, required = false) { refreshProfile() } }
+        }
+        foot.addView(profileButton)
         foot.addView(Ui.ToolButton(this, R.drawable.ic_pulse, "Проверка планшета").apply {
             setOnClickListener { startActivity(Intent(this@HomeActivity, DiagnosticsActivity::class.java)) }
         })
@@ -113,9 +132,11 @@ class HomeActivity : Activity() {
             tag = "home_join"
             setOnClickListener { joinDialog() }
         })
-        foot.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        foot.addView(Ui.mono(this, "версия ${BuildConfig.VERSION_NAME}", 12f))
         col.addView(foot, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(26f) })
+        col.addView(Ui.mono(this, "версия ${BuildConfig.VERSION_NAME}", 12f).apply {
+            gravity = Gravity.END
+            setPadding(0, dp(8f), dp(4f), 0)
+        }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         return scroll
     }
 
@@ -147,7 +168,7 @@ class HomeActivity : Activity() {
             store.list().map { n -> n.created to { noteRow(n) } } +
                 boards.list().map { b -> b.created to { boardRow(b) } }
         if (entries.isEmpty()) {
-            list.addView(Ui.text(this, "Записей пока нет. Нажмите «Новая запись» и пишите пером в любом месте листа.", 15f, Ui.INK2).apply {
+            list.addView(Ui.text(this, "Записей пока нет. Нажмите «Новая запись» и пишите от руки в любом месте листа.", 15f, Ui.INK2).apply {
                 setPadding(dp(2f), dp(18f), dp(2f), dp(4f))
             })
             return
@@ -273,7 +294,10 @@ class HomeActivity : Activity() {
         val dialog = AlertDialog.Builder(this)
             .setTitle("Подключиться к общей доске")
             .setView(box)
-            .setPositiveButton("Подключиться") { _, _ -> join(t, edit.text.toString()) }
+            .setPositiveButton("Подключиться") { _, _ ->
+                val code = edit.text.toString()
+                Profile.require(this) { refreshProfile(); join(t, code) }
+            }
             .setNegativeButton("Отмена", null)
             .create()
         dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)

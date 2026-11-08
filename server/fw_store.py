@@ -34,6 +34,7 @@ TABLES = [
     ("objects", """
         CREATE TABLE objects (
             board_id Utf8, id Utf8, rev Utf8, kind Utf8, deleted Bool, body Utf8, seq Uint64, device Utf8,
+            author Utf8,
             PRIMARY KEY (board_id, id),
             INDEX idx_seq GLOBAL SYNC ON (board_id, seq)
         )"""),
@@ -66,7 +67,7 @@ SELECT id, rev FROM objects WHERE board_id = $b AND id IN $ids;
 """
 Q_UPSERT = """
 DECLARE $rows AS List<Struct<board_id: Utf8, id: Utf8, rev: Utf8, kind: Utf8, deleted: Bool,
-                             body: Utf8, seq: Uint64, device: Utf8>>;
+                             body: Utf8, seq: Uint64, device: Utf8, author: Utf8>>;
 UPSERT INTO objects SELECT * FROM AS_TABLE($rows);
 """
 Q_BOARD_UPDATE = """
@@ -77,7 +78,7 @@ WHERE board_id = $b;
 """
 Q_PULL = """
 DECLARE $b AS Utf8; DECLARE $s AS Uint64; DECLARE $n AS Uint64;
-SELECT id, rev, kind, deleted, body, seq FROM objects VIEW idx_seq
+SELECT id, rev, kind, deleted, body, seq, author FROM objects VIEW idx_seq
 WHERE board_id = $b AND seq > $s
 ORDER BY seq
 LIMIT $n;
@@ -151,6 +152,11 @@ class YdbStore:
                 except (ydb.SchemeError, ydb.NotFound):
                     print("create table %s" % name)
                     session.execute_scheme(ddl)
+            # 0.11: автор правки — в таблицах, созданных раньше, добавить колонку.
+            d = session.describe_table("%s/objects" % self.database)
+            if "author" not in [c.name for c in d.columns]:
+                print("add column objects.author")
+                session.execute_scheme("ALTER TABLE objects ADD COLUMN author Utf8;")
         self._run(fn)
 
     def _read(self, query: str, params: dict):
@@ -209,7 +215,7 @@ class YdbStore:
 
     # ------------------------------------------------------------ правки
 
-    def push(self, board_id, key, changes, device, now, max_objects):
+    def push(self, board_id, key, changes, device, now, max_objects, author=""):
         """Принять правки, которые позже серверных. Вернуть (seq доски, сколько принято)."""
         def fn(session):
             tx = session.transaction(ydb.SerializableReadWrite())
@@ -238,7 +244,8 @@ class YdbStore:
                     count += 1
                 seq += 1
                 out.append({"board_id": board_id, "id": c["id"], "rev": c["rev"], "kind": c["kind"],
-                            "deleted": c["deleted"], "body": c["body"], "seq": seq, "device": device})
+                            "deleted": c["deleted"], "body": c["body"], "seq": seq, "device": device,
+                            "author": author})
             if count > max_objects:
                 tx.rollback()
                 raise ApiError(507, "full", "На доске слишком много предметов для сервера")
@@ -272,7 +279,7 @@ class YdbStore:
             rs = tx.execute(session.prepare(Q_PULL), {"$b": board_id, "$s": since, "$n": limit},
                             commit_tx=True)
             out = [{"id": r.id, "rev": r.rev, "kind": r.kind or "", "deleted": bool(r.deleted),
-                    "body": r.body or "", "seq": r.seq} for r in rs[0].rows]
+                    "body": r.body or "", "seq": r.seq, "author": r.author or ""} for r in rs[0].rows]
             return b["seq"], b["title"], out
         return self._run(fn)
 

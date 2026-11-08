@@ -32,7 +32,7 @@ import kotlin.math.roundToInt
  */
 class BoardActivity : Activity(), BoardView.Host {
 
-    enum class Tool { WRITE, PEN, MARKER, SHAPE, FILL, ERASER, SELECT, STATUS, CALLOUT, PIPETTE }
+    enum class Tool { HAND, WRITE, TEXT, PEN, MARKER, SHAPE, FILL, ERASER, SELECT, STATUS, CALLOUT, PIPETTE }
 
     private lateinit var store: BoardStore
     private lateinit var noteStore: NoteStore
@@ -59,6 +59,10 @@ class BoardActivity : Activity(), BoardView.Host {
     private var tool = Tool.PEN
     private var penColor = Ui.INK
     private var fingerWrites = false
+    /** На этом устройстве уже касались пером (планшет с пером). Нет — палец работает инструментом. */
+    private var stylus = false
+    private var fingerBox: CheckBox? = null
+    private var bottomTools: LinearLayout? = null
     private lateinit var images: BoardImages
     private val saver = Executors.newSingleThreadExecutor()
     private val undoStack = ArrayDeque<BoardSnapshot>()
@@ -109,6 +113,7 @@ class BoardActivity : Activity(), BoardView.Host {
         super.onCreate(savedInstanceState)
         store = BoardStore(this)
         noteStore = NoteStore(this)
+        stylus = Input.stylusSeen(this)
         val id = intent.getStringExtra(EXTRA_ID)
         board = id?.let { store.load(it) } ?: Board.create("Доска").also { store.save(it) }
         loadedImports = BoardStore.importCount(board.id)
@@ -119,7 +124,8 @@ class BoardActivity : Activity(), BoardView.Host {
         RemoteSync.transport()?.let { remote = RemoteSync(this, it, remoteHost) }
         updateSubtitle()
         engine.start(this)
-        setTool(Tool.PEN)
+        // Без пера (телефон) начинаем с «Руки»: пальцем двигать и выбирать. С пером — с «Ручки».
+        setTool(if (stylus) Tool.PEN else Tool.HAND, quiet = true)
         updateBanner()
         updateZoom()
         if (board.isEmpty && board.camX == 0f && board.camY == 0f) view.post { view.fitAll() }
@@ -164,13 +170,15 @@ class BoardActivity : Activity(), BoardView.Host {
         override fun board(): Board = board
         override fun canApply(): Boolean = current == null && committing.isEmpty() && view.isIdle
         override fun saveBoard() = saveNow()
-        override fun onRemoteApplied(changed: Int) {
+        override fun onRemoteApplied(changed: Int, authors: Map<String, Int>) {
             // Отмена после чужих правок вернула бы их назад у всех — поэтому её история сбрасывается.
             undoStack.clear(); redoStack.clear()
             titleView.text = board.title
             view.pruneSelection()
             view.invalidate()
-            hint("Пришли правки коллег: $changed")
+            val who = authors.entries.sortedByDescending { it.value }.joinToString(", ") { "${it.key} — ${it.value}" }
+            hint(if (who.isNotEmpty()) "Правки: $who" else "Пришли правки коллег: $changed", 3500)
+            if (view.selection.isNotEmpty()) buildSelectionBar()
         }
         override fun onImagesArrived() { view.invalidate() }
         override fun onSyncState(state: RemoteSync.State) {
@@ -210,7 +218,7 @@ class BoardActivity : Activity(), BoardView.Host {
                 .setMessage("Доска будет храниться на сервере FreeWrite (Яндекс Облако). Коллеги подключаются " +
                     "по коду и видят правки друг друга через несколько секунд — пока доска открыта и есть интернет. " +
                     "Картинки тоже уйдут на сервер.")
-                .setPositiveButton("Сделать общей") { _, _ ->
+                .setPositiveButton("Сделать общей") { _, _ -> Profile.require(this) {
                     val wait = AlertDialog.Builder(this)
                         .setTitle("Выкладываю доску на сервер…")
                         .setMessage("Обычно несколько секунд. Сейчас появится код для коллег.")
@@ -223,7 +231,7 @@ class BoardActivity : Activity(), BoardView.Host {
                         else AlertDialog.Builder(this).setTitle("Не получилось").setMessage(error)
                             .setPositiveButton("Понятно", null).show()
                     }
-                }
+                } }
                 .setNegativeButton("Отмена", null)
                 .show()
             return
@@ -286,38 +294,58 @@ class BoardActivity : Activity(), BoardView.Host {
 
     private fun buildUi() {
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Ui.DESK) }
-        val row = LinearLayout(this)
-        row.addView(Ui.ToolButton(this, R.drawable.ic_back, "Назад").apply {
+        val phone = Input.isPhone(this)
+        val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        top.addView(Ui.ToolButton(this, R.drawable.ic_back, "Назад").apply {
             minimumWidth = dp(44f)
             setOnClickListener { onBackPressed() }
         })
         titleView = Ui.text(this, board.title, 16f, Ui.INK, bold = true).apply {
-            maxWidth = dp(200f); isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = dp(if (phone) 400f else 200f); isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
             setPadding(dp(4f), 0, dp(10f), 0)
         }
-        row.addView(LinearLayout(this).apply {
+        val titleBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(titleView)
             subtitleView = Ui.mono(this@BoardActivity, "доска · бесконечное поле", 11f).apply {
                 setPadding(dp(4f), 0, dp(10f), 0)
                 tag = "board_subtitle"
                 isSingleLine = true
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 // У общей доски — код для коллег; нажать — окно с кодом и «Поделиться кодом».
                 setOnClickListener { if (board.sync.isShared) showInvite(board.sync.remoteInvite, first = false) else rename() }
             }
             addView(subtitleView)
             setOnClickListener { rename() }
-        })
-        row.addView(Ui.separator(this))
-        addTool(row, Tool.WRITE, R.drawable.ic_write, "В текст")
-        addTool(row, Tool.PEN, R.drawable.ic_pen, "Ручка")
-        addTool(row, Tool.MARKER, R.drawable.ic_marker, "Маркер")
-        addTool(row, Tool.SHAPE, R.drawable.ic_shapes, "Фигуры")
-        addTool(row, Tool.FILL, R.drawable.ic_fill, "Заливка")
-        addTool(row, Tool.ERASER, R.drawable.ic_eraser, "Ластик")
-        addTool(row, Tool.SELECT, R.drawable.ic_lasso, "Выделить")
-        addTool(row, Tool.STATUS, R.drawable.ic_status, "Метка")
-        addTool(row, Tool.CALLOUT, R.drawable.ic_callout, "Выноска")
+        }
+        if (phone) top.addView(titleBox, LinearLayout.LayoutParams(0, Ui.WRAP, 1f)) else top.addView(titleBox)
+        val undoButton = Ui.ToolButton(this, R.drawable.ic_undo, "Отменить").apply { tag = "board_undo"; setOnClickListener { undo() } }
+        val redoButton = Ui.ToolButton(this, R.drawable.ic_redo, "Вернуть").apply { setOnClickListener { redo() } }
+        val cloudButton = Ui.ToolButton(this, R.drawable.ic_cloud, "Совместно").apply {
+            tag = "board_cloud"
+            setOnClickListener { cloudDialog() }
+        }
+
+        val tools = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        // Без пера главное — двигать, метки, выноски, надписи с клавиатуры; с пером — письмо и рисование.
+        val order = if (stylus) listOf(Tool.HAND, Tool.WRITE, Tool.PEN, Tool.MARKER, Tool.SHAPE, Tool.STATUS,
+            Tool.CALLOUT, Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.TEXT)
+        else listOf(Tool.HAND, Tool.STATUS, Tool.CALLOUT, Tool.TEXT, Tool.PEN, Tool.MARKER, Tool.SHAPE,
+            Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.WRITE)
+        for (t in order) when (t) {
+            Tool.HAND -> addTool(tools, t, R.drawable.ic_hand, "Рука")
+            Tool.TEXT -> addTool(tools, t, R.drawable.ic_text, "Текст")
+            Tool.WRITE -> addTool(tools, t, R.drawable.ic_write, "В текст")
+            Tool.PEN -> addTool(tools, t, R.drawable.ic_pen, "Ручка")
+            Tool.MARKER -> addTool(tools, t, R.drawable.ic_marker, "Маркер")
+            Tool.SHAPE -> addTool(tools, t, R.drawable.ic_shapes, "Фигуры")
+            Tool.STATUS -> addTool(tools, t, R.drawable.ic_status, "Метка")
+            Tool.CALLOUT -> addTool(tools, t, R.drawable.ic_callout, "Выноска")
+            Tool.FILL -> addTool(tools, t, R.drawable.ic_fill, "Заливка")
+            Tool.ERASER -> addTool(tools, t, R.drawable.ic_eraser, "Ластик")
+            Tool.SELECT -> addTool(tools, t, R.drawable.ic_lasso, "Выделить")
+            Tool.PIPETTE -> {}
+        }
         // Три последних цвета и «Цвет» — палитра из 24 цветов и пипетка.
         for (i in 0 until 3) {
             val v = View(this).apply {
@@ -325,38 +353,48 @@ class BoardActivity : Activity(), BoardView.Host {
                 tag = "board_quick_color_$i"
                 setOnClickListener { setColor(ColorKit.recent(this@BoardActivity)[i], remember = false) }
             }
-            row.addView(v, LinearLayout.LayoutParams(dp(24f), dp(24f)).apply { setMargins(dp(5f), 0, dp(5f), 0) })
+            tools.addView(v, LinearLayout.LayoutParams(dp(24f), dp(24f)).apply { setMargins(dp(5f), 0, dp(5f), 0) })
             quickColors += v
         }
-        row.addView(Ui.ToolButton(this, R.drawable.ic_palette, "Цвет").apply {
+        tools.addView(Ui.ToolButton(this, R.drawable.ic_palette, "Цвет").apply {
             tag = "board_tool_palette"
             setOnClickListener { ColorKit.showPalette(this@BoardActivity, penColor, { setColor(it) }, { startPipette(forSelection = false) }) }
         })
-        row.addView(Ui.separator(this))
-        row.addView(Ui.ToolButton(this, R.drawable.ic_image, "Картинка").apply { setOnClickListener { pickImage() } })
-        row.addView(Ui.ToolButton(this, R.drawable.ic_undo, "Отменить").apply { setOnClickListener { undo() } })
-        row.addView(Ui.ToolButton(this, R.drawable.ic_redo, "Вернуть").apply { setOnClickListener { redo() } })
-        row.addView(Ui.ToolButton(this, R.drawable.ic_fit, "Всё").apply { setOnClickListener { view.fitAll() } })
-        row.addView(Ui.ToolButton(this, R.drawable.ic_statuses, "Статусы").apply {
+        tools.addView(Ui.separator(this))
+        tools.addView(Ui.ToolButton(this, R.drawable.ic_image, "Картинка").apply { setOnClickListener { pickImage() } })
+        if (!phone) { tools.addView(undoButton); tools.addView(redoButton) }
+        tools.addView(Ui.ToolButton(this, R.drawable.ic_fit, "Всё").apply { setOnClickListener { view.fitAll() } })
+        tools.addView(Ui.ToolButton(this, R.drawable.ic_statuses, "Статусы").apply {
             tag = "board_statuses"
             setOnClickListener { statusesDialog() }
         })
-        row.addView(Ui.ToolButton(this, R.drawable.ic_cloud, "Совместно").apply {
-            tag = "board_cloud"
-            setOnClickListener { cloudDialog() }
-        })
-        row.addView(Ui.ToolButton(this, R.drawable.ic_share, "Поделиться").apply {
+        if (!phone) tools.addView(cloudButton)
+        tools.addView(Ui.ToolButton(this, R.drawable.ic_share, "Файлом").apply {
             tag = "board_share"
             setOnClickListener { shareBoard() }
         })
-        row.addView(Ui.separator(this))
-        row.addView(CheckBox(this).apply {
-            text = "Палец пишет"; textSize = 13f; setTextColor(Ui.INK2)
+        // «Палец рисует» — только на устройстве с пером (без пера палец и так рисует инструментом).
+        fingerBox = CheckBox(this).apply {
+            text = "Палец рисует"; textSize = 13f; setTextColor(Ui.INK2)
             buttonTintList = ColorStateList.valueOf(Ui.ACCENT)
+            tag = "board_finger_draws"
+            visibility = if (stylus) View.VISIBLE else View.GONE
             setOnCheckedChangeListener { _, on -> fingerWrites = on }
-        })
-        root.addView(Ui.toolbar(this, row), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
+        tools.addView(fingerBox)
+        if (phone) {
+            top.addView(undoButton)
+            top.addView(redoButton)
+            top.addView(cloudButton)
+            top.setBackgroundColor(Ui.PAPER)
+            root.addView(top, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        } else {
+            top.addView(Ui.separator(this))
+            top.addView(tools)
+            root.addView(Ui.toolbar(this, top), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
         root.addView(View(this).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+        bottomTools = if (phone) tools else null
 
         banner = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
@@ -408,10 +446,22 @@ class BoardActivity : Activity(), BoardView.Host {
             tag = "selection_bar"
             visibility = View.GONE
         }
-        area.addView(selBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+        // На узком экране кнопок больше, чем помещается, — панель прокручивается вбок.
+        val selScroll = android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            setPadding(dp(8f), 0, dp(8f), 0)
+            addView(selBar)
+        }
+        area.addView(selScroll, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = dp(10f)
         })
         root.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
+        bottomTools?.let { tools ->
+            // Телефон: инструменты внизу, под большим пальцем.
+            root.addView(View(this).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+            root.addView(Ui.toolbar(this, tools).apply { tag = "board_bottom_tools" }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
         handler.postDelayed({ hint("Пальцем — двигать и масштабировать, пером — писать и рисовать", 3500) }, 300)
     }
 
@@ -422,17 +472,25 @@ class BoardActivity : Activity(), BoardView.Host {
         row.addView(b)
     }
 
-    private fun setTool(t: Tool) {
+    private fun setTool(t: Tool, quiet: Boolean = false) {
         if (t != Tool.WRITE) current?.let { commit(it) }
         tool = t
         for ((k, v) in toolButtons) v.selectedTool = k == t
         refreshColors()
         if (t != Tool.SHAPE) shapeTool.reset()
-        if (t == Tool.STATUS) hint("Коснитесь пером — метка статуса. Касание метки — следующий статус, подержать — список", 3500)
-        if (t == Tool.FILL) hint("Обведите пером захватку — она зальётся выбранным цветом", 3500)
-        if (t == Tool.CALLOUT) hint("Проведите пером от места на чертеже туда, где будет надпись. От надписи — ещё указатель", 4000)
-        if (t == Tool.SELECT) hint("Обведите, что выделить. Касание — один объект. Доску двигать — двумя пальцами", 3500)
-        if (t == Tool.SHAPE) hint("Нарисуйте линию, стрелку, квадрат, круг или треугольник — станет ровной фигурой", 3500)
+        if (quiet) return
+        val two = if (stylus) "" else " Доску двигать — двумя пальцами"
+        when (t) {
+            Tool.HAND -> hint("Пальцем — двигать доску, касание — выбрать, касание метки — следующий статус. Два пальца — приблизить", 4000)
+            Tool.TEXT -> hint("Коснитесь, где написать, — откроется клавиатура", 3000)
+            Tool.STATUS -> hint("Коснитесь $penWord — метка статуса. Касание метки — следующий статус, подержать — список", 3500)
+            Tool.FILL -> hint("Обведите $penWord захватку — она зальётся выбранным цветом.$two", 3500)
+            Tool.CALLOUT -> hint("Проведите $penWord от места на чертеже туда, где будет надпись.$two", 4000)
+            Tool.SELECT -> hint("Обведите, что выделить. Касание — один объект. Доску двигать — двумя пальцами", 3500)
+            Tool.SHAPE -> hint("Нарисуйте линию, стрелку, квадрат, круг или треугольник — станет ровной фигурой.$two", 3500)
+            Tool.PEN, Tool.MARKER, Tool.WRITE, Tool.ERASER -> if (!stylus) hint("Один палец — ${if (t == Tool.ERASER) "стирать" else "рисовать"}, два пальца — двигать и приближать доску", 3000)
+            else -> {}
+        }
     }
 
     private fun colorTool(t: Tool) = t == Tool.PEN || t == Tool.MARKER || t == Tool.SHAPE || t == Tool.FILL
@@ -670,7 +728,68 @@ class BoardActivity : Activity(), BoardView.Host {
 
     override fun board(): Board = board
     override fun tool(): Tool = tool
-    override fun fingerWrites(): Boolean = fingerWrites
+    override fun fingerWrites(): Boolean = fingerWrites || !stylus
+
+    override fun onPenSeen() {
+        if (stylus) return
+        stylus = true
+        Input.markStylus(this)
+        fingerBox?.visibility = View.VISIBLE
+        hint("Перо — инструмент, палец — двигать доску", 3000)
+    }
+
+    override fun onStrokeCancel() {
+        // Начали двигать доску двумя пальцами — недописанная надпись ждёт дальше.
+        val g = current ?: return
+        if (g.strokes.isEmpty()) current = null
+        else { handler.postDelayed(interimRunnable, 150); handler.postDelayed(commitRunnable, pauseMs) }
+        view.invalidate()
+    }
+
+    /** После метки, выноски, надписи на телефоне — снова «Рука», чтобы сразу двигать чертёж. */
+    private fun backToHand() {
+        if (!stylus && tool != Tool.HAND) setTool(Tool.HAND, quiet = true)
+    }
+
+    /** «Пером» на планшете с пером, «пальцем» на телефоне — для подсказок. */
+    private val penWord: String get() = if (stylus) "пером" else "пальцем"
+
+    override fun onTextTap(x: Float, y: Float) {
+        val h = view.hitAt(x, y)
+        if (h?.kind == BoardView.Kind.TEXT) {
+            editText(board.texts[h.index])
+            backToHand()
+            return
+        }
+        val edit = EditText(this).apply {
+            hint = "Надпись"
+            tag = "text_input"
+            minLines = 2
+            gravity = Gravity.TOP or Gravity.START
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        }
+        val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Надпись")
+            .setView(box)
+            .setPositiveButton("Готово") { _, _ ->
+                val text = edit.text.toString().trim()
+                if (text.isNotEmpty()) {
+                    pushUndo()
+                    // Размер — «в рост» текущего масштаба: на экране как обычный текст.
+                    val size = dp(20f) / board.camZ
+                    board.texts += BoardText(x, y + size * 0.35f, size, text, penColor)
+                    changed()
+                }
+                backToHand()
+            }
+            .setNegativeButton("Отмена") { _, _ -> backToHand() }
+            .create()
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        dialog.show()
+        edit.requestFocus()
+    }
 
     override fun strokeStyle(): NoteInkView.StrokeStyle = when (tool) {
         Tool.MARKER -> NoteInkView.StrokeStyle("marker", penColor, Ui.dpf(this, 16f))
@@ -769,6 +888,7 @@ class BoardActivity : Activity(), BoardView.Host {
             board.stickers += s
         }
         changed()
+        backToHand()
     }
 
     override fun onStickerTap(index: Int) {
@@ -805,7 +925,8 @@ class BoardActivity : Activity(), BoardView.Host {
             board.callouts += c
             changed()
             view.select(listOf(c))
-            hint("Ещё указатель — проведите пером от выноски. Касание строки статуса — следующий статус", 4000)
+            hint("Ещё указатель — «+ Указатель». Касание строки статуса — следующий статус", 4000)
+            backToHand()
         }
     }
 
@@ -839,6 +960,8 @@ class BoardActivity : Activity(), BoardView.Host {
             sel[0] is BoardFill -> "Заливка"
             else -> "Рисунок"
         }
+        // На общей доске — кто и когда правил выделенное.
+        val label2 = if (sel.size == 1 && board.sync.isShared) whoEdited(sel[0])?.let { "$label · $it" } ?: label else label
         val buttons = ArrayList<TextView>()
         if (sel.size == 1 && sel[0] is BoardText) {
             buttons += Ui.pill(this, "Изменить", Ui.INK, Ui.DESK).apply { tag = "sel_edit"; setOnClickListener { editText(sel[0] as BoardText) } }
@@ -859,8 +982,8 @@ class BoardActivity : Activity(), BoardView.Host {
             buttons += Ui.pill(this, "+ Указатель", Ui.INK, Ui.DESK).apply {
                 tag = "sel_leader"
                 setOnClickListener {
-                    setTool(Tool.CALLOUT)
-                    hint("Проведите пером от выноски к месту на чертеже", 3500)
+                    setTool(Tool.CALLOUT, quiet = true)
+                    hint("Проведите $penWord от выноски к месту на чертеже", 3500)
                 }
             }
         }
@@ -876,9 +999,31 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         buttons += Ui.pill(this, "Удалить", Ui.BAD, Ui.BAD_SOFT).apply { tag = "sel_delete"; setOnClickListener { deleteSelection() } }
         buttons += Ui.pill(this, "Готово", Color.WHITE, Ui.ACCENT).apply { tag = "sel_done"; setOnClickListener { view.clearSelection() } }
-        val bar = Ui.floatingBar(this, label, *buttons.toTypedArray())
+        val bar = Ui.floatingBar(this, label2, *buttons.toTypedArray())
         selBar.addView(bar)
         selBar.visibility = View.VISIBLE
+    }
+
+    private fun idOf(o: Any): String? = when (o) {
+        is Drawing -> o.id
+        is BoardText -> o.id
+        is BoardImage -> o.id
+        is BoardSticker -> o.id
+        is BoardFill -> o.id
+        is BoardCallout -> o.id
+        else -> null
+    }
+
+    /** «Иван Петров, 14:05» — кто последним правил предмет (по отметке правки). */
+    private fun whoEdited(o: Any): String? {
+        val rev = board.sync.objs[idOf(o) ?: return null]?.rev ?: return null
+        val dev = Remote.deviceOf(rev)
+        val ms = Remote.timeOf(rev)
+        if (dev.isEmpty() || ms <= 0) return null
+        val name = if (dev == store.device) Profile.name(this).ifEmpty { "вы" } else board.sync.members[dev] ?: "коллега"
+        val day = android.text.format.DateUtils.isToday(ms)
+        val time = if (day) Ui.time(ms) else Ui.shortDate(ms) + " " + Ui.time(ms)
+        return "$name, $time"
     }
 
     private fun editText(t: BoardText) {

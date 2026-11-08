@@ -39,6 +39,13 @@ class ScreensSmokeTest {
 
     private val ctx get() = RuntimeEnvironment.getApplication()
 
+    /** Эти проверки — для планшета с пером (как у Владимира); телефон без пера — в PhoneTest. */
+    @org.junit.Before
+    fun tabletWithPen() {
+        Input.markStylus(ctx)
+        Profile.save(ctx, "Владимир", "Шульмин")
+    }
+
     private fun sampleNote(): Note {
         val n = Note.create("Планёрка · секция 3")
         n.blocks.clear()

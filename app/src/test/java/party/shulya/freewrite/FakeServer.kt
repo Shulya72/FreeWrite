@@ -9,7 +9,7 @@ import org.json.JSONObject
  * у каждой принятой правки свой номер seq, pull по 500 / 2 МБ, картинки частями).
  */
 class FakeServer : SyncTransport {
-    class Obj(val id: String, val rev: String, val kind: String, val deleted: Boolean, val body: String, val seq: Long)
+    class Obj(val id: String, val rev: String, val kind: String, val deleted: Boolean, val body: String, val seq: Long, val author: String = "")
     class B(val id: String, val key: String, var title: String, val invite: String, val owner: String = "") {
         var seq = 0L
         val objs = HashMap<String, Obj>()
@@ -69,7 +69,7 @@ class FakeServer : SyncTransport {
                     b.seq++
                     val del = c.optInt("x") == 1
                     val body = if (del) "" else c.getString("d")
-                    b.objs[id] = Obj(id, rev, c.optString("k"), del, body, b.seq)
+                    b.objs[id] = Obj(id, rev, c.optString("k"), del, body, b.seq, r.optString("author"))
                     if (id == "~title" && !del) b.title = JSONObject(body).optString("title", b.title)
                     applied++
                 }
@@ -86,6 +86,7 @@ class FakeServer : SyncTransport {
                     size += o.body.length + 96
                     if (out.length() > 0 && size > (2 shl 20)) break
                     val e = JSONObject().put("id", o.id).put("rev", o.rev).put("k", o.kind).put("s", o.seq)
+                    if (o.author.isNotEmpty()) e.put("a", o.author)
                     if (o.deleted) e.put("x", 1) else e.put("d", o.body)
                     out.put(e)
                     next = o.seq

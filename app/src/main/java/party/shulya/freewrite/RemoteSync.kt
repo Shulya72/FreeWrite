@@ -21,7 +21,8 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         fun canApply(): Boolean
         /** Сохранить доску с отметками правок — сразу. */
         fun saveBoard()
-        fun onRemoteApplied(changed: Int)
+        /** Пришли правки коллег: сколько предметов изменилось и от кого (имя → сколько). */
+        fun onRemoteApplied(changed: Int, authors: Map<String, Int>)
         fun onImagesArrived()
         fun onSyncState(state: State)
     }
@@ -33,6 +34,7 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
     private val img = Executors.newSingleThreadExecutor()
     private val imageDir = File(context.filesDir, "note_images").apply { mkdirs() }
     private val device = BoardSync.device(context)
+    private val appContext = context.applicationContext
 
     private var started = false
     /** Доска сейчас выкладывается на сервер (второй раз не начинать). */
@@ -100,7 +102,7 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
             // в следующий раз продолжим с этого места, а не с начала.
             var pushedTo: String? = null
             try {
-                Remote.push(transport, boardId, key, device, changes) { pushedTo = it }
+                Remote.push(transport, boardId, key, device, changes, Profile.name(appContext)) { pushedTo = it }
                 val pulled = Remote.pull(transport, boardId, key, since)
                 val done = pushedTo
                 main.post { finish(boardId, done, pulled, null) }
@@ -152,10 +154,11 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         }
         val b = host.board()
         val s = b.sync
-        val n = if (pulled.rows.isEmpty()) 0 else Remote.apply(b, pulled.rows)
+        val authors = HashMap<String, Int>()
+        val n = if (pulled.rows.isEmpty()) 0 else Remote.apply(b, pulled.rows, authors)
         s.remoteSeq = maxOf(s.remoteSeq, pulled.next)
         host.saveBoard()
-        if (n > 0) host.onRemoteApplied(n)
+        if (n > 0) host.onRemoteApplied(n, authors)
         lastOk = System.currentTimeMillis()
         host.onSyncState(State("✓ " + Ui.time(lastOk)))
         running = false

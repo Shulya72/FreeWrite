@@ -70,6 +70,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         /** Цвет под точкой экрана — для пипетки. */
         fun pipetteColor(sx: Float, sy: Float): Int?
         fun onPipettePick(sx: Float, sy: Float)
+        /** Штрих отменён вторым пальцем (начали двигать доску) — ничего не рисовать. */
+        fun onStrokeCancel() {}
+        /** «Текст»: касание — написать надпись с клавиатуры (или изменить ту, что под пальцем). */
+        fun onTextTap(x: Float, y: Float) {}
+        /** На доске впервые коснулись пером — устройство с пером. */
+        fun onPenSeen() {}
     }
 
     enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL }
@@ -84,9 +90,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private var fingerDownTime = -100_000L
     private val downCam = FloatArray(3)
 
+    private var penReported = false
+
     private fun notePen() {
         lastPenTime = SystemClock.uptimeMillis()
         fingerArmed = false
+        if (!penReported) { penReported = true; host.onPenSeen() }
     }
 
     private fun penNear() = SystemClock.uptimeMillis() - lastPenTime < PEN_GRACE_MS
@@ -636,16 +645,22 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             MotionEvent.ACTION_POINTER_DOWN -> {
                 val idx = ev.actionIndex
                 val tool = ev.getToolType(idx)
+                val finger = !isPen(tool)
                 val fingerMode = !activeIsPen && (mode == Mode.MOVE_SEL || mode == Mode.RESIZE || mode == Mode.PINCH_SEL || mode == Mode.LEADER)
                 if (isPen(tool) && (mode == Mode.PAN || mode == Mode.PINCH || mode == Mode.NONE || mode == Mode.PALM || fingerMode)) {
                     revertFingerIfRecent()
                     begin(ev, idx) // ладонь или пальцы лежали — работает перо
-                } else if (!penLike(tool) && (penNear() || palmSized(ev, idx) || mode == Mode.PALM)) {
+                } else if (finger && !host.fingerWrites() && (penNear() || palmSized(ev, idx) || mode == Mode.PALM)) {
                     // второй палец при пере рядом — тоже ладонь
-                } else if (!penLike(tool) && !activeIsPen && mode == Mode.MOVE_SEL) {
+                } else if (finger && !activeIsPen && mode == Mode.MOVE_SEL) {
                     startSelPinch(ev) // два пальца на выделенном — меняем его размер
-                } else if (!penLike(tool) && !activeIsPen && (mode == Mode.PAN || mode == Mode.LASSO)) {
+                } else if (finger && !activeIsPen && (mode == Mode.PAN || mode == Mode.LASSO)) {
                     lasso.clear()
+                    startPinch(ev)
+                } else if (finger && !activeIsPen && host.fingerWrites() &&
+                    (mode == Mode.INK || mode == Mode.ERASE || mode == Mode.CALLOUT_DRAG || mode == Mode.STATUS || mode == Mode.NONE)) {
+                    // Палец рисовал, лёг второй — значит, двигают или приближают доску: штрих не нужен.
+                    cancelTouchAction()
                     startPinch(ev)
                 }
             }
@@ -687,6 +702,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         return true
     }
 
+    /** Отменить начатое пальцем (штрих, выноску, касание метки) — пришёл второй палец. */
+    private fun cancelTouchAction() {
+        removeCallbacks(longPress)
+        if (mode == Mode.INK && live != null) {
+            live = null
+            host.onStrokeCancel()
+        }
+        calloutFrom = null
+        lasso.clear()
+        mode = Mode.NONE
+        sceneValid = false
+        invalidate()
+    }
+
     private fun begin(ev: MotionEvent, idx: Int) {
         removeCallbacks(longPress)
         val tool = ev.getToolType(idx)
@@ -701,11 +730,13 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         val x = wx(downX)
         val y = wy(downY)
         val t = host.tool()
-        val pen = penLike(tool)
-        if (!pen) {
+        // «Рука» — пером и пальцем двигать доску и выделять; иначе перо (или палец без пера) — инструмент.
+        val hand = t == BoardActivity.Tool.HAND
+        val pen = penLike(tool) && !hand
+        if (!isPen(tool) && tool != MotionEvent.TOOL_TYPE_MOUSE) {
             fingerDownTime = downTime
             downCam[0] = b.camX; downCam[1] = b.camY; downCam[2] = b.camZ
-            if (penNear() || palmSized(ev, idx)) {
+            if (!host.fingerWrites() && (penNear() || palmSized(ev, idx))) {
                 mode = Mode.PALM // перо рядом или касание широкое — это ладонь
                 return
             }
@@ -761,8 +792,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             return
         }
         if (!pen) {
-            // Палец: выделенное (если его выделили касанием пальца) — двигать, иначе — двигать доску.
-            if (fingerArmed && insideSelection(x, y)) {
+            // Палец («Рука»): выделенное (если его выделили касанием) — двигать, иначе — двигать доску.
+            if ((fingerArmed || (hand && isPen(tool))) && insideSelection(x, y)) {
                 captureOrigs()
                 dragStart.set(x, y)
                 mode = Mode.MOVE_SEL
@@ -789,8 +820,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             host.onErase(x, y, true)
             return
         }
-        if (t == BoardActivity.Tool.STATUS) {
-            mode = Mode.STATUS
+        if (t == BoardActivity.Tool.STATUS || t == BoardActivity.Tool.TEXT) {
+            mode = Mode.STATUS // касание: метка или надпись
             return
         }
         mode = Mode.INK
@@ -913,7 +944,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                     host.onStrokeEnd(s, liveStyle ?: host.strokeStyle(), quick)
                 }
             }
-            Mode.STATUS -> if (quick) host.onStatusTap(wx(sxp), wy(syp))
+            Mode.STATUS -> if (quick) {
+                if (t == BoardActivity.Tool.TEXT) host.onTextTap(wx(sxp), wy(syp)) else host.onStatusTap(wx(sxp), wy(syp))
+            }
             Mode.PAN -> if (quick && !moved) tapAt(wx(sxp), wy(syp))
             Mode.MOVE_SEL, Mode.RESIZE -> {
                 if (editStarted) {
