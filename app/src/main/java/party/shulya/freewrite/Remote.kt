@@ -79,7 +79,8 @@ object Remote {
     }
 
     fun statusJson(s: BoardStatus): String =
-        JSONObject().put("id", s.id).put("name", s.name).put("color", s.color).toString()
+        JSONObject().put("id", s.id).put("name", s.name).put("color", s.color)
+            .also { if (s.group != BoardStatus.ID) it.put("g", s.group) }.toString()
 
     /** Свои правки, которых ещё нет на сервере, — по порядку отметок. Доска должна быть отмечена (stamp). */
     fun pending(board: Board): List<Change> {
@@ -101,6 +102,7 @@ object Remote {
         for (f in board.fills) add(f.id, "fill") { f.json() }
         for (c in board.callouts) add(c.id, "callout") { Board.calloutJson(c) }
         for (fr in board.frames) add(fr.id, "frame") { Board.frameJson(fr) }
+        for (r in board.rows) add(r.id, "row") { Board.rowJson(r) }
         for ((id, r) in s.tomb) {
             if (r.isNotEmpty() && r > after && s.seenRemote[id] != r) out += Change(id, r, "", null)
         }
@@ -189,6 +191,7 @@ object Remote {
         board.fills.removeAll { it.id == id }
         board.callouts.removeAll { it.id == id }
         board.frames.removeAll { it.id == id }
+        board.rows.removeAll { it.id == id }
         if (board.statuses.size > 1) board.statuses.removeAll { it.id == id }
     }
 
@@ -214,17 +217,21 @@ object Remote {
         }
         val j = JSONObject(data)
         when (r.kind) {
-            "status" -> put(board.statuses, Board.parseStatus(j).let { BoardStatus(r.id, it.name, it.color) }) { it.id }
+            "status" -> put(board.statuses, Board.parseStatus(j).let { BoardStatus(r.id, it.name, it.color, it.group) }) { it.id }
             "stroke" -> put(board.strokes, Board.parseDrawing(j).also { it.id = r.id }) { it.id }
             "text" -> put(board.texts, Board.parseText(j).also { it.id = r.id }) { it.id }
             "image" -> put(board.images, Board.parseImage(j).also { it.id = r.id }) { it.id }
             "sticker" -> put(board.stickers, Board.parseSticker(j).also { it.id = r.id }) { it.id }
             "fill" -> Board.parseFill(j)?.also { it.id = r.id }?.let { f -> put(board.fills, f) { it.id } }
             "callout" -> {
-                val def = board.statuses.firstOrNull()?.id ?: "s0"
+                val def = board.statuses.firstOrNull { it.group == BoardStatus.CON }?.id ?: board.statuses.firstOrNull()?.id ?: "s0"
                 put(board.callouts, Board.parseCallout(j, def).also { it.id = r.id }) { it.id }
             }
             "frame" -> put(board.frames, Board.parseFrame(j).also { it.id = r.id }) { it.id }
+            "row" -> {
+                val def = board.statuses.firstOrNull { it.group == BoardStatus.ID }?.id ?: "s0"
+                put(board.rows, Board.parseRow(j, def).also { it.id = r.id }) { it.id }
+            }
             else -> {} // вид из будущей версии — пропускаем
         }
     }

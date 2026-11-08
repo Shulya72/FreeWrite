@@ -32,7 +32,7 @@ import kotlin.math.roundToInt
  */
 class BoardActivity : Activity(), BoardView.Host {
 
-    enum class Tool { HAND, WRITE, TEXT, PEN, MARKER, SHAPE, FILL, ERASER, SELECT, STATUS, CALLOUT, FRAME, PIPETTE }
+    enum class Tool { HAND, WRITE, TEXT, PEN, MARKER, SHAPE, FILL, ERASER, SELECT, STATUS, ROW, CALLOUT, FRAME, PIPETTE }
 
     private lateinit var store: BoardStore
     private lateinit var noteStore: NoteStore
@@ -342,9 +342,9 @@ class BoardActivity : Activity(), BoardView.Host {
 
         val tools = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         // Без пера главное — двигать, метки, выноски, надписи с клавиатуры; с пером — письмо и рисование.
-        val order = if (stylus) listOf(Tool.HAND, Tool.WRITE, Tool.PEN, Tool.MARKER, Tool.SHAPE, Tool.STATUS,
+        val order = if (stylus) listOf(Tool.HAND, Tool.WRITE, Tool.PEN, Tool.MARKER, Tool.SHAPE, Tool.ROW, Tool.STATUS,
             Tool.CALLOUT, Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.TEXT, Tool.FRAME)
-        else listOf(Tool.HAND, Tool.STATUS, Tool.CALLOUT, Tool.TEXT, Tool.PEN, Tool.MARKER, Tool.SHAPE,
+        else listOf(Tool.HAND, Tool.ROW, Tool.STATUS, Tool.CALLOUT, Tool.TEXT, Tool.PEN, Tool.MARKER, Tool.SHAPE,
             Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.FRAME, Tool.WRITE)
         for (t in order) when (t) {
             Tool.HAND -> addTool(tools, t, R.drawable.ic_hand, "Рука")
@@ -354,6 +354,7 @@ class BoardActivity : Activity(), BoardView.Host {
             Tool.MARKER -> addTool(tools, t, R.drawable.ic_marker, "Маркер")
             Tool.SHAPE -> addTool(tools, t, R.drawable.ic_shapes, "Фигуры")
             Tool.STATUS -> addTool(tools, t, R.drawable.ic_status, "Метка")
+            Tool.ROW -> addTool(tools, t, R.drawable.ic_check, "Строка ИД")
             Tool.CALLOUT -> addTool(tools, t, R.drawable.ic_callout, "Выноска")
             Tool.FILL -> addTool(tools, t, R.drawable.ic_fill, "Заливка")
             Tool.ERASER -> addTool(tools, t, R.drawable.ic_eraser, "Ластик")
@@ -535,7 +536,8 @@ class BoardActivity : Activity(), BoardView.Host {
         when (t) {
             Tool.HAND -> hint("Пальцем — двигать доску, касание — выбрать, касание метки — следующий статус. Два пальца — приблизить", 4000)
             Tool.TEXT -> hint("Коснитесь, где написать, — откроется клавиатура", 3000)
-            Tool.STATUS -> hint("Коснитесь $penWord — метка статуса. Касание метки — следующий статус, подержать — список", 3500)
+            Tool.STATUS -> hint("Коснитесь $penWord — метка статуса ИД. Касание метки — следующий статус, подержать — перетащить", 3500)
+            Tool.ROW -> hint("Коснитесь $penWord у захватки — встанет строка ИД: Чек-лист, DWG, ИГС. Касание галочки — отметить, касание ИГС — следующий статус, подержать — перетащить", 5500)
             Tool.FILL -> hint(if (stylus) "Касайтесь пером углов захватки по очереди, касание первой точки — залить. Или обведите одним движением"
                 else "Ведите пальцем к углу захватки — в лупе видно точно, отпустите — точка. Касание первой точки — залить.$two", 5000)
             Tool.CALLOUT -> hint("Проведите $penWord от места на чертеже туда, где будет надпись.$two", 4000)
@@ -984,6 +986,7 @@ class BoardActivity : Activity(), BoardView.Host {
                 BoardView.Kind.TEXT -> { board.texts.removeAt(h.index); changedAny = true }
                 BoardView.Kind.STICKER -> { board.stickers.removeAt(h.index); changedAny = true }
                 BoardView.Kind.CALLOUT -> { board.callouts.removeAt(h.index); changedAny = true }
+                BoardView.Kind.ROW -> { board.rows.removeAt(h.index); changedAny = true }
                 else -> Unit
             }
             // Заливка стирается касанием её края (внутри можно стирать рисунки поверх неё).
@@ -994,6 +997,15 @@ class BoardActivity : Activity(), BoardView.Host {
 
     override fun onStatusTap(x: Float, y: Float) {
         val h = view.hitAt(x, y)
+        if (h?.kind == BoardView.Kind.ROW) {
+            val r = board.rows[h.index]
+            onRowTap(r, view.rowPartAt(r, x))
+            return
+        }
+        if (tool == Tool.ROW) {
+            newRow(x, y)
+            return
+        }
         if (h?.kind == BoardView.Kind.CALLOUT) {
             val c = board.callouts[h.index]
             if (view.inStatusRow(c, x, y)) onCalloutStatusTap(c) else view.select(listOf(c))
@@ -1002,11 +1014,11 @@ class BoardActivity : Activity(), BoardView.Host {
         pushUndo()
         if (h?.kind == BoardView.Kind.STICKER) {
             val s = board.stickers[h.index]
-            s.sid = board.nextStatus(s.sid)
+            s.sid = board.nextStatus(s.sid, BoardStatus.ID)
         } else {
-            // Метка ставится «в рост» текущего масштаба: на экране около 128×36 dp; статус — первый в списке.
+            // Метка ставится «в рост» текущего масштаба: на экране около 128×36 dp; статус — первый в списке ИД.
             val scale = resources.displayMetrics.density / board.camZ
-            val s = BoardSticker(0f, 0f, board.status("").id, scale)
+            val s = BoardSticker(0f, 0f, board.firstStatus(BoardStatus.ID), scale)
             s.x = x - view.stickerW(s) / 2f; s.y = y - s.h / 2f
             board.stickers += s
         }
@@ -1017,13 +1029,69 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onStickerTap(index: Int) {
         val s = board.stickers.getOrNull(index) ?: return
         pushUndo()
-        s.sid = board.nextStatus(s.sid)
+        s.sid = board.nextStatus(s.sid, BoardStatus.ID)
         changed()
+        hint(board.status(s.sid).name, 1200)
+    }
+
+    // ---------------------------------------------------------------- строка ИД (0.18, FW-011)
+
+    /** Касание строки ИД: галочка — отметить/снять, ИГС — следующий статус ИД, название — изменить. */
+    override fun onRowTap(row: BoardRow, part: Int) {
+        when (part) {
+            BoardView.RowPart.TITLE -> { rowTitleDialog(row.title) { t -> pushUndo(); row.title = t; changed(); buildSelectionBar() }; return }
+            BoardView.RowPart.CHECK -> { pushUndo(); row.check = !row.check; hint(if (row.check) "Чек-лист — есть" else "Чек-лист — нет", 900) }
+            BoardView.RowPart.DWG -> { pushUndo(); row.dwg = !row.dwg; hint(if (row.dwg) "DWG — есть" else "DWG — нет", 900) }
+            else -> { pushUndo(); row.sid = board.nextStatus(row.sid, BoardStatus.ID); hint("ИГС: " + board.status(row.sid).name, 1200) }
+        }
+        changed()
+    }
+
+    /** Новая строка ИД у захватки: название (предложено следующее по номеру в этом разделе), размер — «в рост» масштаба. */
+    private fun newRow(x: Float, y: Float) {
+        val sec = board.sectionAt(x, y)
+        val last = board.rows.lastOrNull { board.sectionOf(it) === sec && it.title.isNotEmpty() }
+        val suggest = last?.let { BoardRow.nextTitle(it.title) } ?: "Захватка 1 — "
+        rowTitleDialog(suggest) { t ->
+            pushUndo()
+            val scale = resources.displayMetrics.density / board.camZ
+            val r = BoardRow(x, 0f, scale, t, false, false, board.firstStatus(BoardStatus.ID))
+            r.y = y - r.h / 2f
+            board.rows += r
+            changed()
+            backToHand()
+        }
+    }
+
+    /** Следующая захватка: под строкой — такая же, номер в названии +1, галочки сняты, ИГС — первый статус. */
+    private fun nextRow(r: BoardRow) {
+        pushUndo()
+        val n = BoardRow(r.x, r.y + r.h * 1.25f, r.scale, BoardRow.nextTitle(r.title), false, false, board.firstStatus(BoardStatus.ID))
+        board.rows += n
+        changed()
+        view.select(listOf(n))
+    }
+
+    private fun rowTitleDialog(current: String, done: (String) -> Unit) {
+        val edit = EditText(this).apply {
+            setText(current); setSelection(current.length); isSingleLine = true; tag = "row_title"
+            hint = "Например: Захватка 1 — Опалубка"
+        }
+        val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
+        val d = AlertDialog.Builder(this)
+            .setTitle("Строка ИД — название")
+            .setView(box)
+            .setPositiveButton("Готово") { _, _ -> done(edit.text.toString().trim()) }
+            .setNegativeButton("Отмена", null)
+            .create()
+        d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        d.show()
+        edit.requestFocus()
     }
 
     override fun onCalloutStatusTap(c: BoardCallout) {
         pushUndo()
-        c.sid = board.nextStatus(c.sid)
+        c.sid = board.nextStatus(c.sid, BoardStatus.CON)
         changed()
         hint(board.status(c.sid).name, 1200)
     }
@@ -1236,11 +1304,21 @@ class BoardActivity : Activity(), BoardView.Host {
         }
     }
 
-    /** Легенда: статусы с числами меток и выносок; касание — подсветить только этот статус. */
+    /** Раздел, по которому считает легенда (null — вся доска); хранится номер — раздел могут переименовать. */
+    private var legendSection: String? = null
+
+    private fun sortedFrames() = board.frames.sortedWith(compareBy({ (it.y / 200f).toInt() }, { it.x }))
+
+    /**
+     * Легенда (0.18): статусы ИД (метки и ИГС строк) и конструкций (выноски) с числами — по всей доске или по разделу;
+     * у строк ИД — сколько отмечено «Чек-лист» и «DWG». Касание статуса — подсветить только его.
+     */
     private fun buildLegend() {
         legend.removeAllViews()
         val hl = view.highlight?.takeIf { id -> board.statuses.any { it.id == id } }
         if (hl == null && view.highlight != null) view.highlight = null
+        val fr = board.frames.firstOrNull { it.id == legendSection }
+        if (fr == null) legendSection = null
         val head = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         head.addView(Ui.text(this, "Статусы", 15f, Ui.INK, bold = true), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         head.addView(Ui.text(this, "Изменить", 13f, Ui.ACCENT, bold = true).apply {
@@ -1250,35 +1328,157 @@ class BoardActivity : Activity(), BoardView.Host {
             tag = "legend_close"; setPadding(dp(8f), dp(4f), dp(6f), dp(4f)); setOnClickListener { toggleLegend() }
         })
         legend.addView(head)
+        // Где считать: вся доска или раздел.
+        legend.addView(Ui.text(this, "Где: " + (fr?.title ?: "вся доска") + "  ▾", 14f, Ui.ACCENT, bold = true).apply {
+            tag = "legend_section"
+            setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+            background = Ui.rounded(this@BoardActivity, Ui.ACCENT_SOFT, null, 8f)
+            setOnClickListener { chooseLegendSection() }
+        }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { bottomMargin = dp(4f) })
         legend.addView(Ui.text(this, if (hl == null) "Касание — показать только этот статус" else "Остальное притушено. Ещё касание — показать всё",
-            12f, Ui.MUTED).apply { setPadding(0, 0, 0, dp(6f)) })
-        for ((i, st) in board.statuses.withIndex()) {
-            val on = st.id == hl
-            val row = LinearLayout(this).apply {
-                tag = "legend_row_$i"
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8f), dp(7f), dp(8f), dp(7f))
-                background = if (on) Ui.rounded(this@BoardActivity, Ui.ACCENT_SOFT, Ui.ACCENT, 10f) else null
-                isClickable = true
-                setOnClickListener {
-                    view.highlight = if (on) null else st.id
-                    buildLegend()
-                    if (!on) hint("${st.name}: ${board.countStatus(st.id)}", 1500)
+            12f, Ui.MUTED).apply { setPadding(0, 0, 0, dp(4f)) })
+        var idx = 0
+        for (group in listOf(BoardStatus.ID, BoardStatus.CON)) {
+            legend.addView(Ui.text(this, if (group == BoardStatus.ID) "ИД — метки и строки" else "Конструкции — выноски", 13f, Ui.INK2, bold = true)
+                .apply { setPadding(0, dp(8f), 0, dp(2f)) })
+            for (st in board.statuses(group)) {
+                val on = st.id == hl
+                val n = board.countStatus(st.id, fr)
+                val row = LinearLayout(this).apply {
+                    tag = "legend_row_${idx++}"
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+                    background = if (on) Ui.rounded(this@BoardActivity, Ui.ACCENT_SOFT, Ui.ACCENT, 10f) else null
+                    isClickable = true
+                    setOnClickListener {
+                        view.highlight = if (on) null else st.id
+                        buildLegend()
+                        if (!on) hint("${st.name}: $n", 1500)
+                    }
+                }
+                row.addView(dot(st.color), LinearLayout.LayoutParams(dp(14f), dp(14f)))
+                row.addView(Ui.text(this, st.name, 14f, Ui.INK).apply { setPadding(dp(10f), 0, dp(8f), 0); maxLines = 2 },
+                    LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+                row.addView(Ui.text(this, n.toString(), 14f, if (on) Ui.ACCENT else Ui.INK2, bold = true))
+                legend.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            }
+            if (group == BoardStatus.ID) {
+                val rows = board.rows.filter { fr == null || board.sectionOf(it) === fr }
+                if (rows.isNotEmpty()) {
+                    legend.addView(Ui.text(this, "Строк ИД: ${rows.size} · Чек-лист ✓ ${rows.count { it.check }} · DWG ✓ ${rows.count { it.dwg }}",
+                        13f, Ui.INK2).apply { tag = "legend_checks"; setPadding(dp(8f), dp(4f), dp(8f), dp(2f)) })
                 }
             }
-            row.addView(dot(st.color), LinearLayout.LayoutParams(dp(14f), dp(14f)))
-            row.addView(Ui.text(this, st.name, 14f, Ui.INK).apply { setPadding(dp(10f), 0, dp(8f), 0); maxLines = 2 },
-                LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-            row.addView(Ui.text(this, board.countStatus(st.id).toString(), 14f, if (on) Ui.ACCENT else Ui.INK2, bold = true))
-            legend.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         }
+        val actions = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        actions.addView(Ui.pill(this, "Сводка по разделам", Ui.INK, Ui.DESK).apply {
+            tag = "legend_summary"
+            setOnClickListener { summaryDialog() }
+        })
         if (hl != null) {
             val n = board.countStatus(hl)
-            legend.addView(Ui.pill(this, "Показать все ($n)", Color.WHITE, Ui.ACCENT).apply {
+            actions.addView(Ui.pill(this, "Показать все ($n)", Color.WHITE, Ui.ACCENT).apply {
                 tag = "legend_show"
                 setOnClickListener { showStatus(hl) }
-            }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(8f) })
+            }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { marginStart = dp(8f) })
         }
+        legend.addView(actions, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(8f) })
+    }
+
+    private fun chooseLegendSection() {
+        val frames = sortedFrames()
+        if (frames.isEmpty()) { hint("Разделов пока нет — инструмент «Раздел»: рамка с названием, например «КЖ 6.1.1»", 3500); return }
+        val names = listOf("Вся доска") + frames.map { it.title }
+        AlertDialog.Builder(this)
+            .setTitle("Считать статусы")
+            .setItems(names.toTypedArray()) { _, which ->
+                legendSection = if (which == 0) null else frames[which - 1].id
+                buildLegend()
+            }
+            .show()
+    }
+
+    /**
+     * Сводка по разделам: для каждого раздела (и «вне разделов») — сколько каждого статуса ИД и конструкций,
+     * сколько строк ИД и галочек. Касание раздела — показать его. «Скопировать для Excel» — таблица через табуляцию.
+     */
+    private fun summaryDialog() {
+        val frames = sortedFrames()
+        val ids = board.statuses(BoardStatus.ID)
+        val cons = board.statuses(BoardStatus.CON)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16f), dp(8f), dp(16f), dp(8f)) }
+        val scopes: List<BoardFrame?> = frames + listOf(null)
+        var dialog: AlertDialog? = null
+        fun inScope(o: Any, f: BoardFrame?) = board.sectionOf(o) === f
+        for ((i, f) in scopes.withIndex()) {
+            val rows = board.rows.filter { inScope(it, f) }
+            val stickers = board.stickers.filter { inScope(it, f) }
+            val callouts = board.callouts.filter { inScope(it, f) }
+            if (f == null && rows.isEmpty() && stickers.isEmpty() && callouts.isEmpty()) continue
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                tag = "summary_section_$i"
+                setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+                background = Ui.rounded(this@BoardActivity, Ui.PAPER, Ui.RULE, 10f)
+                if (f != null) {
+                    isClickable = true
+                    setOnClickListener { dialog?.dismiss(); view.fitRect(f.x, f.y, f.x + f.w, f.y + f.h) }
+                }
+            }
+            card.addView(Ui.text(this, f?.title ?: "Вне разделов", 16f, Ui.INK, bold = true))
+            val sub = buildString {
+                append("Строк ИД: ${rows.size}")
+                if (rows.isNotEmpty()) append(" · Чек-лист ✓ ${rows.count { it.check }} из ${rows.size} · DWG ✓ ${rows.count { it.dwg }} из ${rows.size}")
+                if (stickers.isNotEmpty()) append(" · меток: ${stickers.size}")
+            }
+            card.addView(Ui.text(this, sub, 13f, Ui.INK2).apply { setPadding(0, dp(2f), 0, dp(4f)) })
+            val chips = Ui.FlowRow(this)
+            for (st in ids) {
+                val n = rows.count { it.sid == st.id } + stickers.count { it.sid == st.id }
+                if (n > 0) chips.addView(Ui.chip(this, "${st.name}: $n", Board.statusFg(st.color), Board.statusBg(st.color)))
+            }
+            for (st in cons) {
+                val n = callouts.count { it.sid == st.id }
+                if (n > 0) chips.addView(Ui.chip(this, "${st.name}: $n", Board.statusFg(st.color), Board.statusBg(st.color)))
+            }
+            card.addView(chips)
+            box.addView(card, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { bottomMargin = dp(8f) })
+        }
+        if (box.childCount == 0) box.addView(Ui.text(this, "Пока нет строк ИД, меток и выносок.", 14f, Ui.INK2))
+        dialog = AlertDialog.Builder(this)
+            .setTitle("Сводка по разделам")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Готово", null)
+            .setNeutralButton("Скопировать для Excel") { _, _ ->
+                getSystemService(android.content.ClipboardManager::class.java)
+                    ?.setPrimaryClip(android.content.ClipData.newPlainText("Сводка", summaryTable()))
+                hint("Сводка скопирована — вставьте в Excel", 2500)
+            }
+            .create()
+        dialog.show()
+    }
+
+    /** Сводка таблицей через табуляцию (вставляется в Excel столбцами): раздел, статусы ИД, галочки, конструкции. */
+    fun summaryTable(): String {
+        val ids = board.statuses(BoardStatus.ID)
+        val cons = board.statuses(BoardStatus.CON)
+        val sb = StringBuilder()
+        sb.append("Раздел\tСтрок ИД\tЧек-лист ✓\tDWG ✓")
+        for (st in ids) sb.append('\t').append(st.name)
+        for (st in cons) sb.append('\t').append(st.name)
+        sb.append('\n')
+        for (f in sortedFrames() + listOf(null)) {
+            val rows = board.rows.filter { board.sectionOf(it) === f }
+            val stickers = board.stickers.filter { board.sectionOf(it) === f }
+            val callouts = board.callouts.filter { board.sectionOf(it) === f }
+            if (f == null && rows.isEmpty() && stickers.isEmpty() && callouts.isEmpty()) continue
+            sb.append(f?.title ?: "Вне разделов").append('\t').append(rows.size)
+                .append('\t').append(rows.count { it.check }).append('\t').append(rows.count { it.dwg })
+            for (st in ids) sb.append('\t').append(rows.count { it.sid == st.id } + stickers.count { it.sid == st.id })
+            for (st in cons) sb.append('\t').append(callouts.count { it.sid == st.id })
+            sb.append('\n')
+        }
+        return sb.toString()
     }
 
     /** Камера — на все метки и выноски статуса. */
@@ -1287,6 +1487,7 @@ class BoardActivity : Activity(), BoardView.Host {
         var first = true
         fun add(o: Any) { val b = view.boundsOf(o, android.graphics.RectF()); if (first) { r.set(b); first = false } else r.union(b) }
         board.stickers.filter { it.sid == sid }.forEach { add(it) }
+        board.rows.filter { it.sid == sid }.forEach { add(it) }
         board.callouts.filter { it.sid == sid }.forEach { c ->
             add(c)
             var i = 0
@@ -1322,13 +1523,17 @@ class BoardActivity : Activity(), BoardView.Host {
             sel[0] is BoardText -> "Надпись"
             sel[0] is BoardImage -> "Картинка"
             sel[0] is BoardSticker -> "Метка"
+            sel[0] is BoardRow -> "Строка ИД"
             sel[0] is BoardCallout -> "Выноска"
             sel[0] is BoardFill -> "Заливка"
             sel[0] is BoardFrame -> "Раздел «${(sel[0] as BoardFrame).title}»"
             else -> "Рисунок"
         }
-        // На общей доске — кто и когда правил выделенное.
-        val label2 = if (sel.size == 1 && board.sync.isShared) whoEdited(sel[0])?.let { "$label · $it" } ?: label else label
+        // Раздел, где стоит метка, строка ИД или выноска; на общей доске — кто и когда правил.
+        val sec = if (sel.size == 1 && (sel[0] is BoardSticker || sel[0] is BoardRow || sel[0] is BoardCallout))
+            board.sectionOf(sel[0])?.let { " · ${it.title}" } ?: "" else ""
+        val label1 = label + sec
+        val label2 = if (sel.size == 1 && board.sync.isShared) whoEdited(sel[0])?.let { "$label1 · $it" } ?: label1 else label1
         val buttons = ArrayList<TextView>()
         if (sel.size == 1 && sel[0] is BoardText) {
             buttons += Ui.pill(this, "Изменить", Ui.INK, Ui.DESK).apply { tag = "sel_edit"; setOnClickListener { editText(sel[0] as BoardText) } }
@@ -1356,6 +1561,15 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         if (sel.size == 1 && sel[0] is BoardSticker) {
             buttons += Ui.pill(this, "Статус", Ui.INK, Ui.DESK).apply { tag = "sel_status"; setOnClickListener { chooseStatus(sel[0]) } }
+        }
+        if (sel.size == 1 && sel[0] is BoardRow) {
+            val r = sel[0] as BoardRow
+            buttons += Ui.pill(this, "Название", Ui.INK, Ui.DESK).apply {
+                tag = "sel_edit"
+                setOnClickListener { rowTitleDialog(r.title) { t -> pushUndo(); r.title = t; changed(); buildSelectionBar() } }
+            }
+            buttons += Ui.pill(this, "ИГС", Ui.INK, Ui.DESK).apply { tag = "sel_status"; setOnClickListener { chooseStatus(r) } }
+            buttons += Ui.pill(this, "+ Следующая", Ui.INK, Ui.DESK).apply { tag = "sel_next"; setOnClickListener { nextRow(r) } }
         }
         if (sel.size == 1 && sel[0] is BoardFrame) {
             val f = sel[0] as BoardFrame
@@ -1394,6 +1608,7 @@ class BoardActivity : Activity(), BoardView.Host {
         is BoardFill -> o.id
         is BoardCallout -> o.id
         is BoardFrame -> o.id
+        is BoardRow -> o.id
         else -> null
     }
 
@@ -1449,6 +1664,7 @@ class BoardActivity : Activity(), BoardView.Host {
                     board.images += it; copies += it
                 }
                 is BoardSticker -> BoardSticker(o.x + off, o.y + off, o.sid, o.scale).also { board.stickers += it; copies += it }
+                is BoardRow -> o.copy().also { it.x += off; it.y += off; board.rows += it; copies += it }
                 is Drawing -> o.copy().also { d ->
                     var i = 0
                     while (i + 1 < d.pts.size) { d.pts[i] += off; d.pts[i + 1] += off; i += 3 }
@@ -1511,6 +1727,7 @@ class BoardActivity : Activity(), BoardView.Host {
         board.fills.removeAll { f -> sel.any { it === f } }
         board.callouts.removeAll { c -> sel.any { it === c } }
         board.frames.removeAll { f -> sel.any { it === f } }
+        board.rows.removeAll { r -> sel.any { it === r } }
         view.clearSelection()
         changed()
     }
@@ -1641,15 +1858,17 @@ class BoardActivity : Activity(), BoardView.Host {
 
     /** Выбрать статус метки или выноски из списка (долгое нажатие или кнопка «Статус»). */
     private fun chooseStatus(obj: Any) {
-        val current = when (obj) { is BoardSticker -> obj.sid; is BoardCallout -> obj.sid; else -> return }
-        val names = board.statuses.map { (if (it.id == current) "● " else "   ") + it.name } + "Настроить статусы…"
+        val current = when (obj) { is BoardSticker -> obj.sid; is BoardCallout -> obj.sid; is BoardRow -> obj.sid; else -> return }
+        val group = if (obj is BoardCallout) BoardStatus.CON else BoardStatus.ID
+        val list = board.statuses(group)
+        val names = list.map { (if (it.id == current) "● " else "   ") + it.name } + "Настроить статусы…"
         AlertDialog.Builder(this)
-            .setTitle("Статус")
+            .setTitle(if (obj is BoardRow) "ИГС" else if (group == BoardStatus.CON) "Статус конструкции" else "Статус ИД")
             .setItems(names.toTypedArray()) { _, which ->
-                if (which == board.statuses.size) { statusesDialog(); return@setItems }
-                val sid = board.statuses[which].id
+                if (which == list.size) { statusesDialog(); return@setItems }
+                val sid = list[which].id
                 pushUndo()
-                when (obj) { is BoardSticker -> obj.sid = sid; is BoardCallout -> obj.sid = sid }
+                when (obj) { is BoardSticker -> obj.sid = sid; is BoardCallout -> obj.sid = sid; is BoardRow -> obj.sid = sid }
                 changed()
             }
             .show()
@@ -1674,39 +1893,47 @@ class BoardActivity : Activity(), BoardView.Host {
         lateinit var render: () -> Unit
         render = {
             box.removeAllViews()
-            box.addView(Ui.text(this, "Касание статуса на метке или выноске переключает их по этому списку сверху вниз.", 13f, Ui.MUTED)
-                .apply { setPadding(0, 0, 0, dp(8f)) })
-            for ((i, st) in board.statuses.withIndex()) {
-                val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; tag = "status_row" }
-                row.addView(dot(st.color), LinearLayout.LayoutParams(dp(18f), dp(18f)))
-                row.addView(Ui.text(this, st.name, 16f, Ui.INK).apply { setPadding(dp(10f), 0, dp(6f), 0) },
-                    LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-                row.addView(Ui.mono(this, board.countStatus(st.id).toString(), 13f))
-                row.addView(small("▲") {
-                    if (i > 0) { pushUndo(); board.statuses.add(i - 1, board.statuses.removeAt(i)); changed(); render() }
-                })
-                row.addView(small("▼") {
-                    if (i < board.statuses.size - 1) { pushUndo(); board.statuses.add(i + 1, board.statuses.removeAt(i)); changed(); render() }
-                })
-                row.addView(small("✎") { editStatusDialog(st) { render() } })
-                row.addView(small("✕", Ui.BAD) { deleteStatus(st) { render() } })
-                box.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            box.addView(Ui.text(this, "Касание статуса переключает его по своему списку сверху вниз.", 13f, Ui.MUTED)
+                .apply { setPadding(0, 0, 0, dp(4f)) })
+            for (group in listOf(BoardStatus.ID, BoardStatus.CON)) {
+                box.addView(Ui.text(this, if (group == BoardStatus.ID) "ИД — метки и ИГС в строках ИД" else "Конструкции — выноски",
+                    15f, Ui.INK, bold = true).apply { setPadding(0, dp(12f), 0, dp(4f)); tag = "status_group_$group" })
+                val list = board.statuses(group)
+                for ((k, st) in list.withIndex()) {
+                    val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; tag = "status_row" }
+                    row.addView(dot(st.color), LinearLayout.LayoutParams(dp(18f), dp(18f)))
+                    row.addView(Ui.text(this, st.name, 16f, Ui.INK).apply { setPadding(dp(10f), 0, dp(6f), 0) },
+                        LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+                    row.addView(Ui.mono(this, board.countStatus(st.id).toString(), 13f))
+                    // ▲▼ — порядок внутри своего списка: меняемся местами с соседом того же списка.
+                    fun swap(other: BoardStatus) {
+                        pushUndo()
+                        val i = board.statuses.indexOf(st); val j = board.statuses.indexOf(other)
+                        board.statuses[i] = other; board.statuses[j] = st
+                        changed(); render()
+                    }
+                    row.addView(small("▲") { if (k > 0) swap(list[k - 1]) })
+                    row.addView(small("▼") { if (k < list.size - 1) swap(list[k + 1]) })
+                    row.addView(small("✎") { editStatusDialog(st, group) { render() } })
+                    row.addView(small("✕", Ui.BAD) { deleteStatus(st) { render() } })
+                    box.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+                }
+                box.addView(Ui.pill(this, "+ Добавить статус", Color.WHITE, Ui.ACCENT).apply {
+                    tag = "status_add_$group"
+                    setOnClickListener { editStatusDialog(null, group) { render() } }
+                }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(8f); bottomMargin = dp(6f) })
             }
-            box.addView(Ui.pill(this, "+ Добавить статус", Color.WHITE, Ui.ACCENT).apply {
-                tag = "status_add"
-                setOnClickListener { editStatusDialog(null) { render() } }
-            }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(10f); bottomMargin = dp(6f) })
         }
         render()
         dialog.show()
     }
 
     /** Новый статус (st = null) или правка: название и цвет из палитры. */
-    private fun editStatusDialog(st: BoardStatus?, done: (BoardStatus) -> Unit) {
+    private fun editStatusDialog(st: BoardStatus?, group: String, done: (BoardStatus) -> Unit) {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0) }
         val name = EditText(this).apply {
             setText(st?.name.orEmpty())
-            hint = "Например: Сдали опалубку"
+            hint = if (group == BoardStatus.CON) "Например: Опалубка" else "Например: В оформлении"
             isSingleLine = true
             tag = "status_name"
         }
@@ -1732,7 +1959,7 @@ class BoardActivity : Activity(), BoardView.Host {
                 val n = name.text.toString().trim()
                 if (n.isEmpty()) return@setPositiveButton
                 pushUndo()
-                val result = if (st == null) BoardStatus(Board.newStatusId(), n, color).also { board.statuses += it }
+                val result = if (st == null) BoardStatus(Board.newStatusId(), n, color, group).also { board.statuses += it }
                 else st.also { it.name = n; it.color = color }
                 changed()
                 done(result)
@@ -1742,17 +1969,19 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     private fun deleteStatus(st: BoardStatus, done: () -> Unit) {
-        if (board.statuses.size <= 1) { hint("Должен остаться хотя бы один статус"); return }
+        val same = board.statuses(st.group)
+        if (same.size <= 1) { hint("В списке должен остаться хотя бы один статус"); return }
         val used = board.countStatus(st.id)
-        val rest = board.statuses.first { it.id != st.id }
+        val rest = same.first { it.id != st.id }
         val msg = if (used == 0) "Удалить статус «${st.name}»?"
-        else "Статус «${st.name}» стоит у $used меток и выносок. Удалить? Они станут «${rest.name}»."
+        else "Статус «${st.name}» стоит у $used меток, строк и выносок. Удалить? Они станут «${rest.name}»."
         AlertDialog.Builder(this)
             .setMessage(msg)
             .setPositiveButton("Удалить") { _, _ ->
                 pushUndo()
                 for (s in board.stickers) if (s.sid == st.id) s.sid = rest.id
                 for (c in board.callouts) if (c.sid == st.id) c.sid = rest.id
+                for (r in board.rows) if (r.sid == st.id) r.sid = rest.id
                 board.statuses.removeAll { it.id == st.id }
                 changed()
                 done()
@@ -1777,14 +2006,14 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         box.addView(Ui.text(this, "Надпись", 13f, Ui.MUTED))
         box.addView(title)
-        box.addView(Ui.text(this, "Статус", 13f, Ui.MUTED).apply { setPadding(0, dp(12f), 0, dp(4f)) })
-        var sid = c?.sid ?: board.status("").id
+        box.addView(Ui.text(this, "Статус конструкции", 13f, Ui.MUTED).apply { setPadding(0, dp(12f), 0, dp(4f)) })
+        var sid = c?.sid ?: board.firstStatus(BoardStatus.CON)
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         box.addView(list)
         lateinit var render: () -> Unit
         render = {
             list.removeAllViews()
-            for (st in board.statuses) {
+            for (st in board.statuses(BoardStatus.CON)) {
                 val row = LinearLayout(this).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
@@ -1802,7 +2031,7 @@ class BoardActivity : Activity(), BoardView.Host {
                 setPadding(dp(10f), dp(10f), dp(10f), dp(10f))
                 isClickable = true
                 tag = "callout_new_status"
-                setOnClickListener { editStatusDialog(null) { st -> sid = st.id; render() } }
+                setOnClickListener { editStatusDialog(null, BoardStatus.CON) { st -> sid = st.id; render() } }
             })
         }
         render()
