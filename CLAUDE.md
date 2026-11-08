@@ -244,6 +244,16 @@ MAL-CD56). Пишешь пером в любом месте поля, распо
     `yc-*.yml` (папка `server/`); `build.yml` их и документы не пересобирает (`paths-ignore`).
   - Документация Яндекса с сайта yandex.cloud из облачной среды не открывается (DNS), читать зеркало
     `raw.githubusercontent.com/yandex-cloud/docs/master/ru/...`.
+- **08.11.2026 — сервер общей доски** (`server/`, `server/README.md`): функция `freewrite-sync` (Python 3.12,
+  `index.handler`), база `freewrite-db` (YDB serverless, до 1 ГБ, 10 RU/с — потолок затрат), закрытый бакет
+  картинок (до 1 ГБ, части по 1 МБ, доступ по IAM-токену функции `Authorization: Bearer`), робот сервера
+  `freewrite-server` (ydb.editor, storage.editor, logging.writer). Выкладка — `yc-deploy.yml` (push в `main`
+  с изменениями `server/**`): проверки без облака → `deploy/ensure.sh` → версия → `deploy/smoke.py`.
+  Грабли: (1) свои модули называть `fw_*` — в среде функций есть свой `errors.py`, он перекрывал наш
+  (502 HandlerImportError); (2) сервис журналов Яндекса 08.11 отвечал Unavailable — тогда функция
+  выкладывается с `--no-logging`; (3) адрес функции, номер каталога, имя бакета — `::add-mask::`.
+  Приложение 0.10 (синхронизация через сервер) — в ветке `sync-0.10`, в `main` не вливать до проверки
+  0.9.0 на планшете (push в `main` = выпуск APK).
 - Robolectric: `ScreensSmokeTest` (Ежедневник, название, Запись, палитра/пипетка, статусы/заливка/выноски, ладонь, склейка надписей, Доска, фигуры, правка
   картинок, выделение/лассо/копия/цвет, Проверка планшета) и `ShapeRecognizerTest` (обычный JUnit).
   Локально часто 429 от Maven Central на образ Android — повторить.
