@@ -53,11 +53,14 @@ class StatusRowsTest {
     @Test
     fun twoStatusListsAndOldBoards() {
         val b = Board.create("Новая")
-        assertEquals(listOf("Конструкция не принята", "В оформлении", "На подписи у Заказчика", "Передано в ПТО", "Скан в архиве"),
-            b.statuses(BoardStatus.ID).map { it.name })
+        assertEquals(listOf("Не выполнено", "Не предоставлена", "В работе", "На подписи АН", "Не согласована", "На подписи у заказчика",
+            "Возврат на корректировку", "Сдано в ПТО"), b.statuses(BoardStatus.ID).map { it.name })
+        assertEquals("сдано — «Сдано в ПТО»", listOf("Сдано в ПТО"), b.statuses(BoardStatus.ID).filter { it.done }.map { it.name })
+        assertEquals(4, b.statuses(BoardStatus.CK).size)
+        assertEquals(3, b.statuses(BoardStatus.DWG).size)
         assertEquals(5, b.statuses(BoardStatus.CON).size)
         val c0 = b.firstStatus(BoardStatus.CON)
-        assertEquals("по кругу внутри своего списка", b.statuses(BoardStatus.ID)[0].id, b.nextStatus(b.statuses(BoardStatus.ID)[4].id, BoardStatus.ID))
+        assertEquals("по кругу внутри своего списка", b.statuses(BoardStatus.ID)[0].id, b.nextStatus(b.statuses(BoardStatus.ID).last().id, BoardStatus.ID))
         assertEquals(b.statuses(BoardStatus.CON)[1].id, b.nextStatus(c0, BoardStatus.CON))
         // Признак списка — только у конструкций (у статусов ИД JSON как до 0.18) и сохраняется.
         val js = b.statusesJson()
@@ -69,7 +72,7 @@ class StatusRowsTest {
         // Старая доска с нетронутым списком «Не сдано / В работе / Сдано», меток нет — список ИД Владимира.
         val old = """{"id":"o1","title":"Старая","statuses":[{"id":"s0","name":"Не сдано","color":1},{"id":"s1","name":"В работе","color":2},{"id":"s2","name":"Сдано","color":3}]}"""
         val o1 = Board.fromJson(JSONObject(old))
-        assertEquals("Конструкция не принята", o1.statuses(BoardStatus.ID)[0].name)
+        assertEquals("Не выполнено", o1.statuses(BoardStatus.ID)[0].name)
         assertEquals(5, o1.statuses(BoardStatus.CON).size)
         // На двух планшетах одна и та же старая доска получает одинаковые статусы (общая доска сходится).
         assertEquals(o1.entryHashes(), Board.fromJson(JSONObject(old)).entryHashes())
@@ -78,6 +81,21 @@ class StatusRowsTest {
         val o2 = Board.fromJson(JSONObject(used))
         assertEquals(listOf("Не сдано", "В работе", "Сдано"), o2.statuses(BoardStatus.ID).map { it.name })
         assertEquals("В работе", o2.status(o2.stickers[0].sid).name)
+
+        // Доска 0.18 с нетронутым списком ИД: номера i0–i3 те же, названия — ИГС, «Скан в архиве» (i4) → «Сдано в ПТО».
+        val b18 = Board.create("0.18")
+        b18.statuses.clear()
+        b18.statuses += listOf(BoardStatus("i0", "Конструкция не принята", 1), BoardStatus("i1", "В оформлении", 2),
+            BoardStatus("i2", "На подписи у Заказчика", 3), BoardStatus("i3", "Передано в ПТО", 4), BoardStatus("i4", "Скан в архиве", 5))
+        b18.statuses += Board.conStatuses()
+        b18.stickers += BoardSticker(1f, 2f, "i4", 1f)
+        b18.stickers += BoardSticker(1f, 2f, "i1", 1f)
+        val u = Board.fromJson(JSONObject(b18.toJsonString()))
+        assertEquals(IdTables.igsStatuses().map { it.id + it.name }, u.statuses(BoardStatus.ID).map { it.id + it.name })
+        assertEquals(listOf("Сдано в ПТО", "В работе"), u.stickers.map { u.status(it.sid).name })
+        assertEquals(5, u.statuses(BoardStatus.CON).size)
+        assertEquals(4, u.statuses(BoardStatus.CK).size)
+        assertEquals("одинаково на двух планшетах", u.entryHashes(), Board.fromJson(JSONObject(b18.toJsonString())).entryHashes())
 
         // Строка ИД: JSON, снимок для «Отменить», следующая захватка.
         val r = BoardRow(10f, 20f, 1.5f, "Захватка 1 — Опалубка", true, false, b.statuses(BoardStatus.ID)[3].id)
@@ -153,8 +171,10 @@ class StatusRowsTest {
         fun sy(y: Float) = (y - bd().camY) * bd().camZ
         val ids = bd().statuses(BoardStatus.ID)
 
-        // «Строка ИД»: касание пером у захватки — название (предложено «Захватка 1 — ») → строка.
-        root.findViewWithTag<View>("board_tool_row").performClick()
+        // «Строка ИД» (с 0.20 инструмента на панели нет — его место заняла «Таблица ИД», старые строки работают):
+        // касание пером у захватки — название (предложено «Захватка 1 — ») → строка.
+        a.javaClass.getDeclaredMethod("setTool", BoardActivity.Tool::class.java, Boolean::class.javaPrimitiveType)
+            .apply { isAccessible = true }.invoke(a, BoardActivity.Tool.ROW, false)
         tap(view, MotionEvent.TOOL_TYPE_STYLUS, sx(300f), sy(400f))
         var dlg = ShadowAlertDialog.getLatestAlertDialog()
         val edit = dlg.window!!.decorView.findViewWithTag<android.widget.EditText>("row_title")
@@ -228,7 +248,7 @@ class StatusRowsTest {
 
         // Сводка: таблица для Excel — разделы строками.
         val table = a.summaryTable().trim().lines()
-        assertTrue(table[0].startsWith("Раздел\tСтрок ИД\tЧек-лист ✓\tDWG ✓\tКонструкция не принята"))
+        assertTrue(table[0].startsWith("Раздел\tСтрок ИД\tЧек-лист ✓\tDWG ✓\t" + ids[0].name))
         val kj1 = table.first { it.startsWith("КЖ 6.1.1\t") }.split('\t')
         assertEquals(listOf("КЖ 6.1.1", "2", "1", "0", "1", "1", "0", "0", "0"), kj1.take(9))
         val kj2 = table.first { it.startsWith("КЖ 6.1.2\t") }.split('\t')

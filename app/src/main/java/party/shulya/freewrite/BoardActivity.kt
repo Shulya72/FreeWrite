@@ -32,18 +32,18 @@ import kotlin.math.roundToInt
  */
 class BoardActivity : Activity(), BoardView.Host {
 
-    enum class Tool { HAND, WRITE, TEXT, PEN, MARKER, SHAPE, FILL, ERASER, SELECT, STATUS, ROW, CALLOUT, FRAME, PIPETTE }
+    enum class Tool { HAND, WRITE, TEXT, PEN, MARKER, SHAPE, FILL, ERASER, SELECT, STATUS, ROW, TABLE, CALLOUT, FRAME, PIPETTE }
 
     private lateinit var store: BoardStore
     private lateinit var noteStore: NoteStore
-    private lateinit var board: Board
+    internal lateinit var board: Board
     private lateinit var engine: HandwritingEngine
     private val handler = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
     private lateinit var pdf: PdfInsert
 
     private lateinit var root: LinearLayout
-    private lateinit var view: BoardView
+    internal lateinit var view: BoardView
     private lateinit var titleView: TextView
     private lateinit var zoomLabel: TextView
     private lateinit var hintView: TextView
@@ -342,9 +342,9 @@ class BoardActivity : Activity(), BoardView.Host {
 
         val tools = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         // Без пера главное — двигать, метки, выноски, надписи с клавиатуры; с пером — письмо и рисование.
-        val order = if (stylus) listOf(Tool.HAND, Tool.WRITE, Tool.PEN, Tool.MARKER, Tool.SHAPE, Tool.ROW, Tool.STATUS,
+        val order = if (stylus) listOf(Tool.HAND, Tool.WRITE, Tool.PEN, Tool.MARKER, Tool.SHAPE, Tool.TABLE, Tool.STATUS,
             Tool.CALLOUT, Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.TEXT, Tool.FRAME)
-        else listOf(Tool.HAND, Tool.ROW, Tool.STATUS, Tool.CALLOUT, Tool.TEXT, Tool.PEN, Tool.MARKER, Tool.SHAPE,
+        else listOf(Tool.HAND, Tool.TABLE, Tool.STATUS, Tool.CALLOUT, Tool.TEXT, Tool.PEN, Tool.MARKER, Tool.SHAPE,
             Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.FRAME, Tool.WRITE)
         for (t in order) when (t) {
             Tool.HAND -> addTool(tools, t, R.drawable.ic_hand, "Рука")
@@ -355,6 +355,7 @@ class BoardActivity : Activity(), BoardView.Host {
             Tool.SHAPE -> addTool(tools, t, R.drawable.ic_shapes, "Фигуры")
             Tool.STATUS -> addTool(tools, t, R.drawable.ic_status, "Метка")
             Tool.ROW -> addTool(tools, t, R.drawable.ic_check, "Строка ИД")
+            Tool.TABLE -> addTool(tools, t, R.drawable.ic_table, "Таблица ИД")
             Tool.CALLOUT -> addTool(tools, t, R.drawable.ic_callout, "Выноска")
             Tool.FILL -> addTool(tools, t, R.drawable.ic_fill, "Заливка")
             Tool.ERASER -> addTool(tools, t, R.drawable.ic_eraser, "Ластик")
@@ -538,6 +539,8 @@ class BoardActivity : Activity(), BoardView.Host {
             Tool.TEXT -> hint("Коснитесь, где написать, — откроется клавиатура", 3000)
             Tool.STATUS -> hint("Коснитесь $penWord — метка статуса ИД. Касание метки — следующий статус, подержать — перетащить", 3500)
             Tool.ROW -> hint("Коснитесь $penWord у захватки — встанет строка ИД: Чек-лист, DWG, ИГС. Касание галочки — отметить, касание ИГС — следующий статус, подержать — перетащить", 5500)
+            Tool.TABLE -> hint("Коснитесь $penWord у чертежа — встанет таблица ИД с шифром. В таблице: касание пальцем — карточка строки, " +
+                (if (stylus) "пером — статус у ячейки, «В текст» — писать прямо в ячейку" else "«+ строка» внизу"), 5500)
             Tool.FILL -> hint(if (stylus) "Касайтесь пером углов захватки по очереди, касание первой точки — залить. Или обведите одним движением"
                 else "Ведите пальцем к углу захватки — в лупе видно точно, отпустите — точка. Касание первой точки — залить.$two", 5000)
             Tool.CALLOUT -> hint("Проведите $penWord от места на чертеже туда, где будет надпись.$two", 4000)
@@ -579,7 +582,7 @@ class BoardActivity : Activity(), BoardView.Host {
         hint("Пипетка: коснитесь пером или пальцем того, чей цвет взять", 3500)
     }
 
-    private fun hint(text: String, ms: Long = 2600) {
+    internal fun hint(text: String, ms: Long = 2600) {
         hintView.text = text
         hintView.animate().cancel()
         hintView.alpha = 1f
@@ -638,7 +641,7 @@ class BoardActivity : Activity(), BoardView.Host {
      * Запомнить доску для «Отменить». Снимок — строки объектов; у неизменённых рисунков строки
      * общие с прошлыми снимками, поэтому 60 шагов отмены не занимают 60 копий большой доски.
      */
-    private fun pushUndo() {
+    internal fun pushUndo() {
         undoStack.addLast(board.snapshot())
         while (undoStack.size > 60) undoStack.removeFirst()
         redoStack.clear()
@@ -674,7 +677,7 @@ class BoardActivity : Activity(), BoardView.Host {
         restore(redoStack.removeLast())
     }
 
-    private fun changed() {
+    internal fun changed() {
         if (::legend.isInitialized && legend.visibility == View.VISIBLE) buildLegend()
         view.pruneSelection()
         pipetteSnap = null
@@ -860,7 +863,7 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     /** После метки, выноски, надписи на телефоне — снова «Рука», чтобы сразу двигать чертёж. */
-    private fun backToHand() {
+    internal fun backToHand() {
         if (!stylus && tool != Tool.HAND) setTool(Tool.HAND, quiet = true)
     }
 
@@ -923,6 +926,8 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     override fun onStrokeEnd(stroke: InkStroke, style: NoteInkView.StrokeStyle, tap: Boolean) {
+        // Касание пером статуса в таблице ИД — список у ячейки (а не точка на доске).
+        if (tap && style.kind != "fill") stroke.points.firstOrNull()?.let { p -> if (tableUi.penTap(p.x, p.y)) { view.invalidate(); return } }
         if (style.kind == "write") {
             val g = current ?: Group().also { current = it }
             g.strokes += stroke
@@ -995,7 +1000,23 @@ class BoardActivity : Activity(), BoardView.Host {
         if (changedAny) changed()
     }
 
+    /** Таблицы ИД (ТЗ «Учёт ИГС», шаг 1). */
+    internal val tableUi by lazy { TableUi(this) }
+
+    override fun onTableTap(t: BoardTable, h: TableHit) = tableUi.onTap(t, h, view.lastTapByPen)
+
+    override fun onTableLongPress(t: BoardTable, h: TableHit) = tableUi.onLongPress(t, h)
+
     override fun onStatusTap(x: Float, y: Float) {
+        board.tables.lastOrNull { view.tableDraw.bounds(board, it, android.graphics.RectF()).contains(x, y) }?.let { t ->
+            val th = view.tableDraw.hit(board, t, x, y) ?: return
+            if (th.part == TableHit.TITLE || th.part == TableHit.HEAD) view.select(listOf(t)) else tableUi.onTap(t, th, view.lastTapByPen)
+            return
+        }
+        if (tool == Tool.TABLE) {
+            tableUi.create(x, y)
+            return
+        }
         val h = view.hitAt(x, y)
         if (h?.kind == BoardView.Kind.ROW) {
             val r = board.rows[h.index]
@@ -1339,7 +1360,7 @@ class BoardActivity : Activity(), BoardView.Host {
             12f, Ui.MUTED).apply { setPadding(0, 0, 0, dp(4f)) })
         var idx = 0
         for (group in listOf(BoardStatus.ID, BoardStatus.CON)) {
-            legend.addView(Ui.text(this, if (group == BoardStatus.ID) "ИД — метки и строки" else "Конструкции — выноски", 13f, Ui.INK2, bold = true)
+            legend.addView(Ui.text(this, if (group == BoardStatus.ID) "ИГС — таблицы, метки, строки" else "Конструкции — выноски", 13f, Ui.INK2, bold = true)
                 .apply { setPadding(0, dp(8f), 0, dp(2f)) })
             for (st in board.statuses(group)) {
                 val on = st.id == hl
@@ -1371,6 +1392,10 @@ class BoardActivity : Activity(), BoardView.Host {
             }
         }
         val actions = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        if (board.tables.isNotEmpty()) actions.addView(Ui.pill(this, "Сводка ИГС", Color.WHITE, Ui.ACCENT).apply {
+            tag = "legend_igs"
+            setOnClickListener { tableUi.summaryDialog(fr = board.frames.firstOrNull { it.id == legendSection }) }
+        }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { marginEnd = dp(8f) })
         actions.addView(Ui.pill(this, "Сводка по разделам", Ui.INK, Ui.DESK).apply {
             tag = "legend_summary"
             setOnClickListener { summaryDialog() }
@@ -1511,14 +1536,14 @@ class BoardActivity : Activity(), BoardView.Host {
 
     // ---------------------------------------------------------------- выделенное: панель и действия
 
-    private fun buildSelectionBar() {
+    internal fun buildSelectionBar() {
         val sel = view.selection
         selBar.removeAllViews()
         if (sel.isEmpty()) {
             selBar.visibility = View.GONE
             return
         }
-        val label = when {
+        val label = tableUi.selectionLabel(sel) ?: when {
             sel.size > 1 -> "Выделено: ${sel.size}"
             sel[0] is BoardText -> "Надпись"
             sel[0] is BoardImage -> "Картинка"
@@ -1535,6 +1560,7 @@ class BoardActivity : Activity(), BoardView.Host {
         val label1 = label + sec
         val label2 = if (sel.size == 1 && board.sync.isShared) whoEdited(sel[0])?.let { "$label1 · $it" } ?: label1 else label1
         val buttons = ArrayList<TextView>()
+        buttons += tableUi.selectionButtons(sel)
         if (sel.size == 1 && sel[0] is BoardText) {
             buttons += Ui.pill(this, "Изменить", Ui.INK, Ui.DESK).apply { tag = "sel_edit"; setOnClickListener { editText(sel[0] as BoardText) } }
         }
@@ -1587,7 +1613,7 @@ class BoardActivity : Activity(), BoardView.Host {
         if (sel.any { it is Drawing && isClosed(it) }) {
             buttons += Ui.pill(this, "Залить", Ui.INK, Ui.DESK).apply { tag = "sel_fill"; setOnClickListener { fillSelectedShapes() } }
         }
-        if (!sel.all { it is BoardFrame }) {
+        if (!sel.all { it is BoardFrame } && sel.none { it is BoardTable || it is BoardRec }) {
             buttons += Ui.pill(this, "Копия", Ui.INK, Ui.DESK).apply { tag = "sel_copy"; setOnClickListener { duplicateSelection() } }
         }
         if (sel.any { it is BoardText || it is Drawing || it is BoardFill }) {
@@ -1609,6 +1635,8 @@ class BoardActivity : Activity(), BoardView.Host {
         is BoardCallout -> o.id
         is BoardFrame -> o.id
         is BoardRow -> o.id
+        is BoardTable -> o.id
+        is BoardRec -> o.id
         else -> null
     }
 
@@ -1719,7 +1747,13 @@ class BoardActivity : Activity(), BoardView.Host {
     private fun deleteSelection() {
         val sel = view.selection.toList()
         if (sel.isEmpty()) return
+        if (sel.any { it is BoardTable || it is BoardRec }) { tableUi.confirmDelete(sel) { removeSelection(sel) }; return }
+        removeSelection(sel)
+    }
+
+    private fun removeSelection(sel: List<Any>) {
         pushUndo()
+        tableUi.removeSelected(sel)
         board.texts.removeAll { t -> sel.any { it === t } }
         board.images.removeAll { m -> sel.any { it === m } }
         board.stickers.removeAll { s -> sel.any { it === s } }
@@ -1895,8 +1929,10 @@ class BoardActivity : Activity(), BoardView.Host {
             box.removeAllViews()
             box.addView(Ui.text(this, "Касание статуса переключает его по своему списку сверху вниз.", 13f, Ui.MUTED)
                 .apply { setPadding(0, 0, 0, dp(4f)) })
-            for (group in listOf(BoardStatus.ID, BoardStatus.CON)) {
-                box.addView(Ui.text(this, if (group == BoardStatus.ID) "ИД — метки и ИГС в строках ИД" else "Конструкции — выноски",
+            for (group in listOf(BoardStatus.ID, BoardStatus.CK, BoardStatus.DWG, BoardStatus.CON)) {
+                box.addView(Ui.text(this, when (group) {
+                    BoardStatus.ID -> "ИГС — таблицы ИД, метки, строки"; BoardStatus.CK -> "Чек-лист"; BoardStatus.DWG -> "DWG"
+                    else -> "Конструкции — выноски" },
                     15f, Ui.INK, bold = true).apply { setPadding(0, dp(12f), 0, dp(4f)); tag = "status_group_$group" })
                 val list = board.statuses(group)
                 for ((k, st) in list.withIndex()) {
@@ -1904,7 +1940,7 @@ class BoardActivity : Activity(), BoardView.Host {
                     row.addView(dot(st.color), LinearLayout.LayoutParams(dp(18f), dp(18f)))
                     row.addView(Ui.text(this, st.name, 16f, Ui.INK).apply { setPadding(dp(10f), 0, dp(6f), 0) },
                         LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-                    row.addView(Ui.mono(this, board.countStatus(st.id).toString(), 13f))
+                    row.addView(Ui.mono(this, statusUse(st).toString() + if (st.done && group == BoardStatus.ID) " · сдано" else "", 13f))
                     // ▲▼ — порядок внутри своего списка: меняемся местами с соседом того же списка.
                     fun swap(other: BoardStatus) {
                         pushUndo()
@@ -1952,6 +1988,11 @@ class BoardActivity : Activity(), BoardView.Host {
         for ((c, v) in swatches) v.setOnClickListener { color = c; paint() }
         paint()
         box.addView(grid, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(8f) })
+        val doneBox = CheckBox(this).apply {
+            text = "Это «сдано» (считать в сводке сданной)"; isChecked = st?.done == true; tag = "status_done"
+            visibility = if (group == BoardStatus.ID) View.VISIBLE else View.GONE
+        }
+        box.addView(doneBox)
         AlertDialog.Builder(this)
             .setTitle(if (st == null) "Новый статус" else "Статус")
             .setView(box)
@@ -1961,6 +2002,7 @@ class BoardActivity : Activity(), BoardView.Host {
                 pushUndo()
                 val result = if (st == null) BoardStatus(Board.newStatusId(), n, color, group).also { board.statuses += it }
                 else st.also { it.name = n; it.color = color }
+                if (group == BoardStatus.ID) result.done = doneBox.isChecked
                 changed()
                 done(result)
             }
@@ -1968,10 +2010,17 @@ class BoardActivity : Activity(), BoardView.Host {
             .show()
     }
 
+    /** Сколько раз статус стоит на доске (Чек-лист и DWG — в строках таблиц). */
+    private fun statusUse(st: BoardStatus): Int = when (st.group) {
+        BoardStatus.CK -> board.recs.count { it.ck == st.id }
+        BoardStatus.DWG -> board.recs.count { it.dwg == st.id }
+        else -> board.countStatus(st.id)
+    }
+
     private fun deleteStatus(st: BoardStatus, done: () -> Unit) {
         val same = board.statuses(st.group)
         if (same.size <= 1) { hint("В списке должен остаться хотя бы один статус"); return }
-        val used = board.countStatus(st.id)
+        val used = statusUse(st)
         val rest = same.first { it.id != st.id }
         val msg = if (used == 0) "Удалить статус «${st.name}»?"
         else "Статус «${st.name}» стоит у $used меток, строк и выносок. Удалить? Они станут «${rest.name}»."
@@ -1982,6 +2031,11 @@ class BoardActivity : Activity(), BoardView.Host {
                 for (s in board.stickers) if (s.sid == st.id) s.sid = rest.id
                 for (c in board.callouts) if (c.sid == st.id) c.sid = rest.id
                 for (r in board.rows) if (r.sid == st.id) r.sid = rest.id
+                for (r in board.recs) when (st.group) {
+                    BoardStatus.CK -> if (r.ck == st.id) r.ck = rest.id
+                    BoardStatus.DWG -> if (r.dwg == st.id) r.dwg = rest.id
+                    BoardStatus.ID -> if (r.igs == st.id) r.igs = rest.id
+                }
                 board.statuses.removeAll { it.id == st.id }
                 changed()
                 done()
@@ -2150,6 +2204,13 @@ class BoardActivity : Activity(), BoardView.Host {
         if (!committing.remove(g)) return
         val best = g.candidates?.firstOrNull()?.text?.trim().orEmpty()
         pushUndo()
+        // Написали пером над таблицей ИД — в ячейку (ТЗ, раздел 14.3).
+        val gbb = NoteInkView.bounds(g.strokes)
+        if (tableUi.penIntoCell((gbb[0] + gbb[2]) / 2f, (gbb[1] + gbb[3]) / 2f, best)) {
+            view.fade(g.strokes)
+            changed()
+            return
+        }
         // Крупная стрелка, рамка или круг — это рисунок, а не буква: делаем ровную фигуру.
         val z = board.camZ
         val shape = ShapeTool.fromWriting(g.strokes, best, Ui.dpf(this, 150f) / z, Ui.dpf(this, 4f) / z)

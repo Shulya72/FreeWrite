@@ -31,13 +31,13 @@ class BoardSync {
     class Entry(val hash: Long, val rev: String)
 
     /** Предметы доски: номер → отпечаток и отметка правки. */
-    val objs = HashMap<String, Entry>()
+    val objs: HashMap<String, Entry> = LinkedHashMap() // порядок как в файле: сохранить → прочитать → сохранить даёт тот же файл
 
     /** Удалённые предметы: номер → когда удалён (чтобы удаление дошло до коллеги, а не «воскресло»). */
-    val tomb = HashMap<String, String>()
+    val tomb: HashMap<String, String> = LinkedHashMap()
 
     /** Картинки, которые у коллег уже есть (отправляли или получили) — «только новое» их не шлёт. */
-    val peerImages = HashSet<String>()
+    val peerImages: HashSet<String> = LinkedHashSet()
 
     // ---- общая доска на сервере (0.10) ----
 
@@ -50,12 +50,12 @@ class BoardSync {
     /** Все свои правки с отметкой не позже этой уже на сервере. */
     var pushedRev = ""
     /** Картинки, которые уже есть на сервере. */
-    val uploadedImages = HashSet<String>()
+    val uploadedImages: HashSet<String> = LinkedHashSet()
     /** Участники общей доски: номер планшета → имя (из правок с сервера). */
-    val members = HashMap<String, String>()
+    val members: HashMap<String, String> = LinkedHashMap()
 
     /** Отметки правок, только что полученных с сервера (их не надо отправлять обратно). Не сохраняется. */
-    val seenRemote = HashMap<String, String>()
+    val seenRemote: HashMap<String, String> = LinkedHashMap()
 
     val isShared: Boolean get() = remoteKey.isNotEmpty()
 

@@ -301,7 +301,7 @@ class EditToolsTest {
         // Строки легенды: сначала 5 статусов ИД, потом 5 конструкций.
         assertEquals("3 метки «${ids[2].name}»", "3", count(2))
         assertEquals("2", count(1))
-        assertEquals("выноска — в списке конструкций", "1", count(5 + 2))
+        assertEquals("выноска — в списке конструкций", "1", count(ids.size + 2))
         root.findViewWithTag<View>("legend_row_2").performClick()
         idle()
         assertEquals(ids[2].id, view.highlight)

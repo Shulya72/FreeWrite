@@ -80,7 +80,7 @@ object Remote {
 
     fun statusJson(s: BoardStatus): String =
         JSONObject().put("id", s.id).put("name", s.name).put("color", s.color)
-            .also { if (s.group != BoardStatus.ID) it.put("g", s.group) }.toString()
+            .also { if (s.group != BoardStatus.ID) it.put("g", s.group); if (s.done) it.put("done", 1) }.toString()
 
     /** Свои правки, которых ещё нет на сервере, — по порядку отметок. Доска должна быть отмечена (stamp). */
     fun pending(board: Board): List<Change> {
@@ -103,6 +103,8 @@ object Remote {
         for (c in board.callouts) add(c.id, "callout") { Board.calloutJson(c) }
         for (fr in board.frames) add(fr.id, "frame") { Board.frameJson(fr) }
         for (r in board.rows) add(r.id, "row") { Board.rowJson(r) }
+        for (t in board.tables) add(t.id, "table") { IdTables.tableJson(t) }
+        for (r in board.recs) add(r.id, "rec") { IdTables.recJson(r) }
         for ((id, r) in s.tomb) {
             if (r.isNotEmpty() && r > after && s.seenRemote[id] != r) out += Change(id, r, "", null)
         }
@@ -192,6 +194,8 @@ object Remote {
         board.callouts.removeAll { it.id == id }
         board.frames.removeAll { it.id == id }
         board.rows.removeAll { it.id == id }
+        board.tables.removeAll { it.id == id }
+        board.recs.removeAll { it.id == id }
         if (board.statuses.size > 1) board.statuses.removeAll { it.id == id }
     }
 
@@ -217,7 +221,7 @@ object Remote {
         }
         val j = JSONObject(data)
         when (r.kind) {
-            "status" -> put(board.statuses, Board.parseStatus(j).let { BoardStatus(r.id, it.name, it.color, it.group) }) { it.id }
+            "status" -> put(board.statuses, Board.parseStatus(j).let { BoardStatus(r.id, it.name, it.color, it.group).also { s -> s.done = it.done } }) { it.id }
             "stroke" -> put(board.strokes, Board.parseDrawing(j).also { it.id = r.id }) { it.id }
             "text" -> put(board.texts, Board.parseText(j).also { it.id = r.id }) { it.id }
             "image" -> put(board.images, Board.parseImage(j).also { it.id = r.id }) { it.id }
@@ -232,6 +236,8 @@ object Remote {
                 val def = board.statuses.firstOrNull { it.group == BoardStatus.ID }?.id ?: "s0"
                 put(board.rows, Board.parseRow(j, def).also { it.id = r.id }) { it.id }
             }
+            "table" -> put(board.tables, IdTables.parseTable(j).also { it.id = r.id }) { it.id }
+            "rec" -> put(board.recs, IdTables.parseRec(j).also { it.id = r.id }) { it.id }
             else -> {} // вид из будущей версии — пропускаем
         }
     }

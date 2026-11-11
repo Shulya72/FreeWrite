@@ -755,7 +755,7 @@ class ScreensSmokeTest {
             idle()
         }
         assertEquals(listOf("Сдали опалубку", "Забетонировано", "Сняли опалубку"), board().statuses.takeLast(3).map { it.name })
-        assertEquals("ИД 5 + конструкции 5 + три своих", 13, findAll(statusesRoot) { it.tag == "status_row" }.size)
+        assertEquals("ИГС 8 + Чек-лист 4 + DWG 3 + конструкции 5 + три своих", 23, findAll(statusesRoot) { it.tag == "status_row" }.size)
         assertTrue("свои — в списке конструкций", board().statuses.takeLast(3).all { it.group == BoardStatus.CON })
         screenshot(statusesRoot.rootView, "board-statuses.png")
         org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().dismiss()
