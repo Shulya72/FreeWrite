@@ -199,10 +199,11 @@ const B = {
   // разобранное — пересобирается после каждой порции правок
   statuses: [], strokes: [], texts: [], images: [], fills: [], frames: [], callouts: [], stickers: [], rows: [],
   tables: [], recs: [],  // таблицы ИД и их строки (0.20, ТЗ «Учёт ИГС»)
+  vedoms: [], vitems: [], // ведомости и их позиции (0.21)
 };
 
 function rebuild() {
-  const by = { status: [], stroke: [], text: [], image: [], fill: [], frame: [], callout: [], sticker: [], row: [], table: [], rec: [] };
+  const by = { status: [], stroke: [], text: [], image: [], fill: [], frame: [], callout: [], sticker: [], row: [], table: [], rec: [], vedom: [], vitem: [] };
   B.title = "Доска";
   for (const [id, o] of B.objs) {
     if (id === "~title") { if (o.d && o.d.title) B.title = o.d.title; continue; }
@@ -225,6 +226,8 @@ function rebuild() {
   const tids = new Set(B.tables.map((t) => t.id));
   B.recs = by.rec.map((o) => o.d).filter((r) => tids.has(r.t));
   for (const t of B.tables) t._lay = null;
+  B.vedoms = by.vedom.map((o) => o.d);
+  B.vitems = by.vitem.map((o) => o.d);
   for (const t of B.texts) t._w = null;
   for (const c of B.callouts) c._w = null;
   for (const r of B.rows) r._key = null;
@@ -305,19 +308,30 @@ function rowH(r) { return 40 * r.scale; }
 
 // ------------------------------------------------------------ таблицы ИД (как TableDraw в приложении)
 
-const TCOLS = ["zah", "con", "work", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note"];
-const TNAME = { zah: "Захватка", con: "Конструкция", work: "Вид работ", date: "Дата работ", ck: "Чек-лист", dwg: "DWG", igs: "ИГС",
+const TCOLS = ["aosr", "nsch", "zah", "con", "work", "vol", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note"];
+const TNAME = { zah: "Захватка", con: "Конструкция", work: "Вид работ", nsch: "№ схемы", aosr: "№ АОСР", vol: "Объём по схеме", date: "Дата работ", ck: "Чек-лист", dwg: "DWG", igs: "ИГС",
   dcust: "Отдал заказчику", dpto: "Сдано в ПТО", who: "Исполнитель", note: "Примечание" };
 const TF = { T: 40, H: 26, R: 30, F: 30, P: 9, FONT: 13, HF: 11, TF: 19 };
 const TGROUP = { igs: "id", ck: "ck", dwg: "dwg" };
-function tAllCols(t) { return (t.cols && t.cols.length) ? t.cols : TCOLS.map((k) => ({ k })); }
+function tAllCols(t) {
+  if (!(t.cols && t.cols.length)) return TCOLS.map((k) => ({ k }));
+  // Столбец из новой версии, которого нет в своём списке (объём 0.21), — после соседа слева по обычному порядку.
+  const cols = t.cols.slice();
+  TCOLS.forEach((k, oi) => {
+    if (cols.some((c) => c.k === k)) return;
+    let at = 0;
+    for (let pi = oi - 1; pi >= 0; pi--) { const i = cols.findIndex((c) => c.k === TCOLS[pi]); if (i >= 0) { at = i + 1; break; } }
+    cols.splice(at, 0, { k });
+  });
+  return cols;
+}
 function tCols(t) { return tAllCols(t).filter((c) => !c.h); }
 function colTitle(c) { return c.n || TNAME[c.k] || "Столбец"; }
 function isSt(k) { return k === "igs" || k === "ck" || k === "dwg"; }
 function isDate(k) { return k === "date" || k === "dcust" || k === "dpto"; }
 function recVal(r, k) {
   switch (k) {
-    case "zah": return r.z || ""; case "con": return r.c || ""; case "work": return r.w || ""; case "date": return r.d || "";
+    case "zah": return r.z || ""; case "con": return r.c || ""; case "work": return r.w || ""; case "nsch": return r.ns || ""; case "aosr": return r.na || ""; case "vol": return r.v || ""; case "date": return r.d || "";
     case "ck": return r.ck || "k0"; case "dwg": return r.dwg || "d0"; case "igs": return r.sid || "i0";
     case "dcust": return r.dc || ""; case "dpto": return r.dp || ""; case "who": return r.who || ""; case "note": return r.n || "";
     default: return (r.x && r.x[k]) || "";
@@ -325,7 +339,35 @@ function recVal(r, k) {
 }
 function stIn(group, id) { const l = statuses(group); return l.find((s) => s.id === id) || l[0] || status(id); }
 function dShort(iso) { const p = (iso || "").split("-"); return p.length === 3 ? p[2] + "." + p[1] + "." + p[0].slice(2) : (iso || ""); }
-function cellText(r, k) { return isSt(k) ? stIn(TGROUP[k], recVal(r, k)).name : isDate(k) ? dShort(recVal(r, k)) : recVal(r, k); }
+function cellText(r, k) {
+  if (k === "vol") { const v = recVal(r, k); if (!v) return ""; const t = B.tables.find((x) => x.id === r.t); const u = t ? unitFor(t, r.w || "") : ""; return volFmt(+v) + (u ? " " + u : ""); }
+  return isSt(k) ? stIn(TGROUP[k], recVal(r, k)).name : isDate(k) ? dShort(recVal(r, k)) : recVal(r, k);
+}
+// Объёмы (0.21): как IdTables в приложении.
+function normW(s) { return String(s || "").toLowerCase().replace(/ё/g, "е").replace(/захватка|захв\.|участок/g, "").replace(/[\s№"«»]/g, "").replace(/[.,;:]+$/, ""); }
+function defaultUnit(w) { w = String(w || "").toLowerCase();
+  return /опалуб/.test(w) ? "м²" : /армир|арматур/.test(w) ? "т" : /монтаж/.test(w) ? "шт" : /бетон|засыпк|разработ|кладк|грунт/.test(w) ? "м³" : ""; }
+function planOf(t, w) { return (t.plan || []).find((p) => normW(p.w) === normW(w)); }
+function unitFor(t, w) { const p = planOf(t, w); return (p && p.u) || defaultUnit(w); }
+function volFmt(d) {
+  const neg = d < 0; let s = Math.abs(d).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  let [i, f] = s.split("."); i = i.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0");
+  return (neg ? "−" : "") + i + (f ? "," + f : "");
+}
+function volumes(t, rows) {
+  const keys = new Map();
+  for (const p of t.plan || []) if (!keys.has(normW(p.w))) keys.set(normW(p.w), p.w);
+  for (const r of rows) if (r.v && !keys.has(normW(r.w))) keys.set(normW(r.w), r.w || "");
+  return [...keys].map(([k, w]) => {
+    const of = rows.filter((r) => normW(r.w) === k), wv = of.filter((r) => r.v);
+    const p = (t.plan || []).find((x) => normW(x.w) === k);
+    return { work: w || "Без вида работ", unit: unitFor(t, w), n: wv.length, fact: wv.reduce((s, r) => s + (+r.v || 0), 0),
+      plan: p ? +p.v : null, missing: of.filter((r) => !r.v).length };
+  });
+}
+function secTitle(t) { const f = sectionOf(t, "table"); return f ? String(f.title || "").trim() : ""; }
+function fullTitle(t) { const s = secTitle(t), n = String(t.title || "").trim(); return !s ? n : (!n || normW(n) === normW(s)) ? s : s + " · " + n; }
+function secPrefix(t) { const s = secTitle(t); return (!s || !String(t.title || "").trim() || normW(t.title) === normW(s)) ? "" : s; }
 function recDone(r) { return !!stIn("id", r.sid || "i0").done; }
 function tRows(t) { return B.recs.filter((r) => r.t === t.id).sort((a, b) => ((a.o || 0) - (b.o || 0)) || (a.id < b.id ? -1 : 1)); }
 function plural(n, one, few, many) { const m10 = n % 10, m100 = n % 100; return n + " " + (m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many); }
@@ -340,18 +382,23 @@ function tLayout(t) {
       w = Math.min(Math.max(w, c.k === "igs" ? 120 : 70), 300);
     } else {
       if (isDate(c.k)) w = Math.max(w, tw("00.00.00", TF.FONT, false) + 2 * TF.P);
-      else for (const r of rows) w = Math.max(w, tw(cellText(r, c.k), TF.FONT, c.k === "zah") + 2 * TF.P);
+      else for (const r of rows) w = Math.max(w, tw(cellText(r, c.k), TF.FONT, c.k === "zah") + 2 * TF.P + (c.k === "vol" ? 4 : 0));
       w = Math.min(Math.max(w, c.k === "zah" ? 64 : 56), c.k === "note" ? 260 : 230);
     }
     return w;
   });
   const info = plural(rows.length, "схема", "схемы", "схем") + " · сдано в ПТО " + rows.filter(recDone).length;
   let total = widths.reduce((a, b) => a + b, 0);
-  const need = Math.max(TF.P * 2 + tw(t.title || "Без шифра", TF.TF, true) + 24 + tw(info, 12, false) + TF.P,
-    TF.P * 3 + tw("+ строка", TF.FONT, true) + tw("+ следующая захватка", TF.FONT, true) + TF.P * 2);
+  const prefix = secPrefix(t);
+  const vol = cols.some((c) => c.k === "vol") && rows.length ? volumes(t, rows) : null;
+  const missing = vol ? vol.reduce((s, v) => s + v.missing, 0) : 0;
+  const need = Math.max(TF.P * 2 + tw(t.title || "Без шифра", TF.TF, true) + (prefix ? measure(prefix + " ·", 14, false) + 8 : 0) + 24 + tw(info, 12, false) + TF.P,
+    TF.P * 3 + tw("+ строка", TF.FONT, true) + tw("+ следующая захватка", TF.FONT, true) + TF.P * 2, vol ? 1000 : 0);
   if (need > total) { if (widths.length) widths[widths.length - 1] += need - total; total = need; }
   const colX = [0]; for (const w of widths) colX.push(colX[colX.length - 1] + w);
-  t._lay = { rows, cols, colX, w: total, h: TF.T + TF.H + Math.max(1, rows.length) * TF.R + TF.F, info };
+  const volTop = TF.T + TF.H + Math.max(1, rows.length) * TF.R;
+  const volH = vol ? 34 + Math.max(1, vol.length) * 48 + (missing ? 28 : 0) + 8 : 0;
+  t._lay = { rows, cols, colX, w: total, h: volTop + volH + TF.F, info, prefix, vol, volTop, volH, missing };
   return t._lay;
 }
 function tableBox(t) { const l = tLayout(t), k = t.scale || 1; return { l: t.x, t: t.y, r: t.x + l.w * k, b: t.y + l.h * k }; }
@@ -392,6 +439,14 @@ function drawTable(t, z, hl) {
         rrect(cx + TF.P * k, ry + 4.5 * k, pw, ph, ph / 2); ctx.fillStyle = statusBg(st.color); ctx.fill();
         ctx.strokeStyle = fg; ctx.lineWidth = 1.2 * k; ctx.stroke();
         ctx.fillStyle = fg; ctx.fillText(name, cx + (TF.P + 11) * k, cy + fs * 0.36);
+      } else if (c.k === "vol") {
+        const right = cx + cw - TF.P * k;
+        if (!r.v) { ctx.font = fs + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText("—", right - ctx.measureText("—").width, cy + fs * 0.36); return; }
+        const u = unitFor(t, r.w || "");
+        ctx.font = 11.5 * k + "px " + FONT; const uw = u ? ctx.measureText(u).width + 3 * k : 0;
+        if (u) { ctx.fillStyle = C.muted; ctx.fillText(u, right - uw + 3 * k, cy + fs * 0.36); }
+        ctx.font = fs + "px " + FONT; ctx.fillStyle = C.ink; const n = volFmt(+r.v);
+        ctx.fillText(n, right - uw - ctx.measureText(n).width, cy + fs * 0.36);
       } else {
         const v = cellText(r, c.k); if (!v) return;
         ctx.font = (c.k === "zah" ? "bold " : "") + fs + "px " + FONT;
@@ -411,11 +466,179 @@ function drawTable(t, z, hl) {
   ctx.stroke();
   ctx.font = "bold " + TF.HF * k + "px " + FONT; ctx.fillStyle = C.ink2;
   L.cols.forEach((c, ci) => ctx.fillText(fitText(colTitle(c), (L.colX[ci + 1] - L.colX[ci]) * k - 2 * TF.P * k), x0 + (L.colX[ci] + TF.P) * k, y0 + (TF.T + TF.H / 2) * k + TF.HF * k * 0.36));
+  let tx = x0 + TF.P * 1.4 * k;
+  if (L.prefix) { ctx.font = 14 * k + "px " + FONT; ctx.fillStyle = C.muted; const pre = L.prefix + " ·";
+    ctx.fillText(pre, tx, y0 + TF.T / 2 * k + 14 * k * 0.36); tx += ctx.measureText(pre).width + 8 * k; }
   ctx.font = "bold " + TF.TF * k + "px " + FONT; ctx.fillStyle = C.ink;
-  ctx.fillText(t.title || "Без шифра", x0 + TF.P * 1.4 * k, y0 + TF.T / 2 * k + TF.TF * k * 0.36);
+  ctx.fillText(t.title || "Без шифра", tx, y0 + TF.T / 2 * k + TF.TF * k * 0.36);
   ctx.font = 12 * k + "px " + FONT; ctx.fillStyle = C.ink2;
   ctx.fillText(L.info, x0 + w - TF.P * 1.4 * k - ctx.measureText(L.info).width, y0 + TF.T / 2 * k + 12 * k * 0.36);
   if (!L.rows.length) { ctx.font = TF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText("Строк пока нет", x0 + TF.P * k, top + R / 2 + TF.FONT * k * 0.36); }
+  if (L.vol) drawVolumes(t, L, x0, y0 + L.volTop * k, w, k);
+  outline();
+}
+// Блок «Объёмы» внизу таблицы (как TableDraw.drawVolumes).
+function drawVolumes(t, L, x0, top, w, k) {
+  ctx.fillStyle = "#f7f9fc"; ctx.fillRect(x0, top, w, L.volH * k);
+  ctx.strokeStyle = "#aab6cc"; ctx.lineWidth = 1.2 * k; ctx.beginPath();
+  ctx.moveTo(x0, top + k); ctx.lineTo(x0 + w, top + k); ctx.moveTo(x0, top + 4 * k); ctx.lineTo(x0 + w, top + 4 * k); ctx.stroke();
+  const txt = (s, x, y, size, color, bold) => { ctx.font = (bold ? "bold " : "") + size * k + "px " + FONT; ctx.fillStyle = color; ctx.fillText(s, x, y); return ctx.measureText(s).width; };
+  const Lx = x0 + 14 * k, hy = top + 25 * k;
+  const hw = txt("Объёмы · " + (t.title || "таблица"), Lx, hy, 15, C.ink, true);
+  txt("факт — сумма столбца «Объём по схеме», проект — вписывают в приложении", Lx + hw + 12 * k, hy, 12.5, C.muted, false);
+  if (!L.vol.length) { txt("Объёмы в столбце «Объём по схеме» пока не вписаны", Lx, top + 62 * k, 13.5, C.muted, false); return; }
+  const xN = x0 + 170 * k, xF = x0 + 300 * k, xP = x0 + 460 * k, xD = x0 + 650 * k;
+  L.vol.forEach((v, i) => {
+    const ry = top + (34 + i * 48) * k, lab = ry + 15 * k, big = ry + 35 * k;
+    txt(v.work, Lx + 10 * k, ry + 28 * k, 15, C.ink, true);
+    txt("схем с объёмом", xN, lab, 11, C.muted); txt(String(v.n), xN, big, 15, C.ink, true);
+    txt("факт по схемам", xF, lab, 11, C.muted);
+    const fw = txt(volFmt(v.fact), xF, big, 17, C.ink, true); if (v.unit) txt(v.unit, xF + fw + 4 * k, big, 12, C.muted);
+    txt("проект", xP, lab, 11, C.muted);
+    if (v.plan == null) { txt("не вписан", xP, big, 14, C.muted); return; }
+    txt(volFmt(v.plan) + (v.unit ? " " + v.unit : ""), xP, big, 16, C.ink, true);
+    const over = v.fact > v.plan + 1e-9, d = Math.abs(v.fact - v.plan), pct = v.plan > 0 ? Math.round(v.fact / v.plan * 100) : 0;
+    const chip = over ? `перебор +${volFmt(d)} ${v.unit} · +${(d / v.plan * 100).toFixed(1).replace(".", ",")} %` : `осталось ${volFmt(d)} ${v.unit}`.trim();
+    ctx.font = "bold " + 13.5 * k + "px " + FONT; const cw = ctx.measureText(chip).width + 22 * k;
+    rrect(xD, ry + 13 * k, cw, 24 * k, 12 * k); ctx.fillStyle = over ? "#be2a2a" : "#e2eafa"; ctx.fill();
+    txt(chip, xD + 11 * k, ry + 30 * k, 13.5, over ? "#fff" : "#1f4fa0", true);
+    const pt = pct + " %"; ctx.font = "bold " + 14 * k + "px " + FONT; const pw = ctx.measureText(pt).width;
+    const bx = xD + cw + 14 * k, bw = Math.min(200 * k, x0 + w - 24 * k - pw - 12 * k - bx);
+    if (bw > 20 * k) {
+      rrect(bx, ry + 20 * k, bw, 11 * k, 5.5 * k); ctx.fillStyle = "#e6eaf0"; ctx.fill();
+      const fr = over ? 1 : Math.max(0, Math.min(1, v.fact / v.plan));
+      if (fr > 0) { rrect(bx, ry + 20 * k, bw * fr, 11 * k, 5.5 * k); ctx.fillStyle = over ? "#be2a2a" : "#1f5fd1"; ctx.fill(); }
+      if (over) { const mx = bx + bw * v.plan / v.fact; ctx.strokeStyle = C.ink; ctx.lineWidth = 2 * k; ctx.beginPath(); ctx.moveTo(mx, ry + 16 * k); ctx.lineTo(mx, ry + 35 * k); ctx.stroke(); }
+      txt(pt, bx + bw + 12 * k, ry + 30 * k, 14, over ? "#be2a2a" : C.ink, true);
+    } else txt(pt, bx, ry + 30 * k, 14, over ? "#be2a2a" : C.ink, true);
+  });
+  if (L.missing) {
+    const ny = top + (34 + L.vol.length * 48 + 14) * k + 4 * k;
+    const ww = txt("⚠ Объём не указан у " + plural(L.missing, "схемы", "схем", "схем"), Lx, ny, 13, "#a86a10", true);
+    txt(" — в факт не вошли.", Lx + ww, ny, 13, C.ink2, false);
+  }
+}
+
+// ------------------------------------------------------------ ведомости (как VedomDraw в приложении, 0.21)
+
+const VF = { HD: 58, H: 26, R: 30, F: 30, P: 9, FONT: 13, HF: 11, TF: 19 };
+const VKIND = { an: ["На согласование АН", "А", 0xff7b3fc4 | 0], cust: ["На подпись заказчику", "З", 0xffb88a00 | 0],
+  pto: ["Сдача в ПТО", "П", 0xff23803a | 0], list: ["Список", "С", 0xff4b5873 | 0] };
+const VCOL = { n: "№", cipher: "Шифр", zah: "Захватка", con: "Конструкция", work: "Вид работ", nsch: "№ схемы", aosr: "№ АОСР", igs: "ИГС сейчас", res: "Ответ", rd: "Дата ответа" };
+function vKind(v) { return VKIND[v.kind] || VKIND.list; }
+function vAnswers(v) { return (v.kind === "an" || v.kind === "cust") && !!v.given; }
+function vItems(v) { return B.vitems.filter((i) => i.v === v.id).sort((a, b) => ((a.o || 0) - (b.o || 0)) || (a.id < b.id ? -1 : 1)); }
+function resName(v, res) { return res === "ok" ? (v.kind === "an" ? "Согласовано" : "Подписано") : res === "no" ? "Не согласовано" : res === "fix" ? "Замечания" : "Ждём"; }
+function resColor(res) { return res === "ok" ? 0xff23803a | 0 : res === "no" ? 0xff8e1b2f | 0 : res === "fix" ? 0xffd4640c | 0 : 0xff8a93a3 | 0; }
+function daysSince(iso) { const d = Date.parse(iso + "T00:00:00"); return isNaN(d) ? 0 : Math.round((Date.now() - d) / 86400000 - 0.5); }
+function vClosed(v) {
+  if (!v.given) return false;
+  if (v.kind === "pto") return true;
+  if (v.kind === "an" || v.kind === "cust") { const it = vItems(v); return it.length > 0 && it.every((i) => !!i.res); }
+  return false;
+}
+function vState(v) { return !v.given ? (v.kind === "list" ? "список" : "черновик") : vClosed(v) ? "закрыта" : "передана " + dShort(v.given); }
+function vSummary(v) {
+  const it = vItems(v); const head = plural(it.length, "схема", "схемы", "схем");
+  if (!vAnswers(v)) return head;
+  const parts = [head];
+  for (const res of v.kind === "an" ? ["ok", "no", "fix"] : ["ok", "fix"]) { const n = it.filter((i) => i.res === res).length; if (n) parts.push(resName(v, res).toLowerCase() + " " + n); }
+  const wait = it.filter((i) => !i.res).length;
+  if (wait) parts.push(`ждём ${wait} (${daysSince(v.given)} дн.)`);
+  return parts.join(" · ");
+}
+function vLayout(v) {
+  const items = vItems(v);
+  const recs = new Map(B.recs.map((r) => [r.id, r]));
+  const cols = ["n", "cipher"]
+    .concat(items.some((i) => (recs.get(i.r) || {}).na) ? ["aosr"] : [], items.some((i) => (recs.get(i.r) || {}).ns) ? ["nsch"] : [],
+      ["zah", "con", "work", "igs"], vAnswers(v) ? ["res", "rd"] : []);
+  const tabs = new Map(B.tables.map((t) => [t.id, t]));
+  const texts = items.map((i, idx) => {
+    const r = recs.get(i.r), t = r && tabs.get(r.t);
+    return cols.map((c) => c === "n" ? String(idx + 1) : c === "cipher" ? (t ? fullTitle(t) : i.lt || "") : c === "zah" ? (t ? r.z || "" : i.lz || "")
+      : c === "con" ? (t ? r.c || "" : i.lc || "") : c === "work" ? (t ? r.w || "" : i.lw || "")
+      : c === "nsch" ? (t ? r.ns || "" : "") : c === "aosr" ? (t ? r.na || "" : "") : c === "igs" ? (t ? stIn("id", r.sid || "i0").name : "строка удалена")
+      : c === "res" ? resName(v, i.res || "") : c === "rd" ? dShort(i.rd || "") : "");
+  });
+  const igsColor = items.map((i) => { const r = recs.get(i.r); return r && tabs.get(r.t) ? stIn("id", r.sid || "i0").color : 0; });
+  const title = [v.num, vKind(v)[0]].filter(Boolean).join(" · "), state = vState(v);
+  const info = [v.to ? "Кому: " + v.to : "", vSummary(v)].filter(Boolean).join(" · ");
+  const key = JSON.stringify([title, state, info, texts, igsColor]);
+  if (v._lay && v._lay.key === key) return v._lay;
+  const tw = (x, size, bold) => measure(x || "", size, bold) * 1.06 + 2;
+  const widths = cols.map((c, ci) => {
+    const pill = c === "igs" || c === "res";
+    let w = tw(VCOL[c], VF.HF, true) + 2 * VF.P;
+    for (const row of texts) w = Math.max(w, tw(row[ci], VF.FONT, pill || c === "zah" || c === "n") + 2 * VF.P + (pill ? 22 : 0));
+    return c === "n" ? Math.max(w, 34) : c === "rd" ? Math.max(w, tw("00.00.00", VF.FONT, false) + 2 * VF.P)
+      : c === "igs" ? Math.min(Math.max(w, 120), 300) : c === "res" ? Math.min(Math.max(w, 100), 220) : Math.min(Math.max(w, 56), 230);
+  });
+  let total = widths.reduce((a, b) => a + b, 0);
+  const foot = !v.given;
+  const need = Math.max(VF.P * 2 + tw(title, VF.TF, true) + 24 + tw(state, 12, true) + VF.P, VF.P * 2 + tw(info, 12, false));
+  if (need > total) { widths[widths.length - 1] += need - total; total = need; }
+  const colX = [0]; for (const w of widths) colX.push(colX[colX.length - 1] + w);
+  v._lay = { key, items, cols, colX, texts, igsColor, title, state, info, foot, w: total, h: VF.HD + VF.H + Math.max(1, items.length) * VF.R + (foot ? VF.F : 0) };
+  return v._lay;
+}
+function vedomBox(v) { const l = vLayout(v), k = v.scale || 1; return { l: v.x, t: v.y, r: v.x + l.w * k, b: v.y + l.h * k }; }
+function drawVedom(v, z) {
+  const L = vLayout(v), k = v.scale || 1, x0 = v.x, y0 = v.y, w = L.w * k, h = L.h * k;
+  if (!visible(x0, y0, x0 + w, y0 + h)) return;
+  const kc = vKind(v)[2];
+  rrect(x0, y0, w, h, 8 * k); ctx.fillStyle = "#fff"; ctx.fill();
+  ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, w, VF.HD * k); ctx.clip();
+  rrect(x0, y0, w, h, 8 * k); ctx.fillStyle = statusBg(kc); ctx.fill(); ctx.restore();
+  const top = y0 + (VF.HD + VF.H) * k, R = VF.R * k;
+  const outline = () => { rrect(x0, y0, w, h, 8 * k); ctx.strokeStyle = css(kc, 1); ctx.lineWidth = 2 * k; ctx.stroke(); };
+  if (VF.FONT * k * z < 4) {
+    if (R * z >= 1) L.items.forEach((it, i) => {
+      const ry = top + i * R; if (!visible(x0, ry, x0 + w, ry + R)) return;
+      const c = vAnswers(v) ? resColor(it.res || "") : (L.igsColor[i] || 0xffd3dae5 | 0);
+      ctx.fillStyle = css(c, 1); ctx.fillRect(x0 + w * 0.55, ry + 3 * k, w * 0.45 - 6 * k, R - 6 * k);
+    });
+    outline(); return;
+  }
+  ctx.fillStyle = "#f1f4f8"; ctx.fillRect(x0, y0 + VF.HD * k, w, VF.H * k);
+  const pill = (name0, color, cx, ry, cw, dashed) => {
+    const fs = VF.FONT * k; ctx.font = "bold " + fs + "px " + FONT;
+    const fg = statusFg(color), name = fitText(name0, cw - 2 * VF.P * k - 22 * k), pw = ctx.measureText(name).width + 22 * k, ph = R - 9 * k;
+    rrect(cx + VF.P * k, ry + 4.5 * k, pw, ph, ph / 2); ctx.fillStyle = dashed ? "#fff" : statusBg(color); ctx.fill();
+    ctx.strokeStyle = fg; ctx.lineWidth = 1.2 * k; ctx.stroke();
+    ctx.fillStyle = fg; ctx.fillText(name, cx + (VF.P + 11) * k, ry + R / 2 + fs * 0.36);
+  };
+  L.items.forEach((it, i) => {
+    const ry = top + i * R; if (!visible(x0, ry, x0 + w, ry + R)) return;
+    if (i % 2 === 1) { ctx.fillStyle = "#fafbfd"; ctx.fillRect(x0, ry, w, R); }
+    L.cols.forEach((c, ci) => {
+      const cx = x0 + L.colX[ci] * k, cw = (L.colX[ci + 1] - L.colX[ci]) * k, txt = L.texts[i][ci], fs = VF.FONT * k;
+      if (c === "igs" && L.igsColor[i]) return pill(txt, L.igsColor[i], cx, ry, cw, false);
+      if (c === "res") return pill(txt, resColor(it.res || ""), cx, ry, cw, !it.res);
+      if (!txt) return;
+      ctx.font = (c === "zah" ? "bold " : "") + fs + "px " + FONT;
+      ctx.fillStyle = c === "zah" ? C.ink : (c === "n" || c === "igs") ? C.muted : C.ink2;
+      ctx.fillText(fitText(txt, cw - 2 * VF.P * k), cx + VF.P * k, ry + R / 2 + fs * 0.36);
+    });
+  });
+  const bottom = top + Math.max(1, L.items.length) * R;
+  ctx.strokeStyle = C.rule; ctx.lineWidth = 1 * k; ctx.beginPath();
+  for (let i = 1; i < L.cols.length; i++) { ctx.moveTo(x0 + L.colX[i] * k, y0 + VF.HD * k); ctx.lineTo(x0 + L.colX[i] * k, bottom); }
+  ctx.moveTo(x0, y0 + VF.HD * k); ctx.lineTo(x0 + w, y0 + VF.HD * k); ctx.moveTo(x0, top); ctx.lineTo(x0 + w, top);
+  ctx.moveTo(x0, bottom); ctx.lineTo(x0 + w, bottom); ctx.stroke();
+  ctx.strokeStyle = "#e8ecf2"; ctx.beginPath();
+  for (let i = 1; i < L.items.length; i++) { const ry = top + i * R; ctx.moveTo(x0, ry); ctx.lineTo(x0 + w, ry); }
+  ctx.stroke();
+  ctx.font = "bold " + VF.HF * k + "px " + FONT; ctx.fillStyle = C.ink2;
+  L.cols.forEach((c, ci) => ctx.fillText(fitText(VCOL[c], (L.colX[ci + 1] - L.colX[ci]) * k - 2 * VF.P * k), x0 + (L.colX[ci] + VF.P) * k, y0 + (VF.HD + VF.H / 2) * k + VF.HF * k * 0.36));
+  ctx.font = "bold " + VF.TF * k + "px " + FONT; ctx.fillStyle = C.ink;
+  ctx.fillText(L.title, x0 + VF.P * 1.4 * k, y0 + 22 * k + VF.TF * k * 0.36);
+  ctx.font = "bold " + 12 * k + "px " + FONT; ctx.fillStyle = statusFg(kc);
+  ctx.fillText(L.state, x0 + w - VF.P * 1.4 * k - ctx.measureText(L.state).width, y0 + 22 * k + 12 * k * 0.36);
+  ctx.font = 12 * k + "px " + FONT; ctx.fillStyle = C.ink2;
+  ctx.fillText(fitText(L.info, w - VF.P * 2.8 * k), x0 + VF.P * 1.4 * k, y0 + 45 * k + 12 * k * 0.36);
+  if (!L.items.length) { ctx.font = VF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText("Схем пока нет", x0 + VF.P * k, top + R / 2 + VF.FONT * k * 0.36); }
+  if (L.foot) { ctx.font = VF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText(v.kind === "list" ? "список" : "черновик — ещё не передана", x0 + VF.P * k, bottom + VF.F / 2 * k + VF.FONT * k * 0.36); }
   outline();
 }
 
@@ -666,6 +889,7 @@ function render() {
   for (const s of B.stickers) drawSticker(s, z);
   for (const r of B.rows) drawRow(r, z);
   for (const t of B.tables) drawTable(t, z, null);
+  for (const v of B.vedoms) drawVedom(v, z);
   if (highlight) {
     ctx.fillStyle = "rgba(252,253,254,0.745)"; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
     for (const c of B.callouts) if (c.sid === highlight) drawCallout(c, z);
@@ -866,6 +1090,7 @@ function contentBounds() {
   for (const s of B.stickers) add(s.x, s.y, s.x + stickerW(s), s.y + 36 * s.scale);
   for (const rr of B.rows) add(rr.x, rr.y, rr.x + rowW(rr), rr.y + rowH(rr));
   for (const tb of B.tables) { const x = tableBox(tb); add(x.l, x.t, x.r, x.b); }
+  for (const v of B.vedoms) { const x = vedomBox(v); add(x.l, x.t, x.r, x.b); }
   return l <= r ? [l, t, r, b] : null;
 }
 function fitAll() { const bb = contentBounds(); if (bb) fitRect(...bb); else { cam.x = -40; cam.y = -40; cam.z = 1; redraw(true); } }
@@ -943,24 +1168,59 @@ function summaryData() {
 function igsHtml() {
   if (!B.tables.length) return "";
   const ids = statuses("id");
-  const tabs = [...B.tables].sort((a, b) => String(a.title).localeCompare(String(b.title), "ru", { numeric: true }));
+  const tabs = [...B.tables].sort((a, b) => fullTitle(a).localeCompare(fullTitle(b), "ru", { numeric: true }));
   const all = B.recs;
   let h = `<div class="group">Таблицы ИД: ${plural(all.length, "схема", "схемы", "схем")} · сдано в ПТО ${all.filter(recDone).length}</div>`;
   for (const t of tabs) {
     const rows = tRows(t);
-    h += `<div class="sec" data-t="${esc(t.id)}"><b>${esc(t.title || "Без шифра")}</b>
+    h += `<div class="sec" data-t="${esc(t.id)}"><b>${esc(fullTitle(t) || "Без шифра")}</b>
       <div class="small">${plural(rows.length, "схема", "схемы", "схем")} · сдано в ПТО ${rows.filter(recDone).length}</div>
       <div class="chips">${ids.map((s) => [s, rows.filter((r) => (r.sid || "i0") === s.id).length]).filter(([, c]) => c > 0)
         .map(([s, c]) => `<span class="chip" style="color:${statusFg(s.color)};background:${statusBg(s.color)}">${esc(s.name)}: ${c}</span>`).join("")}</div></div>`;
+  }
+  // Объёмы (0.21): по таблицам-подразделам и всего по шифру (разделу).
+  const volT = tabs.map((t) => [t, volumes(t, tRows(t))]).filter(([, v]) => v.length);
+  if (volT.length) {
+    h += `<div class="group">Объёмы: факт по схемам / проект</div>`;
+    const vt = (f, p, u, partial) => partial ? `${volFmt(f)} ${u} · проект вписан не у всех таблиц` : p == null ? `${volFmt(f)} ${u} · проект не вписан`
+      : f > p + 1e-9 ? `<span style="color:#be2a2a;font-weight:700">${volFmt(f)} из ${volFmt(p)} ${u} · перебор +${volFmt(f - p)} ${u}</span>`
+      : `<span style="font-weight:700;color:#16223a">${volFmt(f)}</span> из ${volFmt(p)} ${u} · <span style="color:#1f4fa0;font-weight:700">${p > 0 ? Math.round(f / p * 100) : 0} %</span>`;
+    const bySec = new Map();
+    for (const [t, v] of volT) { const sk = secTitle(t) || "Вне разделов"; if (!bySec.has(sk)) bySec.set(sk, []); bySec.get(sk).push([t, v]); }
+    for (const [sk, list] of bySec) {
+      h += `<div class="sec"><b>${esc(sk)}</b>`;
+      for (const [t, v] of list) for (const x of v) h += `<div class="small">${esc((t.title || "таблица") + " · " + x.work.toLowerCase())}: ${vt(x.fact, x.plan, x.unit)}</div>`;
+      if (sk !== "Вне разделов") {
+        const works = new Map();
+        for (const [, v] of list) for (const x of v) { const kk = normW(x.work); if (!works.has(kk)) works.set(kk, []); works.get(kk).push(x); }
+        for (const [, ls] of works) {
+          const plans = ls.filter((x) => x.plan != null).map((x) => x.plan);
+          const partial = plans.length > 0 && plans.length < ls.length;
+          h += `<div class="small"><span style="font-weight:700;color:#16223a">Всего по шифру · ${esc(ls[0].work.toLowerCase())}:</span> ${vt(ls.reduce((s, x) => s + x.fact, 0), plans.length && !partial ? plans.reduce((a, b) => a + b, 0) : null, ls[0].unit, partial)}</div>`;
+        }
+      }
+      h += `</div>`;
+    }
+  }
+  // Ведомости: открытые (ждут ответа) — сколько схем и сколько дней; остальные — коротко.
+  const open = B.vedoms.filter((v) => vAnswers(v) && !vClosed(v)).sort((a, b) => String(a.given).localeCompare(String(b.given)));
+  const other = B.vedoms.filter((v) => !(vAnswers(v) && !vClosed(v)));
+  if (B.vedoms.length) {
+    h += `<div class="group">Ведомости${open.length ? ` · ждут ответа: ${open.length}` : ""}</div>`;
+    for (const v of [...open, ...other]) {
+      h += `<div class="sec" data-v="${esc(v.id)}"><b style="color:${statusFg(vKind(v)[2])}">${esc([v.num, vKind(v)[0]].filter(Boolean).join(" · "))}</b>
+        <div class="small">${esc(vState(v))} · ${esc([v.to, vSummary(v)].filter(Boolean).join(" · "))}</div></div>`;
+    }
   }
   return h + `<div class="group">Разделы</div>`;
 }
 function recsCsv() {
   const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
-  const head = ["Шифр", ...TCOLS.map((k) => TNAME[k])];
+  const head = ["Шифр", ...TCOLS.map((k) => TNAME[k]), "Ед."];
   const lines = [head.map(q).join(";")];
-  const tabs = [...B.tables].sort((a, b) => String(a.title).localeCompare(String(b.title), "ru", { numeric: true }));
-  for (const t of tabs) for (const r of tRows(t)) lines.push([t.title || "", ...TCOLS.map((k) => isDate(k) ? (recVal(r, k) ? dShort(recVal(r, k)) : "") : cellText(r, k))].map(q).join(";"));
+  const tabs = [...B.tables].sort((a, b) => fullTitle(a).localeCompare(fullTitle(b), "ru", { numeric: true }));
+  for (const t of tabs) for (const r of tRows(t)) lines.push([fullTitle(t), ...TCOLS.map((k) => isDate(k) ? (recVal(r, k) ? dShort(recVal(r, k)) : "")
+    : k === "vol" ? (r.v ? String(r.v).replace(".", ",") : "") : cellText(r, k)), r.v ? unitFor(t, r.w || "") : ""].map(q).join(";"));
   const blob = new Blob(["\ufeff" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -977,7 +1237,7 @@ function summary() {
       <div class="small">Строк ИД: ${n}${n ? ` · Чек-лист ✓ ${x.rows.filter((r) => r.ck).length} из ${n} · DWG ✓ ${x.rows.filter((r) => r.dwg).length} из ${n}` : ""}${x.st.length ? ` · меток: ${x.st.length}` : ""}</div>
       <div class="chips">${[...x.ids, ...x.cons].filter(([, c]) => c > 0).map(([s, c]) => `<span class="chip" style="color:${statusFg(s.color)};background:${statusBg(s.color)}">${esc(s.name)}: ${c}</span>`).join("")}</div></div>`;
   }
-  if (!data.length) h = `<p>Пока нет строк ИД, меток и выносок.</p>`;
+  if (!data.length && !B.vedoms.length) h = `<p>Пока нет строк ИД, меток и выносок.</p>`;
   openModal(B.tables.length ? "Сводка ИГС и разделы" : "Сводка по разделам", h, [
     ...(B.tables.length ? [["Схемы для Excel", () => recsCsv()]] : []),
     ["Скачать для Excel", () => downloadCsv()],
@@ -987,6 +1247,8 @@ function summary() {
   for (const el of $("mBody").querySelectorAll(".sec")) el.onclick = () => {
     const tb = el.dataset.t && B.tables.find((x) => x.id === el.dataset.t);
     if (tb) { closeModal(); const x = tableBox(tb); fitRect(x.l, x.t, x.r, x.b); return; }
+    const vd = el.dataset.v && B.vedoms.find((x) => x.id === el.dataset.v);
+    if (vd) { closeModal(); const x = vedomBox(vd); fitRect(x.l, x.t, x.r, x.b); return; }
     const f = B.frames.find((x) => x.id === el.dataset.f); if (!f) return;
     closeModal(); fitRect(f.x, f.y, f.x + f.w, f.y + f.h);
   };

@@ -75,9 +75,10 @@ class TablesTest {
         val b = sample()
         val t = b.tables[0]
         t.cols.addAll(TableCol.defaults())
-        t.cols[0].name = "Участок"
+        t.cols.first { it.k == TableCol.ZAH }.name = "Участок"
+        t.cols.first { it.k == TableCol.AOSR }.hidden = true; t.cols.first { it.k == TableCol.NSCH }.hidden = true
         t.cols.first { it.k == TableCol.NOTE }.hidden = true
-        t.cols.add(2, TableCol("cabc12", "Секция"))
+        t.cols.add(t.cols.indexOfFirst { it.k == TableCol.CON } + 1, TableCol("cabc12", "Секция"))
         b.recs[0].extra["cabc12"] = "1"
         assertEquals(listOf("Участок", "Конструкция", "Секция"), t.visibleCols().take(3).map { it.title() })
         assertTrue(t.visibleCols().none { it.k == TableCol.NOTE })
@@ -236,11 +237,11 @@ class TablesTest {
         s.view.fitRect(0f, 0f, 1600f, 900f)
         idle()
 
-        // «Таблица ИД»: касание у чертежа — шифр (предложен раздел) → таблица → сразу форма строки.
+        // «Таблица ИД»: касание в разделе — название подраздела (пусто — таблица на весь шифр раздела) → сразу форма строки.
         root.findViewWithTag<View>("board_tool_table").performClick()
         tap(s.view, MotionEvent.TOOL_TYPE_STYLUS, s.sx(200f), s.sy(150f))
         var dlg = latest()
-        assertEquals("КЖ 6.1.1", dlg.window!!.decorView.findViewWithTag<EditText>("table_title").text.toString())
+        assertEquals("", dlg.window!!.decorView.findViewWithTag<EditText>("table_title").text.toString())
         dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()
         val t = s.b.tables.single()

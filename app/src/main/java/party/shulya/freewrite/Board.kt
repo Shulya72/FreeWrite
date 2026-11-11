@@ -237,6 +237,10 @@ class Board(
     /** Таблицы ИД и их строки (0.20, FW-012). */
     val tables = ArrayList<BoardTable>()
     val recs = ArrayList<BoardRec>()
+    /** Ведомости, их позиции и история схем (0.21, ТЗ «Учёт ИГС», шаг 2). */
+    val vedoms = ArrayList<BoardVedom>()
+    val vitems = ArrayList<BoardVItem>()
+    val events = ArrayList<BoardEvent>()
     val statuses = ArrayList<BoardStatus>()
     var camX = 0f
     var camY = 0f
@@ -288,6 +292,7 @@ class Board(
             is BoardRow -> (o.x + 20f * o.scale) to (o.y + o.h / 2f)
             is BoardTable -> (o.x + 20f * o.scale) to (o.y + 19f * o.scale) // левый край названия
             is BoardRec -> return IdTables.tableOf(this, o)?.let { sectionOf(it) }
+            is BoardVedom -> (o.x + 20f * o.scale) to (o.y + 19f * o.scale)
             is BoardCallout -> if (o.leaders.size >= 2) o.leaders[0] to o.leaders[1] else o.x to o.y
             is BoardText -> o.x to o.y
             is BoardImage -> (o.x + o.w / 2f) to (o.y + o.h / 2f)
@@ -325,7 +330,7 @@ class Board(
 
     val isEmpty: Boolean
         get() = strokes.isEmpty() && texts.isEmpty() && images.isEmpty() && stickers.isEmpty() &&
-            fills.isEmpty() && callouts.isEmpty() && frames.isEmpty() && rows.isEmpty() && tables.isEmpty()
+            fills.isEmpty() && callouts.isEmpty() && frames.isEmpty() && rows.isEmpty() && tables.isEmpty() && vedoms.isEmpty()
 
     /**
      * Доска в JSON одной строкой. Тяжёлые части (рисунки, заливки) берутся готовыми строками —
@@ -383,6 +388,9 @@ class Board(
         if (rows.isNotEmpty()) list("rows", rows, { it.id }) { rowJson(it) }
         if (tables.isNotEmpty()) list("tables", tables, { it.id }) { IdTables.tableJson(it) }
         if (recs.isNotEmpty()) list("recs", recs, { it.id }) { IdTables.recJson(it) }
+        if (vedoms.isNotEmpty()) list("vedoms", vedoms, { it.id }) { Vedoms.vedomJson(it) }
+        if (vitems.isNotEmpty()) list("vitems", vitems, { it.id }) { Vedoms.itemJson(it) }
+        if (events.isNotEmpty()) list("events", events, { it.id }) { it.json() }
         st?.finish()
         val tail = StringBuilder(sync.objs.size * 48 + 64)
         tail.append(",\"sync\":")
@@ -410,6 +418,9 @@ class Board(
         for (r in rows) f(r.id, fingerprint(rowJson(r)))
         for (t in tables) f(t.id, fingerprint(IdTables.tableJson(t)))
         for (r in recs) f(r.id, fingerprint(IdTables.recJson(r)))
+        for (v in vedoms) f(v.id, fingerprint(Vedoms.vedomJson(v)))
+        for (i in vitems) f(i.id, fingerprint(Vedoms.itemJson(i)))
+        for (e in events) f(e.id, fingerprint(e.json()))
     }
 
     fun entryHashes(): HashMap<String, Long> {
@@ -418,7 +429,8 @@ class Board(
         return m
     }
 
-    fun objectCount() = strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + frames.size + rows.size + tables.size + recs.size + statuses.size
+    fun objectCount() = strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + frames.size + rows.size + tables.size + recs.size +
+        vedoms.size + vitems.size + events.size + statuses.size
 
     /**
      * Отметить правки перед сохранением: у изменённых и новых предметов — новая отметка времени,
@@ -484,6 +496,9 @@ class Board(
         for (r in rows) fix(r.id) { rowJson(r) }?.let { r.id = it }
         for (t in tables) fix(t.id) { IdTables.tableJson(t) }?.let { t.id = it }
         for (r in recs) fix(r.id) { IdTables.recJson(r) }?.let { r.id = it }
+        for (v in vedoms) fix(v.id) { Vedoms.vedomJson(v) }?.let { v.id = it }
+        for (i in vitems) fix(i.id) { Vedoms.itemJson(i) }?.let { i.id = it }
+        for (e in events) fix(e.id) { e.json() }?.let { e.id = it }
     }
 
     fun toJson(withCamera: Boolean = true): JSONObject = JSONObject(toJsonString(withCamera))
@@ -499,7 +514,7 @@ class Board(
     /** Краткая сводка для Ежедневника (чтобы не читать всю доску ради списка). */
     fun metaJson(): String = JSONObject().apply {
         put("id", id); put("title", title); put("created", created); put("updated", updated)
-        put("items", strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + rows.size + tables.size + recs.size)
+        put("items", strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + rows.size + tables.size + recs.size + vedoms.size)
         if (sync.isShared) put("shared", true)
         put("statuses", JSONArray().apply {
             for (st in statuses) put(JSONObject().apply { put("name", st.name); put("color", st.color); put("n", countStatus(st.id)) })
@@ -519,6 +534,9 @@ class Board(
         Array(rows.size) { rowJson(rows[it]) },
         Array(tables.size) { IdTables.tableJson(tables[it]) },
         Array(recs.size) { IdTables.recJson(recs[it]) },
+        Array(vedoms.size) { Vedoms.vedomJson(vedoms[it]) },
+        Array(vitems.size) { Vedoms.itemJson(vitems[it]) },
+        Array(events.size) { events[it].json() },
     )
 
     /** Вернуть доску к снимку. Неизменённые рисунки и заливки берутся как есть, без разбора JSON. */
@@ -543,6 +561,12 @@ class Board(
         for (j in snap.rows) b.rows += parseRow(JSONObject(j), b.firstStatus(BoardStatus.ID))
         for (j in snap.tables) b.tables += IdTables.parseTable(JSONObject(j))
         for (j in snap.recs) b.recs += IdTables.parseRec(JSONObject(j))
+        for (j in snap.vedoms) b.vedoms += Vedoms.parseVedom(JSONObject(j))
+        for (j in snap.vitems) b.vitems += Vedoms.parseItem(JSONObject(j))
+        // События не меняются — неизменённые берутся как есть (их могут быть тысячи).
+        val es = java.util.IdentityHashMap<String, BoardEvent>()
+        for (e in events) es[e.json()] = e
+        for (j in snap.events) b.events += es[j] ?: Vedoms.parseEvent(JSONObject(j))
         return b
     }
 
@@ -707,6 +731,9 @@ class Board(
             o.optJSONArray("rows")?.let { a -> for (i in 0 until a.length()) b.rows += parseRow(a.getJSONObject(i), b.statuses[0].id) }
             o.optJSONArray("tables")?.let { a -> for (i in 0 until a.length()) b.tables += IdTables.parseTable(a.getJSONObject(i)) }
             o.optJSONArray("recs")?.let { a -> for (i in 0 until a.length()) b.recs += IdTables.parseRec(a.getJSONObject(i)) }
+            o.optJSONArray("vedoms")?.let { a -> for (i in 0 until a.length()) b.vedoms += Vedoms.parseVedom(a.getJSONObject(i)) }
+            o.optJSONArray("vitems")?.let { a -> for (i in 0 until a.length()) b.vitems += Vedoms.parseItem(a.getJSONObject(i)) }
+            o.optJSONArray("events")?.let { a -> for (i in 0 until a.length()) b.events += Vedoms.parseEvent(a.getJSONObject(i)) }
             b.upgradeStatuses()
             IdTables.upgrade(b)
             b.sync = BoardSync.parse(o.optJSONObject("sync"))
@@ -742,6 +769,9 @@ class BoardSnapshot(
     val rows: Array<String> = emptyArray(),
     val tables: Array<String> = emptyArray(),
     val recs: Array<String> = emptyArray(),
+    val vedoms: Array<String> = emptyArray(),
+    val vitems: Array<String> = emptyArray(),
+    val events: Array<String> = emptyArray(),
 )
 
 /** Сводка доски для Ежедневника: название, даты, сколько предметов, счётчики статусов. */

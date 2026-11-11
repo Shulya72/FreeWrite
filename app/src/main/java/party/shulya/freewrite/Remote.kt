@@ -105,6 +105,9 @@ object Remote {
         for (r in board.rows) add(r.id, "row") { Board.rowJson(r) }
         for (t in board.tables) add(t.id, "table") { IdTables.tableJson(t) }
         for (r in board.recs) add(r.id, "rec") { IdTables.recJson(r) }
+        for (v in board.vedoms) add(v.id, "vedom") { Vedoms.vedomJson(v) }
+        for (i in board.vitems) add(i.id, "vitem") { Vedoms.itemJson(i) }
+        for (e in board.events) add(e.id, "event") { e.json() }
         for ((id, r) in s.tomb) {
             if (r.isNotEmpty() && r > after && s.seenRemote[id] != r) out += Change(id, r, "", null)
         }
@@ -196,6 +199,9 @@ object Remote {
         board.rows.removeAll { it.id == id }
         board.tables.removeAll { it.id == id }
         board.recs.removeAll { it.id == id }
+        board.vedoms.removeAll { it.id == id }
+        board.vitems.removeAll { it.id == id }
+        board.events.removeAll { it.id == id }
         if (board.statuses.size > 1) board.statuses.removeAll { it.id == id }
     }
 
@@ -238,6 +244,9 @@ object Remote {
             }
             "table" -> put(board.tables, IdTables.parseTable(j).also { it.id = r.id }) { it.id }
             "rec" -> put(board.recs, IdTables.parseRec(j).also { it.id = r.id }) { it.id }
+            "vedom" -> put(board.vedoms, Vedoms.parseVedom(j).also { it.id = r.id }) { it.id }
+            "vitem" -> put(board.vitems, Vedoms.parseItem(j).also { it.id = r.id }) { it.id }
+            "event" -> put(board.events, Vedoms.parseEvent(j).also { it.id = r.id }) { it.id }
             else -> {} // вид из будущей версии — пропускаем
         }
     }

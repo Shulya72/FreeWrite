@@ -392,6 +392,10 @@ class BoardActivity : Activity(), BoardView.Host {
             tag = "board_sections"
             setOnClickListener { sectionsDialog() }
         })
+        tools.addView(Ui.ToolButton(this, R.drawable.ic_vedom, "Ведомости").apply {
+            tag = "board_vedoms"
+            setOnClickListener { vedomUi.listDialog() }
+        })
         if (!phone) tools.addView(cloudButton)
         tools.addView(Ui.ToolButton(this, R.drawable.ic_share, "Файлом").apply {
             tag = "board_share"
@@ -928,7 +932,9 @@ class BoardActivity : Activity(), BoardView.Host {
 
     override fun onStrokeEnd(stroke: InkStroke, style: NoteInkView.StrokeStyle, tap: Boolean) {
         // Касание пером статуса в таблице ИД — список у ячейки (а не точка на доске).
-        if (tap && style.kind != "fill") stroke.points.firstOrNull()?.let { p -> if (tableUi.penTap(p.x, p.y)) { view.invalidate(); return } }
+        if (tap && style.kind != "fill") stroke.points.firstOrNull()?.let { p ->
+            if (vedomUi.penTap(p.x, p.y) || tableUi.penTap(p.x, p.y)) { view.invalidate(); return }
+        }
         if (style.kind == "write") {
             val g = current ?: Group().also { current = it }
             g.strokes += stroke
@@ -985,7 +991,8 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         val h = view.hitAt(x, y)
         val fi = view.fillBorderAt(x, y, r)
-        if (keep.size != board.strokes.size || fi >= 0 || (h != null && h.kind != BoardView.Kind.IMAGE)) {
+        if (keep.size != board.strokes.size || fi >= 0 ||
+            (h != null && h.kind != BoardView.Kind.IMAGE && h.kind != BoardView.Kind.TABLE && h.kind != BoardView.Kind.VEDOM)) {
             if (!eraseUndoPushed) { pushUndo(); eraseUndoPushed = true }
             if (keep.size != board.strokes.size) { board.strokes.clear(); board.strokes.addAll(keep); changedAny = true }
             when (h?.kind) {
@@ -1010,7 +1017,19 @@ class BoardActivity : Activity(), BoardView.Host {
 
     override fun onEmptyTap() = tableUi.deactivate()
 
+    /** Ведомости (ТЗ «Учёт ИГС», шаг 2). */
+    internal val vedomUi by lazy { VedomUi(this) }
+
+    override fun onVedomTap(v: BoardVedom, h: VedomHit) = vedomUi.onTap(v, h, view.lastTapByPen)
+
+    override fun onVedomLongPress(v: BoardVedom, h: VedomHit) = vedomUi.onLongPress(v, h)
+
     override fun onStatusTap(x: Float, y: Float) {
+        board.vedoms.lastOrNull { view.vedomDraw.bounds(board, it, android.graphics.RectF()).contains(x, y) }?.let { v ->
+            val vh = view.vedomDraw.hit(board, v, x, y) ?: return
+            if (vh.part == VedomHit.TITLE || vh.part == VedomHit.HEAD) view.select(listOf(v)) else vedomUi.onTap(v, vh, view.lastTapByPen)
+            return
+        }
         board.tables.lastOrNull { view.tableDraw.bounds(board, it, android.graphics.RectF()).contains(x, y) }?.let { t ->
             val th = view.tableDraw.hit(board, t, x, y) ?: return
             if (th.part == TableHit.TITLE || th.part == TableHit.HEAD) view.select(listOf(t)) else tableUi.onTap(t, th, view.lastTapByPen)
@@ -1556,7 +1575,7 @@ class BoardActivity : Activity(), BoardView.Host {
             selBar.visibility = View.GONE
             return
         }
-        val label = tableUi.selectionLabel(sel) ?: when {
+        val label = tableUi.selectionLabel(sel) ?: vedomUi.selectionLabel(sel) ?: when {
             sel.size > 1 -> "Выделено: ${sel.size}"
             sel[0] is BoardText -> "Надпись"
             sel[0] is BoardImage -> "Картинка"
@@ -1574,6 +1593,7 @@ class BoardActivity : Activity(), BoardView.Host {
         val label2 = if (sel.size == 1 && board.sync.isShared) whoEdited(sel[0])?.let { "$label1 · $it" } ?: label1 else label1
         val buttons = ArrayList<TextView>()
         buttons += tableUi.selectionButtons(sel)
+        buttons += vedomUi.selectionButtons(sel)
         if (sel.size == 1 && sel[0] is BoardText) {
             buttons += Ui.pill(this, "Изменить", Ui.INK, Ui.DESK).apply { tag = "sel_edit"; setOnClickListener { editText(sel[0] as BoardText) } }
         }
@@ -1626,13 +1646,13 @@ class BoardActivity : Activity(), BoardView.Host {
         if (sel.any { it is Drawing && isClosed(it) }) {
             buttons += Ui.pill(this, "Залить", Ui.INK, Ui.DESK).apply { tag = "sel_fill"; setOnClickListener { fillSelectedShapes() } }
         }
-        if (!sel.all { it is BoardFrame } && sel.none { it is BoardTable || it is BoardRec }) {
+        if (!sel.all { it is BoardFrame } && sel.none { it is BoardTable || it is BoardRec || it is BoardVedom || it is BoardVItem }) {
             buttons += Ui.pill(this, "Копия", Ui.INK, Ui.DESK).apply { tag = "sel_copy"; setOnClickListener { duplicateSelection() } }
         }
         if (sel.any { it is BoardText || it is Drawing || it is BoardFill }) {
             buttons += Ui.pill(this, "Цвет", Ui.INK, Ui.DESK).apply { tag = "sel_color"; setOnClickListener { recolorSelection() } }
         }
-        buttons += Ui.pill(this, "Удалить", Ui.BAD, Ui.BAD_SOFT).apply { tag = "sel_delete"; setOnClickListener { deleteSelection() } }
+        if (sel.none { it is BoardVItem }) buttons += Ui.pill(this, "Удалить", Ui.BAD, Ui.BAD_SOFT).apply { tag = "sel_delete"; setOnClickListener { deleteSelection() } }
         buttons += Ui.pill(this, "Готово", Color.WHITE, Ui.ACCENT).apply { tag = "sel_done"; setOnClickListener { view.clearSelection() } }
         val bar = Ui.floatingBar(this, label2, *buttons.toTypedArray())
         selBar.addView(bar)
@@ -1650,6 +1670,8 @@ class BoardActivity : Activity(), BoardView.Host {
         is BoardRow -> o.id
         is BoardTable -> o.id
         is BoardRec -> o.id
+        is BoardVedom -> o.id
+        is BoardVItem -> o.id
         else -> null
     }
 
@@ -1761,12 +1783,14 @@ class BoardActivity : Activity(), BoardView.Host {
         val sel = view.selection.toList()
         if (sel.isEmpty()) return
         if (sel.any { it is BoardTable || it is BoardRec }) { tableUi.confirmDelete(sel) { removeSelection(sel) }; return }
+        if (sel.any { it is BoardVedom || it is BoardVItem }) { vedomUi.confirmDelete(sel) { removeSelection(sel) }; return }
         removeSelection(sel)
     }
 
     private fun removeSelection(sel: List<Any>) {
         pushUndo()
         tableUi.removeSelected(sel)
+        vedomUi.removeSelected(sel)
         board.texts.removeAll { t -> sel.any { it === t } }
         board.images.removeAll { m -> sel.any { it === m } }
         board.stickers.removeAll { s -> sel.any { it === s } }
