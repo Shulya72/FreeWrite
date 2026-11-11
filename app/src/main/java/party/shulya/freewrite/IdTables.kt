@@ -56,6 +56,9 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
         const val ZAH = "zah"
         const val CON = "con"
         const val WORK = "work"
+        /** № исполнительной схемы и № АОСР (0.21): текст, подсказка — следующий номер. */
+        const val NSCH = "nsch"
+        const val AOSR = "aosr"
         /** Объём по схеме (0.21): число, единица — по виду работ. */
         const val VOL = "vol"
         const val DATE = "date"
@@ -67,10 +70,10 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
         const val WHO = "who"
         const val NOTE = "note"
         /** Порядок — как в таблице Excel Владимира (ТЗ, раздел 3.2). */
-        val ORDER = listOf(ZAH, CON, WORK, VOL, DATE, CK, DWG, IGS, DCUST, DPTO, WHO, NOTE)
+        val ORDER = listOf(ZAH, CON, WORK, NSCH, AOSR, VOL, DATE, CK, DWG, IGS, DCUST, DPTO, WHO, NOTE)
 
         fun defaultName(k: String): String = when (k) {
-            ZAH -> "Захватка"; CON -> "Конструкция"; WORK -> "Вид работ"; VOL -> "Объём по схеме"; DATE -> "Дата работ"
+            ZAH -> "Захватка"; CON -> "Конструкция"; WORK -> "Вид работ"; NSCH -> "№ схемы"; AOSR -> "№ АОСР"; VOL -> "Объём по схеме"; DATE -> "Дата работ"
             CK -> "Чек-лист"; DWG -> "DWG"; IGS -> "ИГС"; DCUST -> "Отдал заказчику"; DPTO -> "Сдано в ПТО"
             WHO -> "Исполнитель"; NOTE -> "Примечание"; else -> "Столбец"
         }
@@ -88,7 +91,7 @@ class RowFilter(val igs: Set<String> = emptySet(), val who: Set<String> = emptyS
         if (igs.isNotEmpty() && r.igs !in igs) return false
         if (who.isNotEmpty() && r.who.trim() !in who) return false
         if (text.isNotBlank()) {
-            val hay = (r.zah + " " + r.con + " " + r.work + " " + r.who + " " + r.note + " " + r.extra.values.joinToString(" ")).lowercase(Locale.ROOT)
+            val hay = (r.zah + " " + r.con + " " + r.work + " " + r.nsch + " " + r.aosr + " " + r.who + " " + r.note + " " + r.extra.values.joinToString(" ")).lowercase(Locale.ROOT)
             if (!text.lowercase(Locale.ROOT).split(' ').filter { it.isNotBlank() }.all { it in hay }) return false
         }
         return true
@@ -105,6 +108,9 @@ class BoardRec(var t: String, var o: Double) {
     var zah = ""
     var con = ""
     var work = ""
+    /** № исполнительной схемы и № АОСР — как написано («ИС-12», «АОСР 6.1.1-25»). */
+    var nsch = ""
+    var aosr = ""
     /** Объём по схеме — число с точкой («42.3»), пусто — не указан. */
     var vol = ""
     /** Даты — «2026-08-26», пусто — нет. */
@@ -119,20 +125,20 @@ class BoardRec(var t: String, var o: Double) {
     val extra = LinkedHashMap<String, String>()
 
     fun copy(): BoardRec = BoardRec(t, o).also { c ->
-        c.zah = zah; c.con = con; c.work = work; c.vol = vol; c.date = date; c.ck = ck; c.dwg = dwg; c.igs = igs
+        c.zah = zah; c.con = con; c.work = work; c.nsch = nsch; c.aosr = aosr; c.vol = vol; c.date = date; c.ck = ck; c.dwg = dwg; c.igs = igs
         c.dcust = dcust; c.dpto = dpto; c.who = who; c.note = note; c.extra.putAll(extra)
     }
 
     /** Значение столбца как текст (статусы — номер статуса, даты — «2026-08-26»). */
     fun get(k: String): String = when (k) {
-        TableCol.ZAH -> zah; TableCol.CON -> con; TableCol.WORK -> work; TableCol.VOL -> vol; TableCol.DATE -> date
+        TableCol.ZAH -> zah; TableCol.CON -> con; TableCol.WORK -> work; TableCol.NSCH -> nsch; TableCol.AOSR -> aosr; TableCol.VOL -> vol; TableCol.DATE -> date
         TableCol.CK -> ck; TableCol.DWG -> dwg; TableCol.IGS -> igs; TableCol.DCUST -> dcust; TableCol.DPTO -> dpto
         TableCol.WHO -> who; TableCol.NOTE -> note; else -> extra[k] ?: ""
     }
 
     fun set(k: String, v: String) {
         when (k) {
-            TableCol.ZAH -> zah = v; TableCol.CON -> con = v; TableCol.WORK -> work = v; TableCol.VOL -> vol = v; TableCol.DATE -> date = v
+            TableCol.ZAH -> zah = v; TableCol.CON -> con = v; TableCol.WORK -> work = v; TableCol.NSCH -> nsch = v; TableCol.AOSR -> aosr = v; TableCol.VOL -> vol = v; TableCol.DATE -> date = v
             TableCol.CK -> ck = v; TableCol.DWG -> dwg = v; TableCol.IGS -> igs = v; TableCol.DCUST -> dcust = v; TableCol.DPTO -> dpto = v
             TableCol.WHO -> who = v; TableCol.NOTE -> note = v
             else -> if (v.isEmpty()) extra.remove(k) else extra[k] = v
@@ -294,7 +300,7 @@ object IdTables {
         sb.append("{\"id\":").append(JSONObject.quote(r.id)).append(",\"t\":").append(JSONObject.quote(r.t))
         sb.append(",\"o\":").append(JSONObject.numberToString(r.o))
         fun s(k: String, v: String) { if (v.isNotEmpty()) sb.append(",\"").append(k).append("\":").append(JSONObject.quote(v)) }
-        s("z", r.zah); s("c", r.con); s("w", r.work); s("v", r.vol); s("d", r.date)
+        s("z", r.zah); s("c", r.con); s("w", r.work); s("ns", r.nsch); s("na", r.aosr); s("v", r.vol); s("d", r.date)
         s("ck", r.ck); s("dwg", r.dwg); s("sid", r.igs); s("dc", r.dcust); s("dp", r.dpto); s("who", r.who); s("n", r.note)
         if (r.extra.isNotEmpty()) sb.append(",\"x\":").append(JSONObject(r.extra as Map<*, *>).toString())
         sb.append('}')
@@ -303,7 +309,7 @@ object IdTables {
 
     fun parseRec(j: JSONObject): BoardRec = BoardRec(j.optString("t"), j.optDouble("o", 0.0).takeIf { it.isFinite() } ?: 0.0).also { r ->
         r.id = j.optString("id", "")
-        r.zah = j.optString("z"); r.con = j.optString("c"); r.work = j.optString("w"); r.vol = parseVol(j.optString("v")); r.date = j.optString("d")
+        r.zah = j.optString("z"); r.con = j.optString("c"); r.work = j.optString("w"); r.nsch = j.optString("ns"); r.aosr = j.optString("na"); r.vol = parseVol(j.optString("v")); r.date = j.optString("d")
         r.ck = j.optString("ck", CK_NONE).ifEmpty { CK_NONE }
         r.dwg = j.optString("dwg", DWG_NONE).ifEmpty { DWG_NONE }
         r.igs = j.optString("sid", IGS_NONE).ifEmpty { IGS_NONE }
@@ -556,6 +562,25 @@ object IdTables {
             VolLine(w.ifBlank { "Без вида работ" }, unitFor(t, w), with.size, with.sumOf { volNum(it.vol) }, t.plan[k]?.value?.let { volNum(it) },
                 of.filter { it.vol.isEmpty() })
         }
+    }
+
+    /**
+     * Подсказки для номера схемы / АОСР: следующий после последнего в этой таблице («ИС-12» → «ИС-13»), потом — после
+     * самого большого по доске.
+     */
+    fun nextNumbers(b: Board, t: BoardTable?, k: String): List<String> {
+        val out = LinkedHashSet<String>()
+        if (t != null) allRows(b, t).lastOrNull { it.get(k).isNotBlank() }?.let { out += nextNumber(it.get(k).trim()) }
+        b.recs.map { it.get(k).trim() }.filter { it.isNotEmpty() }.maxWithOrNull { p, q -> naturalCompare(p, q) }?.let { out += nextNumber(it) }
+        return out.filter { v -> v.isNotEmpty() && b.recs.none { it.get(k).trim() == v } }
+    }
+
+    /** Следующий номер: последнее число +1 с теми же нулями впереди («ИС-12» → «ИС-13», «АОСР 6.1.1-025» → «АОСР 6.1.1-026»). */
+    fun nextNumber(s: String): String {
+        val m = Regex("\\d+").findAll(s).lastOrNull() ?: return ""
+        val n = m.value.toLongOrNull() ?: return ""
+        val next = (n + 1).toString().padStart(m.value.length, '0')
+        return s.substring(0, m.range.first) + next + s.substring(m.range.last + 1)
     }
 
     /** Подсказки для текстового столбца: что уже встречается на доске, частые первыми. */

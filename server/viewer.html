@@ -308,8 +308,8 @@ function rowH(r) { return 40 * r.scale; }
 
 // ------------------------------------------------------------ таблицы ИД (как TableDraw в приложении)
 
-const TCOLS = ["zah", "con", "work", "vol", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note"];
-const TNAME = { zah: "Захватка", con: "Конструкция", work: "Вид работ", vol: "Объём по схеме", date: "Дата работ", ck: "Чек-лист", dwg: "DWG", igs: "ИГС",
+const TCOLS = ["zah", "con", "work", "nsch", "aosr", "vol", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note"];
+const TNAME = { zah: "Захватка", con: "Конструкция", work: "Вид работ", nsch: "№ схемы", aosr: "№ АОСР", vol: "Объём по схеме", date: "Дата работ", ck: "Чек-лист", dwg: "DWG", igs: "ИГС",
   dcust: "Отдал заказчику", dpto: "Сдано в ПТО", who: "Исполнитель", note: "Примечание" };
 const TF = { T: 40, H: 26, R: 30, F: 30, P: 9, FONT: 13, HF: 11, TF: 19 };
 const TGROUP = { igs: "id", ck: "ck", dwg: "dwg" };
@@ -331,7 +331,7 @@ function isSt(k) { return k === "igs" || k === "ck" || k === "dwg"; }
 function isDate(k) { return k === "date" || k === "dcust" || k === "dpto"; }
 function recVal(r, k) {
   switch (k) {
-    case "zah": return r.z || ""; case "con": return r.c || ""; case "work": return r.w || ""; case "vol": return r.v || ""; case "date": return r.d || "";
+    case "zah": return r.z || ""; case "con": return r.c || ""; case "work": return r.w || ""; case "nsch": return r.ns || ""; case "aosr": return r.na || ""; case "vol": return r.v || ""; case "date": return r.d || "";
     case "ck": return r.ck || "k0"; case "dwg": return r.dwg || "d0"; case "igs": return r.sid || "i0";
     case "dcust": return r.dc || ""; case "dpto": return r.dp || ""; case "who": return r.who || ""; case "note": return r.n || "";
     default: return (r.x && r.x[k]) || "";
@@ -524,7 +524,7 @@ function drawVolumes(t, L, x0, top, w, k) {
 const VF = { HD: 58, H: 26, R: 30, F: 30, P: 9, FONT: 13, HF: 11, TF: 19 };
 const VKIND = { an: ["На согласование АН", "А", 0xff7b3fc4 | 0], cust: ["На подпись заказчику", "З", 0xffb88a00 | 0],
   pto: ["Сдача в ПТО", "П", 0xff23803a | 0], list: ["Список", "С", 0xff4b5873 | 0] };
-const VCOL = { n: "№", cipher: "Шифр", zah: "Захватка", con: "Конструкция", work: "Вид работ", igs: "ИГС сейчас", res: "Ответ", rd: "Дата ответа" };
+const VCOL = { n: "№", cipher: "Шифр", zah: "Захватка", con: "Конструкция", work: "Вид работ", nsch: "№ схемы", aosr: "№ АОСР", igs: "ИГС сейчас", res: "Ответ", rd: "Дата ответа" };
 function vKind(v) { return VKIND[v.kind] || VKIND.list; }
 function vAnswers(v) { return (v.kind === "an" || v.kind === "cust") && !!v.given; }
 function vItems(v) { return B.vitems.filter((i) => i.v === v.id).sort((a, b) => ((a.o || 0) - (b.o || 0)) || (a.id < b.id ? -1 : 1)); }
@@ -549,13 +549,16 @@ function vSummary(v) {
 }
 function vLayout(v) {
   const items = vItems(v);
-  const cols = ["n", "cipher", "zah", "con", "work", "igs"].concat(vAnswers(v) ? ["res", "rd"] : []);
   const recs = new Map(B.recs.map((r) => [r.id, r]));
+  const cols = ["n", "cipher", "zah", "con", "work"]
+    .concat(items.some((i) => (recs.get(i.r) || {}).ns) ? ["nsch"] : [], items.some((i) => (recs.get(i.r) || {}).na) ? ["aosr"] : [],
+      ["igs"], vAnswers(v) ? ["res", "rd"] : []);
   const tabs = new Map(B.tables.map((t) => [t.id, t]));
   const texts = items.map((i, idx) => {
     const r = recs.get(i.r), t = r && tabs.get(r.t);
     return cols.map((c) => c === "n" ? String(idx + 1) : c === "cipher" ? (t ? fullTitle(t) : i.lt || "") : c === "zah" ? (t ? r.z || "" : i.lz || "")
-      : c === "con" ? (t ? r.c || "" : i.lc || "") : c === "work" ? (t ? r.w || "" : i.lw || "") : c === "igs" ? (t ? stIn("id", r.sid || "i0").name : "строка удалена")
+      : c === "con" ? (t ? r.c || "" : i.lc || "") : c === "work" ? (t ? r.w || "" : i.lw || "")
+      : c === "nsch" ? (t ? r.ns || "" : "") : c === "aosr" ? (t ? r.na || "" : "") : c === "igs" ? (t ? stIn("id", r.sid || "i0").name : "строка удалена")
       : c === "res" ? resName(v, i.res || "") : c === "rd" ? dShort(i.rd || "") : "");
   });
   const igsColor = items.map((i) => { const r = recs.get(i.r); return r && tabs.get(r.t) ? stIn("id", r.sid || "i0").color : 0; });

@@ -71,16 +71,20 @@ class VedomDraw {
     fun layout(b: Board, v: BoardVedom, today: String = IdTables.today()): VedomLayout {
         val items = Vedoms.items(b, v)
         val answers = Vedoms.hasAnswers(v.kind) && !v.isDraft
-        val cols = arrayListOf(N, CIPHER, TableCol.ZAH, TableCol.CON, TableCol.WORK, TableCol.IGS)
-        if (answers) { cols += RES; cols += RD }
-        val title = Vedoms.title(v)
-        val state = Vedoms.state(b, v)
-        val info = listOf(v.to.takeIf { it.isNotBlank() }?.let { "Кому: $it" }.orEmpty(), Vedoms.summary(b, v, today)).filter { it.isNotEmpty() }.joinToString(" · ")
         // Строки таблиц — по номеру один раз (позиций может быть много, строк — тысячи).
         val recs = HashMap<String, BoardRec>(b.recs.size * 2 + 4)
         for (r in b.recs) recs[r.id] = r
         val tables = HashMap<String, BoardTable>()
         for (t in b.tables) tables[t.id] = t
+        val cols = arrayListOf(N, CIPHER, TableCol.ZAH, TableCol.CON, TableCol.WORK)
+        // № схемы и № АОСР — если вписаны хоть у одной схемы ведомости.
+        if (items.any { recs[it.r]?.nsch?.isNotBlank() == true }) cols += TableCol.NSCH
+        if (items.any { recs[it.r]?.aosr?.isNotBlank() == true }) cols += TableCol.AOSR
+        cols += TableCol.IGS
+        if (answers) { cols += RES; cols += RD }
+        val title = Vedoms.title(v)
+        val state = Vedoms.state(b, v)
+        val info = listOf(v.to.takeIf { it.isNotBlank() }?.let { "Кому: $it" }.orEmpty(), Vedoms.summary(b, v, today)).filter { it.isNotEmpty() }.joinToString(" · ")
         val texts = Array(items.size) { idx ->
             val i = items[idx]
             val r = recs[i.r]
@@ -92,6 +96,8 @@ class VedomDraw {
                     TableCol.ZAH -> if (t != null) r.zah else i.lz
                     TableCol.CON -> if (t != null) r.con else i.lc
                     TableCol.WORK -> if (t != null) r.work else i.lw
+                    TableCol.NSCH -> if (t != null) r.nsch else ""
+                    TableCol.AOSR -> if (t != null) r.aosr else ""
                     TableCol.IGS -> if (t != null) IdTables.status(b, BoardStatus.ID, r.igs).name else "строка удалена"
                     RES -> Vedoms.resName(v.kind, i.res)
                     RD -> IdTables.dateShort(i.rd)

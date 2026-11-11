@@ -205,8 +205,9 @@ class VedomTest {
         val sh = files["xl/worksheets/sheet1.xml"]!!
         assertTrue(sh.contains("Ведомость З-7 — На подпись заказчику") && sh.contains("Кому: Технадзор") && sh.contains("Подписано") && sh.contains("Ждём"))
         assertEquals("шапка 5 + пустая + заголовок + 5 схем", 12, Regex("<row ").findAll(sh).count())
-        assertTrue(sh.contains("<autoFilter ref=\"A7:J12\"/>"))
-        assertTrue(files["xl/workbook.xml"]!!.contains("'!\$A\$7:\$J\$12"))
+        assertTrue(sh.contains("№ схемы") && sh.contains("№ АОСР"))
+        assertTrue(sh.contains("<autoFilter ref=\"A7:L12\"/>"))
+        assertTrue(files["xl/workbook.xml"]!!.contains("'!\$A\$7:\$L\$12"))
         // Сводка в Excel — открытые ведомости.
         val sum = ByteArrayOutputStream()
         IdExcel.write(b, IdExcel.allFilter(b), setOf(IdExcel.SHEET_SUMMARY), sum, "2026-11-12")

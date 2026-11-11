@@ -525,7 +525,7 @@ class TableUi(private val a: BoardActivity) {
         val name = t.colName(col)
         val edit = EditText(a).apply { setText(r.get(col)); setSelection(text.length); isSingleLine = true; tag = "cell_text" }
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
-        val sugg = IdTables.suggestions(b, col).filter { it != r.get(col) }
+        val sugg = (if (col == TableCol.NSCH || col == TableCol.AOSR) IdTables.nextNumbers(b, t, col) else IdTables.suggestions(b, col)).filter { it != r.get(col) }
         if (sugg.isNotEmpty()) {
             val flow = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(6f) }
             for ((i, s) in sugg.withIndex()) flow.addView(Ui.pill(a, s, Ui.INK, Ui.DESK).apply {

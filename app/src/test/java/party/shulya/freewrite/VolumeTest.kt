@@ -114,7 +114,15 @@ class VolumeTest {
             for (k in listOf("zah", "con", "work", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note")) put(JSONObject().put("k", k))
         })
         val ot = IdTables.parseTable(old)
-        assertEquals(listOf("zah", "con", "work", "vol", "date"), ot.cols.take(5).map { it.k })
+        assertEquals(listOf("zah", "con", "work", "nsch", "aosr", "vol", "date"), ot.cols.take(7).map { it.k })
+        // № схемы и № АОСР: следующий номер — последнее число +1 с нулями.
+        assertEquals("ИС-13", IdTables.nextNumber("ИС-12"))
+        assertEquals("АОСР 6.1.1-026", IdTables.nextNumber("АОСР 6.1.1-025"))
+        b.recs[0].nsch = "ИС-12"; b.recs[1].nsch = "ИС-13"; b.recs[0].aosr = "АОСР 6.1.1-025"
+        assertEquals(listOf("ИС-14"), IdTables.nextNumbers(b, t1, TableCol.NSCH))
+        val back2 = Board.fromJson(JSONObject(b.toJsonString()))
+        assertEquals("ИС-13", back2.recs[1].nsch); assertEquals("АОСР 6.1.1-025", back2.recs[0].aosr)
+        assertEquals(listOf("Захватка", "Конструкция", "Вид работ", "№ схемы", "№ АОСР", "Объём по схеме"), t1.visibleCols().take(6).map { it.title() })
         val snap = b.snapshot()
         t1.plan.remove("бетон")
         assertEquals("170", b.restored(snap).tables[0].plan["бетон"]!!.value)
@@ -136,6 +144,7 @@ class VolumeTest {
             sum.contains("Объёмы · раздел (шифр)") && sum.contains("Всего по шифру") && sum.contains("<v>156.8</v>") && sum.contains("<v>228.0</v>"))
         val all = files["xl/worksheets/sheet2.xml"]!!
         assertTrue(all.contains("Объём по схеме") && all.contains(">Ед.<") && all.contains("<v>42.3</v>") && all.contains("КЖ 6.1.1 · Несущие стены"))
+        assertTrue(all.contains("№ схемы") && all.contains("№ АОСР") && all.contains("ИС-13") && all.contains("АОСР 6.1.1-025"))
         assertTrue(files["xl/workbook.xml"]!!.contains("name=\"КЖ 6.1.1 · Несущие стены\""))
         // Проект вписан не у всех таблиц раздела — по шифру проекта нет (процент обманул бы).
         t2.plan.remove("бетон")
@@ -237,6 +246,17 @@ class VolumeTest {
         root.findViewWithTag<View>("cell_done").performClick()
         idle()
         assertTrue(s.view.tableDraw.layout(s.b, t1).volMissing.isEmpty())
+
+        // № схемы: в поле — подсказка «следующий номер» после последнего в таблице.
+        rows[0].nsch = "ИС-12"
+        s.a.tableUi.cellAction(t1, rows[1], TableCol.NSCH)
+        d = latest()
+        val sugg = d.window!!.decorView.findViewWithTag<TextView>("cell_sugg_0")
+        assertEquals("ИС-13", sugg.text.toString())
+        sugg.performClick()
+        d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+        idle()
+        assertEquals("ИС-13", rows[1].nsch)
 
         // Палец по строке «Опалубка» блока объёмов — окно проекта: 760 м² (факт 737,3 — уже не перебор).
         root.findViewWithTag<View>("board_tool_hand").performClick()
