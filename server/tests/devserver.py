@@ -66,17 +66,30 @@ def argb(r, g, b):
 def demo(key):
     rnd = random.Random(5)
     items = []
-    ids = [("i0", "Конструкция не принята", argb(190, 42, 42)), ("i1", "В оформлении", argb(230, 126, 34)),
-           ("i2", "На подписи у Заказчика", argb(214, 170, 0)), ("i3", "Передано в ПТО", argb(41, 121, 255)),
-           ("i4", "Скан в архиве", argb(35, 128, 58))]
+    ids = [("i0", "Не выполнено", argb(138, 147, 163)), ("i5", "Не предоставлена", argb(198, 40, 40)),
+           ("i1", "В работе", argb(31, 95, 209)), ("i6", "На подписи АН", argb(123, 63, 196)),
+           ("i7", "Не согласована", argb(142, 27, 47)), ("i2", "На подписи у заказчика", argb(184, 138, 0)),
+           ("i8", "Возврат на корректировку", argb(212, 100, 12)), ("i3", "Сдано в ПТО", argb(35, 128, 58))]
+    cks = [("k0", "Не выполнено", argb(138, 147, 163)), ("k1", "Не предъявлено", argb(198, 40, 40)),
+           ("k2", "Нет возможности предъявить", argb(212, 100, 12)), ("k3", "Предъявлено", argb(35, 128, 58))]
+    dwgs = [("d0", "Не выполнено", argb(138, 147, 163)), ("d1", "Нет", argb(198, 40, 40)), ("d2", "Есть", argb(35, 128, 58))]
     cons = [("c0", "Не начато", argb(140, 140, 140)), ("c1", "Опалубка", argb(230, 126, 34)),
             ("c2", "Армирование", argb(214, 170, 0)), ("c3", "Бетонирование", argb(41, 121, 255)),
             ("c4", "Принято", argb(35, 128, 58))]
     for sid, name, color in ids:
-        items.append((sid, "status", json.dumps({"id": sid, "name": name, "color": color}, ensure_ascii=False)))
+        st = {"id": sid, "name": name, "color": color}
+        if sid == "i3":
+            st["done"] = 1
+        items.append((sid, "status", json.dumps(st, ensure_ascii=False)))
+    for group, lst in (("ck", cks), ("dwg", dwgs)):
+        for sid, name, color in lst:
+            st = {"id": sid, "name": name, "color": color, "g": group}
+            if sid in ("k3", "d2"):
+                st["done"] = 1
+            items.append((sid, "status", json.dumps(st, ensure_ascii=False)))
     for sid, name, color in cons:
         items.append((sid, "status", json.dumps({"id": sid, "name": name, "color": color, "g": "con"}, ensure_ascii=False)))
-    items.append(("~order", "meta", json.dumps({"order": [x[0] for x in ids + cons]})))
+    items.append(("~order", "meta", json.dumps({"order": [x[0] for x in ids + cons + cks + dwgs]})))
     items.append(("~title", "meta", json.dumps({"title": "План ИГС по БК5 (проверка сайта)"}, ensure_ascii=False)))
     frames = [("f1", 0, 0, 2600, 1500, "КЖ 6.1.1"), ("f2", 2900, 0, 2000, 1500, "КЖ 6.1.2")]
     for fid, x, y, w, h, t in frames:
@@ -119,6 +132,22 @@ def demo(key):
         items.append(("r1%d" % i, "row", json.dumps({"id": "r1%d" % i, "x": 3000, "y": 1200 + i * 32, "scale": 0.75,
                                                      "title": "Захватка %d — Армирование" % (i + 1), "ck": 1, "dwg": 1,
                                                      "sid": "i%d" % (2 + i)}, ensure_ascii=False)))
+    # Таблица ИД КЖ 6.1.1 у чертежа (0.20).
+    items.append(("tb1", "table", json.dumps({"id": "tb1", "x": 100, "y": 1250, "scale": 1.6, "title": "КЖ 6.1.1"}, ensure_ascii=False)))
+    plan = [("1", "i3", "k3", "d2"), ("2", "i3", "k3", "d2"), ("2.1", "i2", "k3", "d2"), ("3", "i8", "k3", "d2"),
+            ("4", "i6", "k3", "d1"), ("5", "i5", "k3", "d1"), ("6", "i1", "k1", "d1"), ("7", "i0", "k0", "d0")]
+    o = 1
+    for z, sid, ck, dwg in plan:
+        for w in ("Опалубка", "Бетон"):
+            rid = "rc%d" % o
+            rec = {"id": rid, "t": "tb1", "o": o, "z": z, "c": "Стены и колонны", "w": w, "ck": ck, "dwg": dwg, "sid": sid,
+                   "who": "Монолит-Строй", "d": "2026-0%d-%02d" % (7 + o // 10, 1 + o % 27)}
+            if sid in ("i3", "i2"):
+                rec["dc"] = "2026-10-20"
+            if sid == "i3":
+                rec["dp"] = "2026-10-27"
+            items.append((rid, "rec", json.dumps(rec, ensure_ascii=False)))
+            o += 1
     # Выноски и метки.
     items.append(("co1", "callout", json.dumps({"id": "co1", "x": 1800, "y": 900, "scale": 1.6, "title": "Плита ПМ-1",
                                                "sid": "c3", "leaders": [1200, 700]}, ensure_ascii=False)))

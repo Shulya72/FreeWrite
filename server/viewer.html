@@ -198,10 +198,11 @@ const B = {
   order: [],            // порядок статусов (~order)
   // разобранное — пересобирается после каждой порции правок
   statuses: [], strokes: [], texts: [], images: [], fills: [], frames: [], callouts: [], stickers: [], rows: [],
+  tables: [], recs: [],  // таблицы ИД и их строки (0.20, ТЗ «Учёт ИГС»)
 };
 
 function rebuild() {
-  const by = { status: [], stroke: [], text: [], image: [], fill: [], frame: [], callout: [], sticker: [], row: [] };
+  const by = { status: [], stroke: [], text: [], image: [], fill: [], frame: [], callout: [], sticker: [], row: [], table: [], rec: [] };
   B.title = "Доска";
   for (const [id, o] of B.objs) {
     if (id === "~title") { if (o.d && o.d.title) B.title = o.d.title; continue; }
@@ -209,7 +210,8 @@ function rebuild() {
     if (by[o.k]) by[o.k].push(o);
   }
   const pos = new Map(B.order.map((id, i) => [id, i]));
-  B.statuses = by.status.map((o) => ({ id: o.id, name: o.d.name || "Статус", color: o.d.color | 0, group: o.d.g === "con" ? "con" : "id" }))
+  B.statuses = by.status.map((o) => ({ id: o.id, name: o.d.name || "Статус", color: o.d.color | 0, done: !!o.d.done,
+    group: ["con", "ck", "dwg"].includes(o.d.g) ? o.d.g : "id" }))
     .sort((a, b) => (pos.has(a.id) ? pos.get(a.id) : 1e9) - (pos.has(b.id) ? pos.get(b.id) : 1e9));
   B.strokes = by.stroke.map(prepStroke).filter(Boolean);
   B.texts = by.text.map((o) => o.d);
@@ -219,6 +221,10 @@ function rebuild() {
   B.callouts = by.callout.map((o) => o.d);
   B.stickers = by.sticker.map((o) => o.d);
   B.rows = by.row.map((o) => o.d);
+  B.tables = by.table.map((o) => o.d);
+  const tids = new Set(B.tables.map((t) => t.id));
+  B.recs = by.rec.map((o) => o.d).filter((r) => tids.has(r.t));
+  for (const t of B.tables) t._lay = null;
   for (const t of B.texts) t._w = null;
   for (const c of B.callouts) c._w = null;
   for (const r of B.rows) r._key = null;
@@ -297,6 +303,122 @@ function rowLayout(r) {
 function rowW(r) { return rowLayout(r)[4] * r.scale; }
 function rowH(r) { return 40 * r.scale; }
 
+// ------------------------------------------------------------ таблицы ИД (как TableDraw в приложении)
+
+const TCOLS = ["zah", "con", "work", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note"];
+const TNAME = { zah: "Захватка", con: "Конструкция", work: "Вид работ", date: "Дата работ", ck: "Чек-лист", dwg: "DWG", igs: "ИГС",
+  dcust: "Отдал заказчику", dpto: "Сдано в ПТО", who: "Исполнитель", note: "Примечание" };
+const TF = { T: 40, H: 26, R: 30, F: 30, P: 9, FONT: 13, HF: 11, TF: 19 };
+const TGROUP = { igs: "id", ck: "ck", dwg: "dwg" };
+function tAllCols(t) { return (t.cols && t.cols.length) ? t.cols : TCOLS.map((k) => ({ k })); }
+function tCols(t) { return tAllCols(t).filter((c) => !c.h); }
+function colTitle(c) { return c.n || TNAME[c.k] || "Столбец"; }
+function isSt(k) { return k === "igs" || k === "ck" || k === "dwg"; }
+function isDate(k) { return k === "date" || k === "dcust" || k === "dpto"; }
+function recVal(r, k) {
+  switch (k) {
+    case "zah": return r.z || ""; case "con": return r.c || ""; case "work": return r.w || ""; case "date": return r.d || "";
+    case "ck": return r.ck || "k0"; case "dwg": return r.dwg || "d0"; case "igs": return r.sid || "i0";
+    case "dcust": return r.dc || ""; case "dpto": return r.dp || ""; case "who": return r.who || ""; case "note": return r.n || "";
+    default: return (r.x && r.x[k]) || "";
+  }
+}
+function stIn(group, id) { const l = statuses(group); return l.find((s) => s.id === id) || l[0] || status(id); }
+function dShort(iso) { const p = (iso || "").split("-"); return p.length === 3 ? p[2] + "." + p[1] + "." + p[0].slice(2) : (iso || ""); }
+function cellText(r, k) { return isSt(k) ? stIn(TGROUP[k], recVal(r, k)).name : isDate(k) ? dShort(recVal(r, k)) : recVal(r, k); }
+function recDone(r) { return !!stIn("id", r.sid || "i0").done; }
+function tRows(t) { return B.recs.filter((r) => r.t === t.id).sort((a, b) => ((a.o || 0) - (b.o || 0)) || (a.id < b.id ? -1 : 1)); }
+function plural(n, one, few, many) { const m10 = n % 10, m100 = n % 100; return n + " " + (m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many); }
+function tLayout(t) {
+  if (t._lay) return t._lay;
+  const rows = tRows(t), cols = tCols(t);
+  const tw = (s, size, bold) => measure(s || "", size, bold) * 1.06 + 2;
+  const widths = cols.map((c) => {
+    let w = tw(colTitle(c), TF.HF, true) + 2 * TF.P;
+    if (isSt(c.k)) {
+      for (const r of rows) w = Math.max(w, tw(cellText(r, c.k), TF.FONT, true) + 22 + 2 * TF.P);
+      w = Math.min(Math.max(w, c.k === "igs" ? 120 : 70), 300);
+    } else {
+      if (isDate(c.k)) w = Math.max(w, tw("00.00.00", TF.FONT, false) + 2 * TF.P);
+      else for (const r of rows) w = Math.max(w, tw(cellText(r, c.k), TF.FONT, c.k === "zah") + 2 * TF.P);
+      w = Math.min(Math.max(w, c.k === "zah" ? 64 : 56), c.k === "note" ? 260 : 230);
+    }
+    return w;
+  });
+  const info = plural(rows.length, "схема", "схемы", "схем") + " · сдано в ПТО " + rows.filter(recDone).length;
+  let total = widths.reduce((a, b) => a + b, 0);
+  const need = Math.max(TF.P * 2 + tw(t.title || "Без шифра", TF.TF, true) + 24 + tw(info, 12, false) + TF.P,
+    TF.P * 3 + tw("+ строка", TF.FONT, true) + tw("+ следующая захватка", TF.FONT, true) + TF.P * 2);
+  if (need > total) { if (widths.length) widths[widths.length - 1] += need - total; total = need; }
+  const colX = [0]; for (const w of widths) colX.push(colX[colX.length - 1] + w);
+  t._lay = { rows, cols, colX, w: total, h: TF.T + TF.H + Math.max(1, rows.length) * TF.R + TF.F, info };
+  return t._lay;
+}
+function tableBox(t) { const l = tLayout(t), k = t.scale || 1; return { l: t.x, t: t.y, r: t.x + l.w * k, b: t.y + l.h * k }; }
+function fitText(s, w) {
+  if (w <= 0) return "";
+  if (ctx.measureText(s).width <= w * 1.04) return s;
+  let n = s.length; while (n > 0 && ctx.measureText(s.slice(0, n) + "…").width > w) n--;
+  return s.slice(0, n) + "…";
+}
+function drawTable(t, z, hl) {
+  const L = tLayout(t), k = t.scale || 1, x0 = t.x, y0 = t.y, w = L.w * k, h = L.h * k;
+  if (!visible(x0, y0, x0 + w, y0 + h)) return;
+  rrect(x0, y0, w, h, 8 * k); ctx.fillStyle = "#fff"; ctx.fill();
+  ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, w, TF.T * k); ctx.clip();
+  rrect(x0, y0, w, h, 8 * k); ctx.fillStyle = "#e3eaf4"; ctx.fill(); ctx.restore();
+  const top = y0 + (TF.T + TF.H) * k, R = TF.R * k;
+  const igsI = L.cols.findIndex((c) => c.k === "igs");
+  const outline = () => { rrect(x0, y0, w, h, 8 * k); ctx.strokeStyle = "#aab6cc"; ctx.lineWidth = 1.5 * k; ctx.stroke(); };
+  if (TF.FONT * k * z < 4) {
+    if (R * z >= 1 && igsI >= 0) L.rows.forEach((r, i) => {
+      const ry = top + i * R; if (!visible(x0, ry, x0 + w, ry + R)) return;
+      ctx.fillStyle = hl && r.sid !== hl ? "#e1e4ea" : css(stIn("id", r.sid || "i0").color, 1);
+      ctx.fillRect(x0 + L.colX[igsI] * k, ry + 3 * k, (L.colX[igsI + 1] - L.colX[igsI]) * k, R - 6 * k);
+    });
+    outline(); return;
+  }
+  ctx.fillStyle = "#f1f4f8"; ctx.fillRect(x0, y0 + TF.T * k, w, TF.H * k);
+  L.rows.forEach((r, i) => {
+    const ry = top + i * R; if (!visible(x0, ry, x0 + w, ry + R)) return;
+    if (i % 2 === 1) { ctx.fillStyle = "#fafbfd"; ctx.fillRect(x0, ry, w, R); }
+    L.cols.forEach((c, ci) => {
+      const cx = x0 + L.colX[ci] * k, cw = (L.colX[ci + 1] - L.colX[ci]) * k, cy = ry + R / 2;
+      const fs = TF.FONT * k;
+      if (isSt(c.k)) {
+        const st = stIn(TGROUP[c.k], recVal(r, c.k)), fg = statusFg(st.color);
+        ctx.font = "bold " + fs + "px " + FONT;
+        const name = fitText(st.name, cw - 2 * TF.P * k - 22 * k), pw = ctx.measureText(name).width + 22 * k, ph = R - 9 * k;
+        rrect(cx + TF.P * k, ry + 4.5 * k, pw, ph, ph / 2); ctx.fillStyle = statusBg(st.color); ctx.fill();
+        ctx.strokeStyle = fg; ctx.lineWidth = 1.2 * k; ctx.stroke();
+        ctx.fillStyle = fg; ctx.fillText(name, cx + (TF.P + 11) * k, cy + fs * 0.36);
+      } else {
+        const v = cellText(r, c.k); if (!v) return;
+        ctx.font = (c.k === "zah" ? "bold " : "") + fs + "px " + FONT;
+        ctx.fillStyle = c.k === "zah" ? C.ink : C.ink2;
+        ctx.fillText(fitText(v, cw - 2 * TF.P * k), cx + TF.P * k, cy + fs * 0.36);
+      }
+    });
+    if (hl && r.sid !== hl) { ctx.fillStyle = "rgba(252,253,254,0.78)"; ctx.fillRect(x0, ry, w, R); }
+  });
+  const bottom = top + Math.max(1, L.rows.length) * R;
+  ctx.strokeStyle = C.rule; ctx.lineWidth = 1 * k; ctx.beginPath();
+  for (let i = 1; i < L.cols.length; i++) { ctx.moveTo(x0 + L.colX[i] * k, y0 + TF.T * k); ctx.lineTo(x0 + L.colX[i] * k, bottom); }
+  ctx.moveTo(x0, y0 + TF.T * k); ctx.lineTo(x0 + w, y0 + TF.T * k); ctx.moveTo(x0, top); ctx.lineTo(x0 + w, top);
+  ctx.moveTo(x0, bottom); ctx.lineTo(x0 + w, bottom); ctx.stroke();
+  ctx.strokeStyle = "#e8ecf2"; ctx.beginPath();
+  for (let i = 1; i < L.rows.length; i++) { const ry = top + i * R; ctx.moveTo(x0, ry); ctx.lineTo(x0 + w, ry); }
+  ctx.stroke();
+  ctx.font = "bold " + TF.HF * k + "px " + FONT; ctx.fillStyle = C.ink2;
+  L.cols.forEach((c, ci) => ctx.fillText(fitText(colTitle(c), (L.colX[ci + 1] - L.colX[ci]) * k - 2 * TF.P * k), x0 + (L.colX[ci] + TF.P) * k, y0 + (TF.T + TF.H / 2) * k + TF.HF * k * 0.36));
+  ctx.font = "bold " + TF.TF * k + "px " + FONT; ctx.fillStyle = C.ink;
+  ctx.fillText(t.title || "Без шифра", x0 + TF.P * 1.4 * k, y0 + TF.T / 2 * k + TF.TF * k * 0.36);
+  ctx.font = 12 * k + "px " + FONT; ctx.fillStyle = C.ink2;
+  ctx.fillText(L.info, x0 + w - TF.P * 1.4 * k - ctx.measureText(L.info).width, y0 + TF.T / 2 * k + 12 * k * 0.36);
+  if (!L.rows.length) { ctx.font = TF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText("Строк пока нет", x0 + TF.P * k, top + R / 2 + TF.FONT * k * 0.36); }
+  outline();
+}
+
 // Раздел, где стоит предмет (как Board.sectionOf): самая маленькая рамка, внутри которой его опорная точка.
 function sectionAt(x, y) {
   let best = null;
@@ -309,6 +431,8 @@ function sectionAt(x, y) {
 function sectionOf(o, kind) {
   if (kind === "sticker") return sectionAt(o.x + 64 * o.scale, o.y + 18 * o.scale);
   if (kind === "row") return sectionAt(o.x + 20 * o.scale, o.y + 20 * o.scale);
+  if (kind === "table") return sectionAt(o.x + 20 * (o.scale || 1), o.y + 19 * (o.scale || 1));
+  if (kind === "rec") { const t = B.tables.find((x) => x.id === o.t); return t ? sectionOf(t, "table") : null; }
   if (kind === "callout") return o.leaders && o.leaders.length >= 2 ? sectionAt(o.leaders[0], o.leaders[1]) : sectionAt(o.x, o.y);
   return null;
 }
@@ -541,11 +665,13 @@ function render() {
   for (const c of B.callouts) drawCallout(c, z);
   for (const s of B.stickers) drawSticker(s, z);
   for (const r of B.rows) drawRow(r, z);
+  for (const t of B.tables) drawTable(t, z, null);
   if (highlight) {
     ctx.fillStyle = "rgba(252,253,254,0.745)"; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
     for (const c of B.callouts) if (c.sid === highlight) drawCallout(c, z);
     for (const s of B.stickers) if (s.sid === highlight) drawSticker(s, z);
     for (const r of B.rows) if (r.sid === highlight) drawRow(r, z);
+    for (const t of B.tables) if (tRows(t).some((r) => (r.sid || "i0") === highlight)) drawTable(t, z, highlight);
   }
   // Ярлыки разделов — на экране, всегда одного размера.
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -739,6 +865,7 @@ function contentBounds() {
   for (const c of B.callouts) { const x = calloutBox(c); add(x.l, x.t, x.r, x.b); }
   for (const s of B.stickers) add(s.x, s.y, s.x + stickerW(s), s.y + 36 * s.scale);
   for (const rr of B.rows) add(rr.x, rr.y, rr.x + rowW(rr), rr.y + rowH(rr));
+  for (const tb of B.tables) { const x = tableBox(tb); add(x.l, x.t, x.r, x.b); }
   return l <= r ? [l, t, r, b] : null;
 }
 function fitAll() { const bb = contentBounds(); if (bb) fitRect(...bb); else { cam.x = -40; cam.y = -40; cam.z = 1; redraw(true); } }
@@ -757,7 +884,8 @@ function countStatus(id, f) {
   const all = f === undefined;
   return B.stickers.filter((s) => s.sid === id && (all || inSection(s, "sticker", f))).length +
     B.callouts.filter((c) => c.sid === id && (all || inSection(c, "callout", f))).length +
-    B.rows.filter((r) => r.sid === id && (all || inSection(r, "row", f))).length;
+    B.rows.filter((r) => r.sid === id && (all || inSection(r, "row", f))).length +
+    B.recs.filter((r) => (r.sid || "i0") === id && (all || inSection(r, "rec", f))).length;
 }
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
@@ -772,7 +900,7 @@ function buildLegend() {
   for (const g of ["id", "con"]) {
     const list = statuses(g);
     if (!list.length) continue;
-    h += `<div class="group">${g === "id" ? "ИД — метки и строки" : "Конструкции — выноски"}</div>`;
+    h += `<div class="group">${g === "id" ? "ИГС — таблицы, метки, строки" : "Конструкции — выноски"}</div>`;
     for (const st of list) {
       const n = countStatus(st.id, f || undefined);
       h += `<div class="st ${st.id === highlight ? "on" : ""}" data-sid="${esc(st.id)}"><span class="dot" style="background:${css(st.color, 1)}"></span>${esc(st.name)}<span class="n">${n}</span></div>`;
@@ -812,9 +940,37 @@ function summaryData() {
       cons: cons.map((s) => [s, co.filter((c) => c.sid === s.id).length]) };
   }).filter((x) => x.f || x.rows.length || x.st.length || x.co.length);
 }
+function igsHtml() {
+  if (!B.tables.length) return "";
+  const ids = statuses("id");
+  const tabs = [...B.tables].sort((a, b) => String(a.title).localeCompare(String(b.title), "ru", { numeric: true }));
+  const all = B.recs;
+  let h = `<div class="group">Таблицы ИД: ${plural(all.length, "схема", "схемы", "схем")} · сдано в ПТО ${all.filter(recDone).length}</div>`;
+  for (const t of tabs) {
+    const rows = tRows(t);
+    h += `<div class="sec" data-t="${esc(t.id)}"><b>${esc(t.title || "Без шифра")}</b>
+      <div class="small">${plural(rows.length, "схема", "схемы", "схем")} · сдано в ПТО ${rows.filter(recDone).length}</div>
+      <div class="chips">${ids.map((s) => [s, rows.filter((r) => (r.sid || "i0") === s.id).length]).filter(([, c]) => c > 0)
+        .map(([s, c]) => `<span class="chip" style="color:${statusFg(s.color)};background:${statusBg(s.color)}">${esc(s.name)}: ${c}</span>`).join("")}</div></div>`;
+  }
+  return h + `<div class="group">Разделы</div>`;
+}
+function recsCsv() {
+  const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
+  const head = ["Шифр", ...TCOLS.map((k) => TNAME[k])];
+  const lines = [head.map(q).join(";")];
+  const tabs = [...B.tables].sort((a, b) => String(a.title).localeCompare(String(b.title), "ru", { numeric: true }));
+  for (const t of tabs) for (const r of tRows(t)) lines.push([t.title || "", ...TCOLS.map((k) => isDate(k) ? (recVal(r, k) ? dShort(recVal(r, k)) : "") : cellText(r, k))].map(q).join(";"));
+  const blob = new Blob(["\ufeff" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${B.title.replace(/[\\/:*?"<>|]/g, " ")} — схемы ИГС ${new Date().toLocaleDateString("ru-RU")}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
 function summary() {
   const data = summaryData();
-  let h = "";
+  let h = igsHtml();
   for (const x of data) {
     const n = x.rows.length;
     h += `<div class="sec" data-f="${x.f ? esc(x.f.id) : ""}"><b>${esc(x.f ? x.f.title || "Раздел" : "Вне разделов")}</b>
@@ -822,12 +978,15 @@ function summary() {
       <div class="chips">${[...x.ids, ...x.cons].filter(([, c]) => c > 0).map(([s, c]) => `<span class="chip" style="color:${statusFg(s.color)};background:${statusBg(s.color)}">${esc(s.name)}: ${c}</span>`).join("")}</div></div>`;
   }
   if (!data.length) h = `<p>Пока нет строк ИД, меток и выносок.</p>`;
-  openModal("Сводка по разделам", h, [
+  openModal(B.tables.length ? "Сводка ИГС и разделы" : "Сводка по разделам", h, [
+    ...(B.tables.length ? [["Схемы для Excel", () => recsCsv()]] : []),
     ["Скачать для Excel", () => downloadCsv()],
     ["Скопировать таблицу", () => { copy(table("\t")); }],
     ["Готово", closeModal, true],
   ]);
   for (const el of $("mBody").querySelectorAll(".sec")) el.onclick = () => {
+    const tb = el.dataset.t && B.tables.find((x) => x.id === el.dataset.t);
+    if (tb) { closeModal(); const x = tableBox(tb); fitRect(x.l, x.t, x.r, x.b); return; }
     const f = B.frames.find((x) => x.id === el.dataset.f); if (!f) return;
     closeModal(); fitRect(f.x, f.y, f.x + f.w, f.y + f.h);
   };
