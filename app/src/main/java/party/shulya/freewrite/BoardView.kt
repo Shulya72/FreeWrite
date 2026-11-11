@@ -97,6 +97,13 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     /** Таблицы ИД (0.20): раскладка, рисование, что под пальцем. */
     val tableDraw = TableDraw()
 
+    /** Последнее касание доски — пером (или мышью), а не пальцем: в таблице перо попадает в ячейку, палец открывает карточку строки. */
+    var lastTapByPen = false
+        private set
+
+    /** Выделенное можно двигать и менять размер (строки таблицы стоят на своих местах — их только выделяют). */
+    private fun movable() = selection.any { it !is BoardRec }
+
     /** Части строки ИД: название, «Чек-лист», «DWG», «ИГС» (статус). */
     object RowPart { const val TITLE = 0; const val CHECK = 1; const val DWG = 2; const val STATUS = 3 }
     class Hit(val kind: Kind, val index: Int)
@@ -722,6 +729,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         is BoardFrame -> b.frames.any { it === o }
         is BoardRow -> b.rows.any { it === o }
         is BoardTable -> b.tables.any { it === o }
+        is BoardRec -> b.recs.any { it === o } && IdTables.tableOf(b, o) != null
         else -> false
     }
 
@@ -736,6 +744,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             is BoardFrame -> out.set(o.x, o.y, o.x + o.w, o.y + o.h)
             is BoardRow -> out.set(o.x, o.y, o.x + rowW(o), o.y + o.h)
             is BoardTable -> tableDraw.bounds(b, o, out)
+            is BoardRec -> IdTables.tableOf(b, o)?.let { t -> tableDraw.rowRect(b, t, o, out) } ?: out.setEmpty()
             else -> out.setEmpty()
         }
         return out
@@ -894,7 +903,15 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (o in b.stickers) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.frames) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.rows) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
-        for (o in b.tables) { boundsOf(o, rect2); if (inside(rect2.left + 20f * o.scale, rect2.top + 19f * o.scale)) out += o }
+        for (o in b.tables) {
+            boundsOf(o, rect2)
+            if (inside(rect2.left + 20f * o.scale, rect2.top + 19f * o.scale)) { out += o; continue }
+            // Обвели номера захваток — выделены строки (ТЗ, раздел 14.3): статус всем, «Не выполнено»…
+            for (r in IdTables.rowsOf(b, o)) {
+                val rr = tableDraw.rowRect(b, o, r, rect2) ?: continue
+                if (inside(rr.left + 30f * o.scale, rr.centerY())) out += r
+            }
+        }
         select(out)
     }
 
@@ -988,6 +1005,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         val tool = ev.getToolType(idx)
         activePointer = ev.getPointerId(idx)
         activeIsPen = isPen(tool)
+        lastTapByPen = activeIsPen || tool == MotionEvent.TOOL_TYPE_MOUSE
         downX = ev.getX(idx); downY = ev.getY(idx)
         lastX = downX; lastY = downY
         downTime = SystemClock.uptimeMillis()
@@ -1045,7 +1063,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
         }
         // Уголок рамки выделения — пером или пальцем, при любом инструменте.
-        if (selection.isNotEmpty()) {
+        if (selection.isNotEmpty() && movable()) {
             val c = handleAt(downX, downY)
             if (c != null) {
                 parent?.requestDisallowInterceptTouchEvent(true)
@@ -1060,7 +1078,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             // «Выделить»: внутри выделенного — двигать; в любом другом месте — лассо
             // (даже поверх чертежа или линии: иначе на плотной доске ничего не обвести).
             parent?.requestDisallowInterceptTouchEvent(true)
-            if (insideSelection(x, y)) {
+            if (insideSelection(x, y) && movable()) {
                 captureOrigs(withContents = true)
                 dragStart.set(x, y)
                 mode = Mode.MOVE_SEL
@@ -1074,7 +1092,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         if (!pen) {
             // Палец («Рука»): выделенное (если его выделили касанием) — двигать, иначе — двигать доску.
-            if ((fingerArmed || (hand && isPen(tool))) && insideSelection(x, y)) {
+            if ((fingerArmed || (hand && isPen(tool))) && insideSelection(x, y) && movable()) {
                 captureOrigs(withContents = true)
                 dragStart.set(x, y)
                 mode = Mode.MOVE_SEL
@@ -1389,7 +1407,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         val o = selectableAt(x, y)
         when {
-            o == null -> clearSelection()
+            o == null -> { clearSelection(); if (markedRecs != null) { markedRecs = null; invalidate() } }
             // Уже выделено (например, только что вставленная картинка): первое касание пальцем
             // разрешает тащить, второе — снимает выделение.
             selection.size == 1 && selection[0] === o -> if (fingerArmed) clearSelection() else fingerArmed = true
@@ -1661,7 +1679,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (r in b.rows) if (visible(r.x, r.y, r.x + rowW(r), r.y + r.h)) { drawRow(canvas, r, z); drawn++ }
         for (t in b.tables) {
             tableDraw.bounds(b, t, rect2)
-            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) { tableDraw.draw(canvas, b, t, z, vis, marked = markedRecs); drawn++ }
+            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) { tableDraw.draw(canvas, b, t, z, vis, marked = markedRecs, selected = selection.takeIf { s -> s.any { it is BoardRec } }); drawn++ }
         }
         highlight?.let { sid ->
             // Подсветка статуса: всё притушить, метки и выноски этого статуса — поверх.
@@ -2010,6 +2028,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         linePaint.color = Ui.ACCENT
         linePaint.strokeWidth = Ui.dpf(context, 2f) / z
         canvas.drawRect(rect, linePaint)
+        if (!movable()) return
         val r = Ui.dpf(context, 8f) / z
         for (cx in floatArrayOf(rect.left, rect.right)) for (cy in floatArrayOf(rect.top, rect.bottom)) {
             fillPaint.color = Color.WHITE

@@ -87,6 +87,9 @@ class BoardStatus(val id: String, var name: String, var color: Int, val group: S
     companion object {
         const val ID = "id"
         const val CON = "con"
+        /** Чек-лист и DWG (0.20, ТЗ «Учёт ИГС»): статусы ячеек таблицы ИД. */
+        const val CK = "ck"
+        const val DWG = "dwg"
     }
 }
 
@@ -269,7 +272,7 @@ class Board(
 
     /** Сколько меток, строк ИД и выносок с этим статусом (в разделе fr — только внутри него). */
     fun countStatus(id: String, fr: BoardFrame? = null): Int {
-        val recN = if (recs.isEmpty()) 0 else IgsSummary(this, fr).let { s -> s.count(s.recs, id) }
+        val recN = if (recs.isEmpty()) 0 else IdTables.liveRecs(this).count { it.igs == id && (fr == null || sectionOf(it) === fr) }
         if (fr == null) return stickers.count { it.sid == id } + callouts.count { it.sid == id } + rows.count { it.sid == id } + recN
         return stickers.count { it.sid == id && sectionOf(it) === fr } + callouts.count { it.sid == id && sectionOf(it) === fr } +
             rows.count { it.sid == id && sectionOf(it) === fr } + recN
@@ -284,7 +287,7 @@ class Board(
             is BoardSticker -> (o.x + 64f * o.scale) to (o.y + o.h / 2f)
             is BoardRow -> (o.x + 20f * o.scale) to (o.y + o.h / 2f)
             is BoardTable -> (o.x + 20f * o.scale) to (o.y + 19f * o.scale) // левый край названия
-            is BoardRec -> return IdTables.registerOf(this, o)?.let { sectionOf(it) }
+            is BoardRec -> return IdTables.tableOf(this, o)?.let { sectionOf(it) }
             is BoardCallout -> if (o.leaders.size >= 2) o.leaders[0] to o.leaders[1] else o.x to o.y
             is BoardText -> o.x to o.y
             is BoardImage -> (o.x + o.w / 2f) to (o.y + o.h / 2f)
@@ -312,7 +315,7 @@ class Board(
         if (statuses.any { it.group == BoardStatus.CON }) return
         val old = listOf("s0" to "Не сдано", "s1" to "В работе", "s2" to "Сдано")
         val untouched = statuses.size == 3 && statuses.zip(old).all { (st, o) -> st.id == o.first && st.name == o.second }
-        val used = HashSet<String>().apply { stickers.forEach { add(it.sid) }; callouts.forEach { add(it.sid) }; rows.forEach { add(it.sid) }; recs.forEach { add(it.sid) } }
+        val used = HashSet<String>().apply { stickers.forEach { add(it.sid) }; callouts.forEach { add(it.sid) }; rows.forEach { add(it.sid) }; recs.forEach { add(it.igs) } }
         if (statuses.isEmpty() || (untouched && statuses.none { it.id in used })) {
             statuses.clear()
             statuses.addAll(idStatuses())
@@ -552,7 +555,7 @@ class Board(
         fun fingerprint(s: String): Long = (s.length.toLong() shl 32) xor (s.hashCode().toLong() and 0xffffffffL)
 
         /** Статусы новой доски: список ИД и список конструкций (Владимир правит их в «Статусы»). */
-        fun defaultStatuses() = idStatuses() + conStatuses()
+        fun defaultStatuses() = idStatuses() + conStatuses() + IdTables.ckStatuses() + IdTables.dwgStatuses()
 
         /** Список до 0.18 (id s0–s2 — как у старых меток 0, 1, 2). */
         fun legacyStatuses() = listOf(
@@ -561,14 +564,11 @@ class Board(
             BoardStatus("s2", "Сдано", Ui.OK),
         )
 
-        /** Исполнительная документация (FW-011, список Владимира 08.11.2026). Номера одинаковые на всех планшетах. */
-        fun idStatuses() = listOf(
-            BoardStatus("i0", "Конструкция не принята", Ui.BAD),
-            BoardStatus("i1", "В оформлении", Color.rgb(230, 126, 34)),
-            BoardStatus("i2", "На подписи у Заказчика", Color.rgb(214, 170, 0)),
-            BoardStatus("i3", "Передано в ПТО", Color.rgb(41, 121, 255)),
-            BoardStatus("i4", "Скан в архиве", Ui.OK),
-        )
+        /**
+         * Статусы ИГС (ТЗ «Учёт ИГС», раздел 4.1; с 0.20 — список ИД доски: метки, строки ИД, таблицы ИД). Номера одинаковые
+         * на всех планшетах; у досок 0.18 номера i0–i3 сохранены ([IdTables.upgrade]).
+         */
+        fun idStatuses() = IdTables.igsStatuses()
 
         /** Конструкции (выноски) — для начала; Владимир поправит под себя. */
         fun conStatuses() = listOf(
@@ -632,7 +632,8 @@ class Board(
             j.optString("title", "Раздел")).also { it.id = jid(j) }
 
         fun parseStatus(j: JSONObject) = BoardStatus(j.optString("id", newStatusId()), j.optString("name", "Статус"), j.optInt("color", Ui.INK2),
-            if (j.optString("g") == BoardStatus.CON) BoardStatus.CON else BoardStatus.ID).also { it.done = j.optInt("done") == 1 }
+            when (j.optString("g")) { BoardStatus.CON -> BoardStatus.CON; BoardStatus.CK -> BoardStatus.CK; BoardStatus.DWG -> BoardStatus.DWG; else -> BoardStatus.ID })
+            .also { it.done = j.optInt("done") == 1 }
 
         fun rowJson(r: BoardRow): String =
             "{\"id\":${q(r.id)},\"x\":${f(r.x)},\"y\":${f(r.y)},\"scale\":${r.scale.toDouble()},\"title\":${JSONObject.quote(r.title)}" +
@@ -707,6 +708,7 @@ class Board(
             o.optJSONArray("tables")?.let { a -> for (i in 0 until a.length()) b.tables += IdTables.parseTable(a.getJSONObject(i)) }
             o.optJSONArray("recs")?.let { a -> for (i in 0 until a.length()) b.recs += IdTables.parseRec(a.getJSONObject(i)) }
             b.upgradeStatuses()
+            IdTables.upgrade(b)
             b.sync = BoardSync.parse(o.optJSONObject("sync"))
             b.fixIds()
             return b
