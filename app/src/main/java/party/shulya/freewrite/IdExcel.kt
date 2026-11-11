@@ -144,9 +144,57 @@ object IdExcel {
         s.rows.add(emptyList())
         s.rows.add(listOf(Cell("DWG", 1)) + dwg.map { Cell(it.name, 1) })
         s.rows.add(listOf(Cell("Всего", 3)) + dwg.map { Cell(cnt(recs, TableCol.DWG, it), 4) })
+        // Открытые ведомости: сколько схем ждут ответа и сколько дней.
+        val ids = recs.map { it.id }.toHashSet()
+        val open = b.vedoms.filter { Vedoms.isOpen(b, it) }.mapNotNull { v ->
+            val n = b.vitems.count { it.v == v.id && it.res.isEmpty() && it.r in ids }
+            if (n == 0) null else Triple(v, n, IdTables.daysSince(v.given, today))
+        }.sortedByDescending { it.third }
+        if (open.isNotEmpty()) {
+            s.rows.add(emptyList())
+            s.rows.add(listOf(Cell("Открытые ведомости", 1), Cell("Вид", 1), Cell("Кому", 1), Cell("Передана", 1), Cell("Ждут ответа", 1), Cell("Дней", 1)))
+            for ((v, n, d) in open) s.rows.add(listOf(Cell(v.num, 3), Cell(Vedoms.kindName(v.kind), 3), Cell(v.to.ifEmpty { null }, 3),
+                IdTables.excelDay(v.given)?.let { Cell(it, 2) } ?: Cell(null, 3), Cell(n, 4), Cell(d, 4)))
+        }
         val n = 4 + igs.size
         s.widths = DoubleArray(n) { if (it == 0) 22.0 else 14.0 }
         return s
+    }
+
+    // ---------------------------------------------------------------- ведомость
+
+    /** Опись ведомости (ТЗ, раздел 9.1): шапка (номер, вид, кому, дата передачи, сводка) и схемы по порядку. */
+    fun writeVedom(b: Board, v: BoardVedom, out: OutputStream, today: String = IdTables.today()) {
+        val st = Styles()
+        val s = Sheet(("Ведомость " + v.num).replace(Regex("[\\[\\]:*?/\\\\]"), " ").take(31))
+        s.rows.add(listOf(Cell("Ведомость ${v.num} — ${Vedoms.kindName(v.kind)}", 5)))
+        s.rows.add(listOf(Cell("Объект: " + b.title)))
+        if (v.to.isNotBlank()) s.rows.add(listOf(Cell("Кому: " + v.to)))
+        s.rows.add(listOf(Cell(if (v.isDraft) "Черновик (не передана)" else "Дата передачи: " + IdTables.dateLong(v.given))))
+        s.rows.add(listOf(Cell(Vedoms.summary(b, v, today))))
+        s.rows.add(emptyList())
+        val answers = Vedoms.hasAnswers(v.kind) && !v.isDraft
+        val head = arrayListOf("№", "Шифр", "Захватка", "Конструкция", "Вид работ", "Дата работ", "Исполнитель", "ИГС сейчас")
+        if (answers) { head += "Ответ"; head += "Дата ответа" }
+        s.rows.add(head.map { Cell(it, 1) })
+        val headRow = s.rows.size
+        for ((n, i) in Vedoms.items(b, v).withIndex()) {
+            val l = Vedoms.label(b, i)
+            val r = Vedoms.rec(b, i)
+            val row = arrayListOf(Cell(n + 1, 4), Cell(l[0].ifEmpty { null }, 3), Cell(l[1].ifEmpty { null }, 3), Cell(l[2].ifEmpty { null }, 3),
+                Cell(l[3].ifEmpty { null }, 3), r?.date?.let { IdTables.excelDay(it) }?.let { Cell(it, 2) } ?: Cell(null, 3), Cell(r?.who?.ifEmpty { null }, 3))
+            row += if (r != null) IdTables.status(b, BoardStatus.ID, r.igs).let { Cell(it.name, st.status(it.color)) } else Cell("строка удалена", 3)
+            if (answers) {
+                row += if (i.res.isEmpty()) Cell("Ждём", 3) else Cell(Vedoms.resName(v.kind, i.res), st.status(Vedoms.resColor(i.res)))
+                row += IdTables.excelDay(i.rd)?.let { Cell(it, 2) } ?: Cell(null, 3)
+            }
+            s.rows.add(row)
+        }
+        s.widths = doubleArrayOf(6.0, 14.0, 16.0, 24.0, 16.0, 13.0, 18.0, 26.0, 18.0, 13.0).copyOf(head.size)
+        s.filterCols = head.size
+        s.filterFrom = headRow
+        s.freeze = headRow
+        writeZip(listOf(s), st, out)
     }
 
     // ---------------------------------------------------------------- XML и zip
@@ -246,7 +294,7 @@ object IdExcel {
             if (dn.isNotEmpty()) {
                 wb.append("<definedNames>")
                 for ((i, s) in dn) wb.append("<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"").append(i).append("\" hidden=\"1\">'")
-                    .append(esc(s.name.replace("'", "''"))).append("'!\$A\$1:\$").append(colName(s.filterCols - 1)).append('$').append(s.rows.size).append("</definedName>")
+                    .append(esc(s.name.replace("'", "''"))).append("'!\$A\$").append(s.filterFrom).append(":\$").append(colName(s.filterCols - 1)).append('$').append(s.rows.size).append("</definedName>")
                 wb.append("</definedNames>")
             }
             wb.append("</workbook>")

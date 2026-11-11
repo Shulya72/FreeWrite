@@ -462,8 +462,30 @@ class IgsSummary(val b: Board, val fr: BoardFrame? = null, val only: BoardTable?
     val doneCount get() = recs.count { done(it) }
     val signing get() = recs.count { it.igs == IdTables.IGS_CUST || it.igs == IdTables.IGS_AN }
 
-    /** Долго на подписи у заказчика (с даты «Отдал заказчику»). */
-    fun isLong(r: BoardRec) = r.igs == IdTables.IGS_CUST && r.dcust.isNotEmpty() && IdTables.daysSince(r.dcust, today) > longDays
+    /** Когда схему отдали на подпись АН (по истории и ведомостям АН). */
+    private val anDates: Map<String, String> by lazy { Vedoms.anSince(b) }
+
+    /** С какой даты схема на подписи: у заказчика — «Отдал заказчику», у АН — передача АН; пусто — не на подписи или неизвестно. */
+    fun signingSince(r: BoardRec): String = when (r.igs) {
+        IdTables.IGS_CUST -> r.dcust
+        IdTables.IGS_AN -> anDates[r.id].orEmpty()
+        else -> ""
+    }
+
+    /** Долго на подписи (ТЗ, раздел 9): у заказчика — с даты «Отдал заказчику», у АН — с передачи АН. */
+    fun isLong(r: BoardRec): Boolean {
+        val d = signingSince(r)
+        return d.isNotEmpty() && IdTables.daysSince(d, today) > longDays
+    }
+
+    /** Открытые ведомости, где ждут ответа схемы отсюда: ведомость, сколько ждут, сколько дней с передачи. */
+    val openVedoms: List<Triple<BoardVedom, Int, Int>> by lazy {
+        val ids = recs.map { it.id }.toHashSet()
+        b.vedoms.filter { Vedoms.isOpen(b, it) }.mapNotNull { v ->
+            val n = b.vitems.count { it.v == v.id && it.res.isEmpty() && it.r in ids }
+            if (n == 0) null else Triple(v, n, IdTables.daysSince(v.given, today))
+        }.sortedByDescending { it.third }
+    }
 
     /** Контроль: чек-лист предъявлен, а схема «Не предоставлена». */
     val ctrlNotGiven: List<BoardRec> get() = recs.filter { ckDone(it) && it.igs == IdTables.IGS_NOT_GIVEN }

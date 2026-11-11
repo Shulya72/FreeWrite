@@ -92,19 +92,26 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onTableLongPress(t: BoardTable, h: TableHit) {}
         /** Коснулись пустого места доски (снять активную ячейку таблицы). */
         fun onEmptyTap() {}
+        /** Касание ведомости: строка (ответ, схема), «+ схемы», «Передать». */
+        fun onVedomTap(v: BoardVedom, h: VedomHit) {}
+        /** Подержали строку ведомости — меню позиции. */
+        fun onVedomLongPress(v: BoardVedom, h: VedomHit) {}
     }
 
-    enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL, ROW, TABLE }
+    enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL, ROW, TABLE, VEDOM }
 
     /** Таблицы ИД (0.20): раскладка, рисование, что под пальцем. */
     val tableDraw = TableDraw()
+
+    /** Ведомости (0.21). */
+    val vedomDraw = VedomDraw()
 
     /** Последнее касание доски — пером (или мышью), а не пальцем: в таблице перо попадает в ячейку, палец открывает карточку строки. */
     var lastTapByPen = false
         private set
 
     /** Выделенное можно двигать и менять размер (строки таблицы стоят на своих местах — их только выделяют). */
-    private fun movable() = selection.any { it !is BoardRec }
+    private fun movable() = selection.any { it !is BoardRec && it !is BoardVItem }
 
     /** Части строки ИД: название, «Чек-лист», «DWG», «ИГС» (статус). */
     object RowPart { const val TITLE = 0; const val CHECK = 1; const val DWG = 2; const val STATUS = 3 }
@@ -159,6 +166,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     /** Строки таблиц, отмеченные для показа (контроль, открытая карточка). */
     var markedRecs: Set<BoardRec>? = null
 
+    /** Позиции ведомостей, отмеченные для показа (открытая карточка позиции). */
+    var markedItems: Set<BoardVItem>? = null
+
     /** Активная ячейка таблицы: перо пишет где угодно — текст встаёт в неё (рамка цвета акцента). */
     var activeCell: Pair<BoardRec, String>? = null
         set(v) { field = v; sceneValid = false; invalidate() }
@@ -212,6 +222,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (r in b.rows) { val ax = r.x + 20f * r.scale; val ay = r.y + r.h / 2f; if (ax >= f.x && ax <= f.x + f.w && ay >= f.y && ay <= f.y + f.h) out += r }
         // Таблица — по левому краю названия.
         for (t in b.tables) { val ax = t.x + 20f * t.scale; val ay = t.y + 19f * t.scale; if (ax >= f.x && ax <= f.x + f.w && ay >= f.y && ay <= f.y + f.h) out += t }
+        for (v in b.vedoms) { val ax = v.x + 20f * v.scale; val ay = v.y + 19f * v.scale; if (ax >= f.x && ax <= f.x + f.w && ay >= f.y && ay <= f.y + f.h) out += v }
         return out
     }
 
@@ -378,6 +389,19 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             val h = hitAt(x, y)
             // Метку и строку ИД подержали — «поднялась»: тянется за пальцем, уголки — размер, два пальца — масштаб.
             // Отпустили, не двигая, — на статусе список статусов (как раньше).
+            if (h?.kind == Kind.VEDOM) {
+                // Подержали строку ведомости — меню позиции; шапку — ведомость «поднялась».
+                val v = b.vedoms[h.index]
+                val vh = vedomDraw.hit(b, v, x, y)
+                if (vh != null && vh.part == VedomHit.CELL) {
+                    if (mode == Mode.MOVE_SEL && editStarted) host.onDragEnd()
+                    editStarted = false
+                    mode = Mode.NONE
+                    performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                    host.onVedomLongPress(v, vh)
+                    return@Runnable
+                }
+            }
             if (h?.kind == Kind.TABLE) {
                 // Подержали строку таблицы — меню строки; шапку — таблица «поднялась», тянется за пальцем.
                 val t = b.tables[h.index]
@@ -393,6 +417,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
             val lift: Any? = when (h?.kind) {
                 Kind.STICKER -> b.stickers.getOrNull(h.index); Kind.ROW -> b.rows.getOrNull(h.index); Kind.TABLE -> b.tables.getOrNull(h.index)
+                Kind.VEDOM -> b.vedoms.getOrNull(h.index)
                 else -> null
             }
             if (lift != null) {
@@ -495,6 +520,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (s in b.stickers) { add(s.x, s.y); add(s.x + stickerW(s), s.y + s.h) }
         for (r in b.rows) { add(r.x, r.y); add(r.x + rowW(r), r.y + r.h) }
         for (t in b.tables) { tableDraw.bounds(b, t, rect2); add(rect2.left, rect2.top); add(rect2.right, rect2.bottom) }
+        for (v in b.vedoms) { vedomDraw.bounds(b, v, rect2); add(rect2.left, rect2.top); add(rect2.right, rect2.bottom) }
         for (f in b.fills) { var i = 0; while (i + 1 < f.pts.size) { add(f.pts[i], f.pts[i + 1]); i += 2 } }
         for (c in b.callouts) {
             calloutRect(c, rect2); add(rect2.left, rect2.top); add(rect2.right, rect2.bottom)
@@ -612,6 +638,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     /** Что лежит в точке доски (сверху вниз: метки, выноски, тексты, картинки). Штрихи — см. [selectableAt]. */
     fun hitAt(x: Float, y: Float): Hit? {
+        for (i in b.vedoms.indices.reversed()) {
+            vedomDraw.bounds(b, b.vedoms[i], rect2)
+            if (rect2.contains(x, y)) return Hit(Kind.VEDOM, i)
+        }
         for (i in b.tables.indices.reversed()) {
             tableDraw.bounds(b, b.tables[i], rect2)
             if (rect2.contains(x, y)) return Hit(Kind.TABLE, i)
@@ -690,6 +720,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         Kind.FILL -> b.fills.getOrNull(h.index)
         Kind.ROW -> b.rows.getOrNull(h.index)
         Kind.TABLE -> b.tables.getOrNull(h.index)
+        Kind.VEDOM -> b.vedoms.getOrNull(h.index)
     }
 
     // ---------------------------------------------------------------- выделение
@@ -735,6 +766,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         is BoardRow -> b.rows.any { it === o }
         is BoardTable -> b.tables.any { it === o }
         is BoardRec -> b.recs.any { it === o } && IdTables.tableOf(b, o) != null
+        is BoardVedom -> b.vedoms.any { it === o }
+        is BoardVItem -> b.vitems.any { it === o } && Vedoms.vedom(b, o.v) != null
         else -> false
     }
 
@@ -750,6 +783,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             is BoardRow -> out.set(o.x, o.y, o.x + rowW(o), o.y + o.h)
             is BoardTable -> tableDraw.bounds(b, o, out)
             is BoardRec -> IdTables.tableOf(b, o)?.let { t -> tableDraw.rowRect(b, t, o, out) } ?: out.setEmpty()
+            is BoardVedom -> vedomDraw.bounds(b, o, out)
+            is BoardVItem -> Vedoms.vedom(b, o.v)?.let { v -> vedomDraw.rowRect(b, v, o, out) } ?: out.setEmpty()
             else -> out.setEmpty()
         }
         return out
@@ -794,6 +829,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 is BoardSticker -> Orig(o, floatArrayOf(o.x, o.y, o.scale), 0f)
                 is BoardRow -> Orig(o, floatArrayOf(o.x, o.y, o.scale), 0f)
                 is BoardTable -> Orig(o, floatArrayOf(o.x, o.y, o.scale), 0f)
+                is BoardVedom -> Orig(o, floatArrayOf(o.x, o.y, o.scale), 0f)
                 is Drawing -> Orig(o, o.pts.copyOf(), o.width)
                 is BoardFill -> Orig(o, o.pts.copyOf(), 0f)
                 is BoardCallout -> Orig(o, floatArrayOf(o.x, o.y, o.scale) + o.leaders.toFloatArray(), 0f)
@@ -817,6 +853,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 is BoardSticker -> { o.x = tx(a[0]); o.y = ty(a[1]); o.scale = a[2] * s }
                 is BoardRow -> { o.x = tx(a[0]); o.y = ty(a[1]); o.scale = a[2] * s }
                 is BoardTable -> { o.x = tx(a[0]); o.y = ty(a[1]); o.scale = a[2] * s }
+                is BoardVedom -> { o.x = tx(a[0]); o.y = ty(a[1]); o.scale = a[2] * s }
                 is Drawing -> {
                     var i = 0
                     while (i + 1 < a.size && i + 1 < o.pts.size) {
@@ -915,6 +952,15 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             for (r in IdTables.rowsOf(b, o)) {
                 val rr = tableDraw.rowRect(b, o, r, rect2) ?: continue
                 if (inside(rr.left + 30f * o.scale, rr.centerY())) out += r
+            }
+        }
+        for (o in b.vedoms) {
+            boundsOf(o, rect2)
+            if (inside(rect2.left + 20f * o.scale, rect2.top + 19f * o.scale)) { out += o; continue }
+            // Обвели строки ведомости — ответ всем выделенным разом.
+            for (i in Vedoms.items(b, o)) {
+                val rr = vedomDraw.rowRect(b, o, i, rect2) ?: continue
+                if (inside(rr.left + 17f * o.scale, rr.centerY())) out += i
             }
         }
         select(out)
@@ -1389,6 +1435,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             host.onStickerTap(h.index)
             return
         }
+        if (h?.kind == Kind.VEDOM && host.tool() != BoardActivity.Tool.SELECT) {
+            val v = b.vedoms[h.index]
+            val vh = vedomDraw.hit(b, v, x, y)
+            if (vh != null && vh.part != VedomHit.TITLE && vh.part != VedomHit.HEAD) {
+                host.onVedomTap(v, vh)
+                return
+            }
+        }
         if (h?.kind == Kind.TABLE && host.tool() != BoardActivity.Tool.SELECT) {
             val t = b.tables[h.index]
             val th = tableDraw.hit(b, t, x, y)
@@ -1412,7 +1466,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         val o = selectableAt(x, y)
         when {
-            o == null -> { clearSelection(); host.onEmptyTap(); if (markedRecs != null) { markedRecs = null; invalidate() } }
+            o == null -> {
+                clearSelection(); host.onEmptyTap()
+                if (markedRecs != null || markedItems != null) { markedRecs = null; markedItems = null; invalidate() }
+            }
             // Уже выделено (например, только что вставленная картинка): первое касание пальцем
             // разрешает тащить, второе — снимает выделение.
             selection.size == 1 && selection[0] === o -> if (fingerArmed) clearSelection() else fingerArmed = true
@@ -1686,6 +1743,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             tableDraw.bounds(b, t, rect2)
             if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) { tableDraw.draw(canvas, b, t, z, vis, marked = markedRecs, selected = selection.takeIf { s -> s.any { it is BoardRec } }); drawn++ }
         }
+        for (v in b.vedoms) {
+            vedomDraw.bounds(b, v, rect2)
+            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) {
+                vedomDraw.draw(canvas, b, v, z, vis, selected = selection.takeIf { s -> s.any { it is BoardVItem } }, marked = markedItems); drawn++
+            }
+        }
         activeCell?.let { (r, col) ->
             val t = IdTables.tableOf(b, r) ?: return@let
             val c = tableDraw.cellRect(b, t, r, col, rect2) ?: return@let
@@ -1756,7 +1819,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         if (fading.isNotEmpty()) postInvalidateOnAnimation()
         drawnCount = drawn
-        totalCount = b.images.size + b.fills.size + b.strokes.size + b.texts.size + b.callouts.size + b.stickers.size + b.rows.size + b.tables.size
+        totalCount = b.images.size + b.fills.size + b.strokes.size + b.texts.size + b.callouts.size + b.stickers.size + b.rows.size + b.tables.size + b.vedoms.size
         val ms = (System.nanoTime() - t0) / 1e6f
         frameMs = if (frameMs == 0f) ms else frameMs * 0.8f + ms * 0.2f
         if (!plain && !gestureActive()) requestDetails()

@@ -148,6 +148,16 @@ def demo(key):
                 rec["dp"] = "2026-10-27"
             items.append((rid, "rec", json.dumps(rec, ensure_ascii=False)))
             o += 1
+    # Ведомость заказчику (0.21): передана, ответы по частям.
+    items.append(("vd1", "vedom", json.dumps({"id": "vd1", "x": 1800, "y": 1250, "scale": 1.6, "kind": "cust", "num": "З-12",
+                                              "to": "Технадзор заказчика", "given": "2026-11-05"}, ensure_ascii=False)))
+    for n, (rid, res, rd) in enumerate([("rc1", "ok", "2026-11-06"), ("rc2", "ok", "2026-11-06"), ("rc7", "fix", "2026-11-09"),
+                                        ("rc5", "", ""), ("rc6", "", "")]):
+        it = {"id": "vi%d" % n, "v": "vd1", "r": rid, "o": n + 1}
+        if res:
+            it["res"] = res
+            it["rd"] = rd
+        items.append(("vi%d" % n, "vitem", json.dumps(it, ensure_ascii=False)))
     # Выноски и метки.
     items.append(("co1", "callout", json.dumps({"id": "co1", "x": 1800, "y": 900, "scale": 1.6, "title": "Плита ПМ-1",
                                                "sid": "c3", "leaders": [1200, 700]}, ensure_ascii=False)))
@@ -168,7 +178,8 @@ def from_file(key, path, images_dir):
         items.append((st["id"], "status", json.dumps(st, ensure_ascii=False)))
     items.append(("~order", "meta", json.dumps({"order": [s["id"] for s in b.get("statuses", [])]})))
     kinds = {"strokes": "stroke", "texts": "text", "images": "image", "stickers": "sticker", "fills": "fill",
-             "callouts": "callout", "frames": "frame", "rows": "row"}
+             "callouts": "callout", "frames": "frame", "rows": "row", "tables": "table", "recs": "rec",
+             "vedoms": "vedom", "vitems": "vitem", "events": "event"}
     for name, k in kinds.items():
         for o in b.get(name, []):
             items.append((o["id"], k, json.dumps(o, ensure_ascii=False)))

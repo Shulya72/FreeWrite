@@ -199,10 +199,11 @@ const B = {
   // разобранное — пересобирается после каждой порции правок
   statuses: [], strokes: [], texts: [], images: [], fills: [], frames: [], callouts: [], stickers: [], rows: [],
   tables: [], recs: [],  // таблицы ИД и их строки (0.20, ТЗ «Учёт ИГС»)
+  vedoms: [], vitems: [], // ведомости и их позиции (0.21)
 };
 
 function rebuild() {
-  const by = { status: [], stroke: [], text: [], image: [], fill: [], frame: [], callout: [], sticker: [], row: [], table: [], rec: [] };
+  const by = { status: [], stroke: [], text: [], image: [], fill: [], frame: [], callout: [], sticker: [], row: [], table: [], rec: [], vedom: [], vitem: [] };
   B.title = "Доска";
   for (const [id, o] of B.objs) {
     if (id === "~title") { if (o.d && o.d.title) B.title = o.d.title; continue; }
@@ -225,6 +226,8 @@ function rebuild() {
   const tids = new Set(B.tables.map((t) => t.id));
   B.recs = by.rec.map((o) => o.d).filter((r) => tids.has(r.t));
   for (const t of B.tables) t._lay = null;
+  B.vedoms = by.vedom.map((o) => o.d);
+  B.vitems = by.vitem.map((o) => o.d);
   for (const t of B.texts) t._w = null;
   for (const c of B.callouts) c._w = null;
   for (const r of B.rows) r._key = null;
@@ -416,6 +419,126 @@ function drawTable(t, z, hl) {
   ctx.font = 12 * k + "px " + FONT; ctx.fillStyle = C.ink2;
   ctx.fillText(L.info, x0 + w - TF.P * 1.4 * k - ctx.measureText(L.info).width, y0 + TF.T / 2 * k + 12 * k * 0.36);
   if (!L.rows.length) { ctx.font = TF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText("Строк пока нет", x0 + TF.P * k, top + R / 2 + TF.FONT * k * 0.36); }
+  outline();
+}
+
+// ------------------------------------------------------------ ведомости (как VedomDraw в приложении, 0.21)
+
+const VF = { HD: 58, H: 26, R: 30, F: 30, P: 9, FONT: 13, HF: 11, TF: 19 };
+const VKIND = { an: ["На согласование АН", "А", 0xff7b3fc4 | 0], cust: ["На подпись заказчику", "З", 0xffb88a00 | 0],
+  pto: ["Сдача в ПТО", "П", 0xff23803a | 0], list: ["Список", "С", 0xff4b5873 | 0] };
+const VCOL = { n: "№", cipher: "Шифр", zah: "Захватка", con: "Конструкция", work: "Вид работ", igs: "ИГС сейчас", res: "Ответ", rd: "Дата ответа" };
+function vKind(v) { return VKIND[v.kind] || VKIND.list; }
+function vAnswers(v) { return (v.kind === "an" || v.kind === "cust") && !!v.given; }
+function vItems(v) { return B.vitems.filter((i) => i.v === v.id).sort((a, b) => ((a.o || 0) - (b.o || 0)) || (a.id < b.id ? -1 : 1)); }
+function resName(v, res) { return res === "ok" ? (v.kind === "an" ? "Согласовано" : "Подписано") : res === "no" ? "Не согласовано" : res === "fix" ? "Замечания" : "Ждём"; }
+function resColor(res) { return res === "ok" ? 0xff23803a | 0 : res === "no" ? 0xff8e1b2f | 0 : res === "fix" ? 0xffd4640c | 0 : 0xff8a93a3 | 0; }
+function daysSince(iso) { const d = Date.parse(iso + "T00:00:00"); return isNaN(d) ? 0 : Math.round((Date.now() - d) / 86400000 - 0.5); }
+function vClosed(v) {
+  if (!v.given) return false;
+  if (v.kind === "pto") return true;
+  if (v.kind === "an" || v.kind === "cust") { const it = vItems(v); return it.length > 0 && it.every((i) => !!i.res); }
+  return false;
+}
+function vState(v) { return !v.given ? (v.kind === "list" ? "список" : "черновик") : vClosed(v) ? "закрыта" : "передана " + dShort(v.given); }
+function vSummary(v) {
+  const it = vItems(v); const head = plural(it.length, "схема", "схемы", "схем");
+  if (!vAnswers(v)) return head;
+  const parts = [head];
+  for (const res of v.kind === "an" ? ["ok", "no", "fix"] : ["ok", "fix"]) { const n = it.filter((i) => i.res === res).length; if (n) parts.push(resName(v, res).toLowerCase() + " " + n); }
+  const wait = it.filter((i) => !i.res).length;
+  if (wait) parts.push(`ждём ${wait} (${daysSince(v.given)} дн.)`);
+  return parts.join(" · ");
+}
+function vLayout(v) {
+  const items = vItems(v);
+  const cols = ["n", "cipher", "zah", "con", "work", "igs"].concat(vAnswers(v) ? ["res", "rd"] : []);
+  const recs = new Map(B.recs.map((r) => [r.id, r]));
+  const tabs = new Map(B.tables.map((t) => [t.id, t]));
+  const texts = items.map((i, idx) => {
+    const r = recs.get(i.r), t = r && tabs.get(r.t);
+    return cols.map((c) => c === "n" ? String(idx + 1) : c === "cipher" ? (t ? t.title || "" : i.lt || "") : c === "zah" ? (t ? r.z || "" : i.lz || "")
+      : c === "con" ? (t ? r.c || "" : i.lc || "") : c === "work" ? (t ? r.w || "" : i.lw || "") : c === "igs" ? (t ? stIn("id", r.sid || "i0").name : "строка удалена")
+      : c === "res" ? resName(v, i.res || "") : c === "rd" ? dShort(i.rd || "") : "");
+  });
+  const igsColor = items.map((i) => { const r = recs.get(i.r); return r && tabs.get(r.t) ? stIn("id", r.sid || "i0").color : 0; });
+  const title = [v.num, vKind(v)[0]].filter(Boolean).join(" · "), state = vState(v);
+  const info = [v.to ? "Кому: " + v.to : "", vSummary(v)].filter(Boolean).join(" · ");
+  const key = JSON.stringify([title, state, info, texts, igsColor]);
+  if (v._lay && v._lay.key === key) return v._lay;
+  const tw = (x, size, bold) => measure(x || "", size, bold) * 1.06 + 2;
+  const widths = cols.map((c, ci) => {
+    const pill = c === "igs" || c === "res";
+    let w = tw(VCOL[c], VF.HF, true) + 2 * VF.P;
+    for (const row of texts) w = Math.max(w, tw(row[ci], VF.FONT, pill || c === "zah" || c === "n") + 2 * VF.P + (pill ? 22 : 0));
+    return c === "n" ? Math.max(w, 34) : c === "rd" ? Math.max(w, tw("00.00.00", VF.FONT, false) + 2 * VF.P)
+      : c === "igs" ? Math.min(Math.max(w, 120), 300) : c === "res" ? Math.min(Math.max(w, 100), 220) : Math.min(Math.max(w, 56), 230);
+  });
+  let total = widths.reduce((a, b) => a + b, 0);
+  const foot = !v.given;
+  const need = Math.max(VF.P * 2 + tw(title, VF.TF, true) + 24 + tw(state, 12, true) + VF.P, VF.P * 2 + tw(info, 12, false));
+  if (need > total) { widths[widths.length - 1] += need - total; total = need; }
+  const colX = [0]; for (const w of widths) colX.push(colX[colX.length - 1] + w);
+  v._lay = { key, items, cols, colX, texts, igsColor, title, state, info, foot, w: total, h: VF.HD + VF.H + Math.max(1, items.length) * VF.R + (foot ? VF.F : 0) };
+  return v._lay;
+}
+function vedomBox(v) { const l = vLayout(v), k = v.scale || 1; return { l: v.x, t: v.y, r: v.x + l.w * k, b: v.y + l.h * k }; }
+function drawVedom(v, z) {
+  const L = vLayout(v), k = v.scale || 1, x0 = v.x, y0 = v.y, w = L.w * k, h = L.h * k;
+  if (!visible(x0, y0, x0 + w, y0 + h)) return;
+  const kc = vKind(v)[2];
+  rrect(x0, y0, w, h, 8 * k); ctx.fillStyle = "#fff"; ctx.fill();
+  ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, w, VF.HD * k); ctx.clip();
+  rrect(x0, y0, w, h, 8 * k); ctx.fillStyle = statusBg(kc); ctx.fill(); ctx.restore();
+  const top = y0 + (VF.HD + VF.H) * k, R = VF.R * k;
+  const outline = () => { rrect(x0, y0, w, h, 8 * k); ctx.strokeStyle = css(kc, 1); ctx.lineWidth = 2 * k; ctx.stroke(); };
+  if (VF.FONT * k * z < 4) {
+    if (R * z >= 1) L.items.forEach((it, i) => {
+      const ry = top + i * R; if (!visible(x0, ry, x0 + w, ry + R)) return;
+      const c = vAnswers(v) ? resColor(it.res || "") : (L.igsColor[i] || 0xffd3dae5 | 0);
+      ctx.fillStyle = css(c, 1); ctx.fillRect(x0 + w * 0.55, ry + 3 * k, w * 0.45 - 6 * k, R - 6 * k);
+    });
+    outline(); return;
+  }
+  ctx.fillStyle = "#f1f4f8"; ctx.fillRect(x0, y0 + VF.HD * k, w, VF.H * k);
+  const pill = (name0, color, cx, ry, cw, dashed) => {
+    const fs = VF.FONT * k; ctx.font = "bold " + fs + "px " + FONT;
+    const fg = statusFg(color), name = fitText(name0, cw - 2 * VF.P * k - 22 * k), pw = ctx.measureText(name).width + 22 * k, ph = R - 9 * k;
+    rrect(cx + VF.P * k, ry + 4.5 * k, pw, ph, ph / 2); ctx.fillStyle = dashed ? "#fff" : statusBg(color); ctx.fill();
+    ctx.strokeStyle = fg; ctx.lineWidth = 1.2 * k; ctx.stroke();
+    ctx.fillStyle = fg; ctx.fillText(name, cx + (VF.P + 11) * k, ry + R / 2 + fs * 0.36);
+  };
+  L.items.forEach((it, i) => {
+    const ry = top + i * R; if (!visible(x0, ry, x0 + w, ry + R)) return;
+    if (i % 2 === 1) { ctx.fillStyle = "#fafbfd"; ctx.fillRect(x0, ry, w, R); }
+    L.cols.forEach((c, ci) => {
+      const cx = x0 + L.colX[ci] * k, cw = (L.colX[ci + 1] - L.colX[ci]) * k, txt = L.texts[i][ci], fs = VF.FONT * k;
+      if (c === "igs" && L.igsColor[i]) return pill(txt, L.igsColor[i], cx, ry, cw, false);
+      if (c === "res") return pill(txt, resColor(it.res || ""), cx, ry, cw, !it.res);
+      if (!txt) return;
+      ctx.font = (c === "zah" ? "bold " : "") + fs + "px " + FONT;
+      ctx.fillStyle = c === "zah" ? C.ink : (c === "n" || c === "igs") ? C.muted : C.ink2;
+      ctx.fillText(fitText(txt, cw - 2 * VF.P * k), cx + VF.P * k, ry + R / 2 + fs * 0.36);
+    });
+  });
+  const bottom = top + Math.max(1, L.items.length) * R;
+  ctx.strokeStyle = C.rule; ctx.lineWidth = 1 * k; ctx.beginPath();
+  for (let i = 1; i < L.cols.length; i++) { ctx.moveTo(x0 + L.colX[i] * k, y0 + VF.HD * k); ctx.lineTo(x0 + L.colX[i] * k, bottom); }
+  ctx.moveTo(x0, y0 + VF.HD * k); ctx.lineTo(x0 + w, y0 + VF.HD * k); ctx.moveTo(x0, top); ctx.lineTo(x0 + w, top);
+  ctx.moveTo(x0, bottom); ctx.lineTo(x0 + w, bottom); ctx.stroke();
+  ctx.strokeStyle = "#e8ecf2"; ctx.beginPath();
+  for (let i = 1; i < L.items.length; i++) { const ry = top + i * R; ctx.moveTo(x0, ry); ctx.lineTo(x0 + w, ry); }
+  ctx.stroke();
+  ctx.font = "bold " + VF.HF * k + "px " + FONT; ctx.fillStyle = C.ink2;
+  L.cols.forEach((c, ci) => ctx.fillText(fitText(VCOL[c], (L.colX[ci + 1] - L.colX[ci]) * k - 2 * VF.P * k), x0 + (L.colX[ci] + VF.P) * k, y0 + (VF.HD + VF.H / 2) * k + VF.HF * k * 0.36));
+  ctx.font = "bold " + VF.TF * k + "px " + FONT; ctx.fillStyle = C.ink;
+  ctx.fillText(L.title, x0 + VF.P * 1.4 * k, y0 + 22 * k + VF.TF * k * 0.36);
+  ctx.font = "bold " + 12 * k + "px " + FONT; ctx.fillStyle = statusFg(kc);
+  ctx.fillText(L.state, x0 + w - VF.P * 1.4 * k - ctx.measureText(L.state).width, y0 + 22 * k + 12 * k * 0.36);
+  ctx.font = 12 * k + "px " + FONT; ctx.fillStyle = C.ink2;
+  ctx.fillText(fitText(L.info, w - VF.P * 2.8 * k), x0 + VF.P * 1.4 * k, y0 + 45 * k + 12 * k * 0.36);
+  if (!L.items.length) { ctx.font = VF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText("Схем пока нет", x0 + VF.P * k, top + R / 2 + VF.FONT * k * 0.36); }
+  if (L.foot) { ctx.font = VF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText(v.kind === "list" ? "список" : "черновик — ещё не передана", x0 + VF.P * k, bottom + VF.F / 2 * k + VF.FONT * k * 0.36); }
   outline();
 }
 
@@ -666,6 +789,7 @@ function render() {
   for (const s of B.stickers) drawSticker(s, z);
   for (const r of B.rows) drawRow(r, z);
   for (const t of B.tables) drawTable(t, z, null);
+  for (const v of B.vedoms) drawVedom(v, z);
   if (highlight) {
     ctx.fillStyle = "rgba(252,253,254,0.745)"; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
     for (const c of B.callouts) if (c.sid === highlight) drawCallout(c, z);
@@ -866,6 +990,7 @@ function contentBounds() {
   for (const s of B.stickers) add(s.x, s.y, s.x + stickerW(s), s.y + 36 * s.scale);
   for (const rr of B.rows) add(rr.x, rr.y, rr.x + rowW(rr), rr.y + rowH(rr));
   for (const tb of B.tables) { const x = tableBox(tb); add(x.l, x.t, x.r, x.b); }
+  for (const v of B.vedoms) { const x = vedomBox(v); add(x.l, x.t, x.r, x.b); }
   return l <= r ? [l, t, r, b] : null;
 }
 function fitAll() { const bb = contentBounds(); if (bb) fitRect(...bb); else { cam.x = -40; cam.y = -40; cam.z = 1; redraw(true); } }
@@ -953,6 +1078,16 @@ function igsHtml() {
       <div class="chips">${ids.map((s) => [s, rows.filter((r) => (r.sid || "i0") === s.id).length]).filter(([, c]) => c > 0)
         .map(([s, c]) => `<span class="chip" style="color:${statusFg(s.color)};background:${statusBg(s.color)}">${esc(s.name)}: ${c}</span>`).join("")}</div></div>`;
   }
+  // Ведомости: открытые (ждут ответа) — сколько схем и сколько дней; остальные — коротко.
+  const open = B.vedoms.filter((v) => vAnswers(v) && !vClosed(v)).sort((a, b) => String(a.given).localeCompare(String(b.given)));
+  const other = B.vedoms.filter((v) => !(vAnswers(v) && !vClosed(v)));
+  if (B.vedoms.length) {
+    h += `<div class="group">Ведомости${open.length ? ` · ждут ответа: ${open.length}` : ""}</div>`;
+    for (const v of [...open, ...other]) {
+      h += `<div class="sec" data-v="${esc(v.id)}"><b style="color:${statusFg(vKind(v)[2])}">${esc([v.num, vKind(v)[0]].filter(Boolean).join(" · "))}</b>
+        <div class="small">${esc(vState(v))} · ${esc([v.to, vSummary(v)].filter(Boolean).join(" · "))}</div></div>`;
+    }
+  }
   return h + `<div class="group">Разделы</div>`;
 }
 function recsCsv() {
@@ -977,7 +1112,7 @@ function summary() {
       <div class="small">Строк ИД: ${n}${n ? ` · Чек-лист ✓ ${x.rows.filter((r) => r.ck).length} из ${n} · DWG ✓ ${x.rows.filter((r) => r.dwg).length} из ${n}` : ""}${x.st.length ? ` · меток: ${x.st.length}` : ""}</div>
       <div class="chips">${[...x.ids, ...x.cons].filter(([, c]) => c > 0).map(([s, c]) => `<span class="chip" style="color:${statusFg(s.color)};background:${statusBg(s.color)}">${esc(s.name)}: ${c}</span>`).join("")}</div></div>`;
   }
-  if (!data.length) h = `<p>Пока нет строк ИД, меток и выносок.</p>`;
+  if (!data.length && !B.vedoms.length) h = `<p>Пока нет строк ИД, меток и выносок.</p>`;
   openModal(B.tables.length ? "Сводка ИГС и разделы" : "Сводка по разделам", h, [
     ...(B.tables.length ? [["Схемы для Excel", () => recsCsv()]] : []),
     ["Скачать для Excel", () => downloadCsv()],
@@ -987,6 +1122,8 @@ function summary() {
   for (const el of $("mBody").querySelectorAll(".sec")) el.onclick = () => {
     const tb = el.dataset.t && B.tables.find((x) => x.id === el.dataset.t);
     if (tb) { closeModal(); const x = tableBox(tb); fitRect(x.l, x.t, x.r, x.b); return; }
+    const vd = el.dataset.v && B.vedoms.find((x) => x.id === el.dataset.v);
+    if (vd) { closeModal(); const x = vedomBox(vd); fitRect(x.l, x.t, x.r, x.b); return; }
     const f = B.frames.find((x) => x.id === el.dataset.f); if (!f) return;
     closeModal(); fitRect(f.x, f.y, f.x + f.w, f.y + f.h);
   };

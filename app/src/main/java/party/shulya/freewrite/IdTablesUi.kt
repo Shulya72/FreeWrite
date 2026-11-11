@@ -34,6 +34,12 @@ class TableUi(private val a: BoardActivity) {
     private val v: BoardView get() = a.view
     private fun dp(x: Float) = Ui.dp(a, x)
 
+    /** Кто правит (для истории схемы). */
+    private fun who() = Profile.name(a)
+
+    /** Поставить значение ячейки; статусы и даты — с записью в историю схемы (ТЗ, раздел 7). */
+    private fun put(r: BoardRec, col: String, value: String) = Vedoms.set(b, r, col, value, who())
+
     /** Срок «долго на подписи» в днях (настраивается в сводке; хранится на планшете). */
     var longDays: Int
         get() = a.getSharedPreferences("igs", Context.MODE_PRIVATE).getInt("longDays", 7)
@@ -193,17 +199,19 @@ class TableUi(private val a: BoardActivity) {
     fun onLongPress(t: BoardTable, h: TableHit) {
         val r = h.rec
         if (r == null) { addForm(t, next = h.part == TableHit.ADD_NEXT); return }
-        val items = arrayOf("Карточка строки", "Строка ниже", "Выше", "Ниже", "Конструкция не выполнена", "Удалить строку")
+        val items = arrayOf("Карточка строки", "История", "В ведомость", "Строка ниже", "Выше", "Ниже", "Конструкция не выполнена", "Удалить строку")
         AlertDialog.Builder(a)
             .setTitle(rowTitle(t, r))
             .setItems(items) { _, i ->
                 when (i) {
                     0 -> rowCard(r)
-                    1 -> addForm(t, next = true, after = r)
-                    2 -> move(r, -1)
-                    3 -> move(r, 1)
-                    4 -> notDone(listOf(r))
-                    5 -> { a.pushUndo(); b.recs.removeAll { it === r }; a.changed(); a.hint("Строка удалена — «Отменить» вернёт", 1800) }
+                    1 -> a.vedomUi.historyDialog(r)
+                    2 -> a.vedomUi.toVedom(listOf(r))
+                    3 -> addForm(t, next = true, after = r)
+                    4 -> move(r, -1)
+                    5 -> move(r, 1)
+                    6 -> notDone(listOf(r))
+                    7 -> { a.pushUndo(); b.recs.removeAll { it === r }; a.changed(); a.hint("Строка удалена — «Отменить» вернёт", 1800) }
                 }
             }
             .show()
@@ -226,7 +234,7 @@ class TableUi(private val a: BoardActivity) {
 
     fun notDone(rows: List<BoardRec>) {
         a.pushUndo()
-        for (r in rows) { r.igs = IdTables.IGS_NONE; r.ck = IdTables.CK_NONE; r.dwg = IdTables.DWG_NONE }
+        for (r in rows) { put(r, TableCol.IGS, IdTables.IGS_NONE); put(r, TableCol.CK, IdTables.CK_NONE); put(r, TableCol.DWG, IdTables.DWG_NONE) }
         a.changed()
         a.hint(if (rows.size == 1) "Конструкция не выполнена — ИГС, Чек-лист и DWG «Не выполнено»" else "«Не выполнено» — у ${rows.size} строк", 1800)
     }
@@ -234,7 +242,7 @@ class TableUi(private val a: BoardActivity) {
     private fun setCell(r: BoardRec, col: String, value: String) {
         if (r.get(col) == value) return
         a.pushUndo()
-        r.set(col, value)
+        put(r, col, value)
         a.changed()
         val c = IdTables.tableOf(b, r)?.colName(col) ?: TableCol.defaultName(col)
         a.hint("$c: ${IdTables.cellText(b, r, col).ifEmpty { "—" }}", 1200)
@@ -257,7 +265,7 @@ class TableUi(private val a: BoardActivity) {
             if (col == TableCol.DATE || col == TableCol.DCUST || col == TableCol.DPTO) {
                 val d = IdTables.parseDate(w)
                 if (d.isEmpty()) { a.hint("Дату — в виде 26.08.26", 1800); return true }
-                r.set(col, d)
+                put(r, col, d)
                 a.hint("$name: ${IdTables.dateShort(d)}", 1200)
             } else {
                 val nv = if (activeFresh || r.get(col).isEmpty()) w else r.get(col) + " " + w
@@ -284,12 +292,12 @@ class TableUi(private val a: BoardActivity) {
                 val q = w.lowercase()
                 val st = b.statuses(IdTables.groupOf(col)).firstOrNull { it.name.lowercase().startsWith(q) }
                     ?: b.statuses(IdTables.groupOf(col)).firstOrNull { q.length >= 3 && it.name.lowercase().contains(q) }
-                if (st != null) { r.set(col, st.id); a.hint("${c.title()}: ${st.name}", 1200) }
+                if (st != null) { put(r, col, st.id); a.hint("${c.title()}: ${st.name}", 1200) }
                 else a.hint("Статус — касанием: откроется список", 1800)
             }
             c.isDate -> {
                 val d = IdTables.parseDate(w)
-                if (d.isNotEmpty()) { r.set(col, d); a.hint("${c.title()}: ${IdTables.dateShort(d)}", 1200) }
+                if (d.isNotEmpty()) { put(r, col, d); a.hint("${c.title()}: ${IdTables.dateShort(d)}", 1200) }
                 else a.hint("Дату — в виде 26.08.26 или касанием", 1800)
             }
             else -> {
@@ -463,6 +471,17 @@ class TableUi(private val a: BoardActivity) {
                 more.addView(btn("+ строка ниже", "card_add", true) { d.dismiss(); addForm(t, next = true, after = cur) },
                     LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginStart = dp(8f) })
                 body.addView(more, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8f) })
+                // История и ведомости схемы (шаг 2).
+                val inV = Vedoms.itemsOf(b, cur)
+                if (inV.isNotEmpty()) body.addView(Ui.text(a, "В ведомостях: " + inV.joinToString { (x, i) ->
+                    x.num + if (!x.isDraft && Vedoms.hasAnswers(x.kind)) " — " + Vedoms.resName(x.kind, i.res).lowercase() else "" }, 14f, Ui.INK2)
+                    .apply { setPadding(0, dp(10f), 0, 0); tag = "card_vedoms" })
+                val more2 = LinearLayout(a)
+                val rr = cur
+                more2.addView(btn("История", "card_hist", true) { a.vedomUi.historyDialog(rr) }, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+                more2.addView(btn("В ведомость", "card_tovedom", true) { d.dismiss(); a.vedomUi.toVedom(listOf(rr)) },
+                    LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginStart = dp(8f) })
+                body.addView(more2, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8f) })
                 v.markedRecs = setOf(cur)
                 v.invalidate()
             }
@@ -731,7 +750,7 @@ class TableUi(private val a: BoardActivity) {
                     var dlg: AlertDialog? = null
                     val list = statusButtons(IdTables.groupOf(k), null, "bulk_status") { sid ->
                         dlg?.dismiss()
-                        a.pushUndo(); for (r in rows) r.set(k, sid); a.changed()
+                        a.pushUndo(); for (r in rows) put(r, k, sid); a.changed()
                         a.hint("$name «${IdTables.status(b, IdTables.groupOf(k), sid).name}» — у ${rows.size} строк", 1600)
                     }
                     dlg = AlertDialog.Builder(a).setTitle("$name для ${rows.size} строк")
@@ -836,7 +855,7 @@ class TableUi(private val a: BoardActivity) {
         kpi(s.total, "схем всего", Ui.INK)
         kpi(s.doneCount, "сдано в ПТО", Ui.OK)
         kpi(s.signing, "на подписи (АН и заказчик)", Color.rgb(110, 83, 0))
-        kpi(s.ctrlLong.size, "у заказчика дольше ${s.longDays} дн.", Color.rgb(154, 69, 5))
+        kpi(s.ctrlLong.size, "на подписи дольше ${s.longDays} дн.", Color.rgb(154, 69, 5))
         box.addView(grid, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8f) })
         fun head(text: String) = box.addView(Ui.text(a, text, 14f, Ui.MUTED, bold = true).apply { setPadding(0, dp(14f), 0, dp(4f)) })
         // По шифрам — полоса по статусам ИГС.
@@ -886,13 +905,30 @@ class TableUi(private val a: BoardActivity) {
         }
         ctrl(s.ctrlNotGiven, "чек-лист предъявлен, а схема «Не предоставлена»", "sum_ctrl_1")
         ctrl(s.ctrlNoChecklist, "схема в работе и дальше, а чек-лист не «Предъявлено»", "sum_ctrl_2")
-        ctrl(s.ctrlLong, "на подписи у заказчика дольше ${s.longDays} дн.", "sum_ctrl_3")
+        ctrl(s.ctrlLong, "на подписи (АН или заказчик) дольше ${s.longDays} дн.", "sum_ctrl_3")
         val days = LinearLayout(a).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6f), 0, 0) }
         days.addView(Ui.text(a, "Срок «долго на подписи»: ${s.longDays} дн.", 14f, Ui.INK2), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         days.addView(Ui.pill(a, "−", Ui.INK, Ui.DESK).apply { tag = "sum_days_minus"; setOnClickListener { longDays = s.longDays - 1; reopen(only, fr) } })
         days.addView(Ui.pill(a, "+", Ui.INK, Ui.DESK).apply { tag = "sum_days_plus"; setOnClickListener { longDays = s.longDays + 1; reopen(only, fr) } },
             LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { marginStart = dp(6f) })
         box.addView(days)
+        // Открытые ведомости (шаг 2): сколько схем ждут ответа и сколько дней.
+        if (s.openVedoms.isNotEmpty()) {
+            head("Открытые ведомости — ждут ответа")
+            for ((i, p) in s.openVedoms.withIndex()) {
+                val (x, n, days0) = p
+                val row = LinearLayout(a).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    background = Ui.rounded(a, Color.WHITE, Ui.RULE, 12f)
+                    setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+                    tag = "sum_vedom_$i"; isClickable = true
+                    setOnClickListener { dialog?.dismiss(); a.vedomUi.goTo(x) }
+                    addView(Ui.text(a, "${x.num} · ${Vedoms.kindName(x.kind)}", 14f, Board.statusFg(Vedoms.kindColor(x.kind)), bold = true), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+                    addView(Ui.text(a, "ждут ${Ui.plural(n, "схема", "схемы", "схем")} · $days0 дн.", 14f, if (days0 > s.longDays) Ui.BAD else Ui.INK2))
+                }
+                box.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
+            }
+        }
         if (s.whos.isNotEmpty()) {
             head("По исполнителям")
             for (w in s.whos) {
