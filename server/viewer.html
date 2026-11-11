@@ -266,6 +266,12 @@ function strokePath(s) {
   return path;
 }
 
+function fillCenter(f) {
+  const p = f.pts, n = p.length >> 1; let a = 0, cx = 0, cy = 0;
+  for (let i = 0; i < n; i++) { const j = (i + 1) % n, cr = p[i * 2] * p[j * 2 + 1] - p[j * 2] * p[i * 2 + 1]; a += cr; cx += (p[i * 2] + p[j * 2]) * cr; cy += (p[i * 2 + 1] + p[j * 2 + 1]) * cr; }
+  if (Math.abs(a) > 1e-6) { const x = cx / (3 * a), y = cy / (3 * a); if (mctx.isPointInPath(f.path, x, y)) return [x, y]; }
+  return [(f.l + f.r) / 2, (f.t + f.b) / 2];
+}
 function prepFill(d) {
   const p = d.pts || []; if (p.length < 6) return null;
   const path = new Path2D(); path.moveTo(p[0], p[1]);
@@ -275,7 +281,7 @@ function prepFill(d) {
     l = Math.min(l, p[i]); r = Math.max(r, p[i]); t = Math.min(t, p[i + 1]); b = Math.max(b, p[i + 1]);
   }
   path.closePath();
-  return { color: d.color | 0, alpha: d.alpha == null ? 0.35 : d.alpha, path, l, t, r, b, pts: p };
+  return { color: d.color | 0, alpha: d.alpha == null ? 0.35 : d.alpha, path, l, t, r, b, pts: p, lt: d.lt || "", lz: d.lz || "", ln: d.ln !== 0 };
 }
 
 // Размеры как в приложении (BoardView).
@@ -382,7 +388,8 @@ function tLayout(t) {
       w = Math.min(Math.max(w, c.k === "igs" ? 120 : 70), 300);
     } else {
       if (isDate(c.k)) w = Math.max(w, tw("00.00.00", TF.FONT, false) + 2 * TF.P);
-      else for (const r of rows) w = Math.max(w, tw(cellText(r, c.k), TF.FONT, c.k === "zah") + 2 * TF.P + (c.k === "vol" ? 4 : 0));
+      else for (const r of rows) w = Math.max(w, tw(cellText(r, c.k), TF.FONT, c.k === "zah") + 2 * TF.P + (c.k === "vol" ? 4 : 0) +
+        (c.k === "zah" && B.fills.some((f) => f.lt === t.id && normW(f.lz) === normW(r.z)) ? 17 : 0));
       w = Math.min(Math.max(w, c.k === "zah" ? 64 : 56), c.k === "note" ? 260 : 230);
     }
     return w;
@@ -391,6 +398,8 @@ function tLayout(t) {
   let total = widths.reduce((a, b) => a + b, 0);
   const prefix = secPrefix(t);
   const vol = cols.some((c) => c.k === "vol") && rows.length ? volumes(t, rows) : null;
+  const swatch = new Map();
+  for (const f of B.fills) if (f.lt === t.id && !swatch.has(normW(f.lz))) swatch.set(normW(f.lz), f.color);
   const missing = vol ? vol.reduce((s, v) => s + v.missing, 0) : 0;
   const need = Math.max(TF.P * 2 + tw(t.title || "Без шифра", TF.TF, true) + (prefix ? measure(prefix + " ·", 14, false) + 8 : 0) + 24 + tw(info, 12, false) + TF.P,
     TF.P * 3 + tw("+ строка", TF.FONT, true) + tw("+ следующая захватка", TF.FONT, true) + TF.P * 2, vol ? 1000 : 0);
@@ -398,7 +407,7 @@ function tLayout(t) {
   const colX = [0]; for (const w of widths) colX.push(colX[colX.length - 1] + w);
   const volTop = TF.T + TF.H + Math.max(1, rows.length) * TF.R;
   const volH = vol ? 34 + Math.max(1, vol.length) * 48 + (missing ? 28 : 0) + 8 : 0;
-  t._lay = { rows, cols, colX, w: total, h: volTop + volH + TF.F, info, prefix, vol, volTop, volH, missing };
+  t._lay = { rows, cols, colX, w: total, h: volTop + volH + TF.F, info, prefix, vol, volTop, volH, missing, swatch };
   return t._lay;
 }
 function tableBox(t) { const l = tLayout(t), k = t.scale || 1; return { l: t.x, t: t.y, r: t.x + l.w * k, b: t.y + l.h * k }; }
@@ -449,9 +458,16 @@ function drawTable(t, z, hl) {
         ctx.fillText(n, right - uw - ctx.measureText(n).width, cy + fs * 0.36);
       } else {
         const v = cellText(r, c.k); if (!v) return;
+        let tx = cx + TF.P * k;
+        // Захватка привязана к заливке на плане — значок её цвета перед номером (0.22).
+        const sw = c.k === "zah" ? L.swatch.get(normW(r.z)) : undefined;
+        if (sw !== undefined) {
+          rrect(tx, cy - 6 * k, 12 * k, 12 * k, 3 * k); ctx.fillStyle = css(sw, 1); ctx.fill();
+          ctx.strokeStyle = statusFg(sw); ctx.lineWidth = k; ctx.stroke(); tx += 17 * k;
+        }
         ctx.font = (c.k === "zah" ? "bold " : "") + fs + "px " + FONT;
         ctx.fillStyle = c.k === "zah" ? C.ink : C.ink2;
-        ctx.fillText(fitText(v, cw - 2 * TF.P * k), cx + TF.P * k, cy + fs * 0.36);
+        ctx.fillText(fitText(v, cx + cw - TF.P * k - tx), tx, cy + fs * 0.36);
       }
     });
     if (hl && r.sid !== hl) { ctx.fillStyle = "rgba(252,253,254,0.78)"; ctx.fillRect(x0, ry, w, R); }
@@ -855,6 +871,16 @@ function render() {
   for (const f of B.fills) if (visible(f.l, f.t, f.r, f.b)) {
     ctx.fillStyle = css(f.color, f.alpha); ctx.fill(f.path);
     ctx.strokeStyle = css(f.color, 200 / 255); ctx.lineWidth = 1.5 / z; ctx.stroke(f.path);
+  }
+  // Номера захваток на привязанных заливках (0.22, как в приложении).
+  for (const f of B.fills) if (f.lt && f.ln && f.lz && visible(f.l, f.t, f.r, f.b) && B.tables.some((t) => t.id === f.lt)) {
+    const side = Math.min(f.r - f.l, f.b - f.t); if (side * z < 22) continue;
+    const size = Math.min(Math.max(side * 0.32, 14 / z), 64 / z, side * 0.6);
+    const c = fillCenter(f);
+    ctx.font = "bold " + size + "px " + FONT; ctx.textAlign = "center";
+    ctx.lineJoin = "round"; ctx.lineWidth = size * 0.18; ctx.strokeStyle = "#fff"; ctx.strokeText(f.lz, c[0], c[1] + size * 0.36);
+    ctx.fillStyle = statusFg(f.color); ctx.fillText(f.lz, c[0], c[1] + size * 0.36);
+    ctx.textAlign = "left";
   }
   // Разделы (рамки).
   ctx.strokeStyle = "rgba(75,88,115,0.67)"; ctx.lineWidth = 1.5 / z;

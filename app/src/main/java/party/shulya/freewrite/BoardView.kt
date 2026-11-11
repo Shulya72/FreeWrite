@@ -169,6 +169,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     /** Позиции ведомостей, отмеченные для показа (открытая карточка позиции). */
     var markedItems: Set<BoardVItem>? = null
 
+    /** Заливки захватки, подсвеченные из таблицы (касание номера захватки, 0.22). */
+    var markedFills: Set<BoardFill>? = null
+
     /** Активная ячейка таблицы: перо пишет где угодно — текст встаёт в неё (рамка цвета акцента). */
     var activeCell: Pair<BoardRec, String>? = null
         set(v) { field = v; sceneValid = false; invalidate() }
@@ -1468,7 +1471,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         when {
             o == null -> {
                 clearSelection(); host.onEmptyTap()
-                if (markedRecs != null || markedItems != null) { markedRecs = null; markedItems = null; invalidate() }
+                if (markedRecs != null || markedItems != null || markedFills != null) { markedRecs = null; markedItems = null; markedFills = null; invalidate() }
             }
             // Уже выделено (например, только что вставленная картинка): первое касание пальцем
             // разрешает тащить, второе — снимает выделение.
@@ -1688,6 +1691,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         drawGrid(canvas, z)
         for (m in b.images) if (visible(m.x, m.y, m.x + m.w, m.y + m.h)) { drawImage(canvas, m, z); drawn++ }
         for (f in b.fills) { val r = f.bounds(); if (visible(r.left, r.top, r.right, r.bottom)) { drawFill(canvas, f, z); drawn++ } }
+        // Номера захваток на заливках и подсветка заливок захватки (0.22).
+        markedFills?.let { mf -> for (f in mf) { val r = f.bounds(); if (b.fills.any { it === f } && visible(r.left, r.top, r.right, r.bottom)) drawFillMark(canvas, f, z) } }
+        for (f in b.fills) if (f.lt.isNotEmpty()) { val r = f.bounds(); if (visible(r.left, r.top, r.right, r.bottom)) drawFillLabel(canvas, f, z) }
         for (fr in b.frames) if (visible(fr.x, fr.y, fr.x + fr.w, fr.y + fr.h)) {
             linePaint.color = Ui.INK2
             linePaint.alpha = 170
@@ -2134,6 +2140,62 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         linePaint.strokeWidth = Ui.dpf(context, 1.5f) / z
         canvas.drawPath(fillPath, linePaint)
         linePaint.alpha = 255
+    }
+
+    private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = android.graphics.Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
+    private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = android.graphics.Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER; style = Paint.Style.STROKE
+        strokeJoin = Paint.Join.ROUND; color = Color.WHITE
+    }
+
+    /** Середина заливки для подписи: центр тяжести многоугольника (если он внутри), иначе середина рамки. */
+    fun fillCenter(f: BoardFill, out: PointF): PointF {
+        val p = f.pts
+        val n = p.size / 2
+        var a = 0.0; var cx = 0.0; var cy = 0.0
+        for (i in 0 until n) {
+            val j = (i + 1) % n
+            val cr = p[i * 2].toDouble() * p[j * 2 + 1] - p[j * 2].toDouble() * p[i * 2 + 1]
+            a += cr; cx += (p[i * 2] + p[j * 2]) * cr; cy += (p[i * 2 + 1] + p[j * 2 + 1]) * cr
+        }
+        if (kotlin.math.abs(a) > 1e-6) {
+            val x = (cx / (3 * a)).toFloat(); val y = (cy / (3 * a)).toFloat()
+            if (insidePolygon(p, x, y)) { out.set(x, y); return out }
+        }
+        val r = f.bounds()
+        out.set(r.centerX(), r.centerY())
+        return out
+    }
+
+    private val labelPt = PointF()
+
+    /** Номер захватки на привязанной заливке: крупно по размеру заливки, цветом заливки с белой обводкой. */
+    private fun drawFillLabel(canvas: Canvas, f: BoardFill, z: Float) {
+        if (!f.ln || f.lz.isBlank()) return
+        if (b.tables.none { it.id == f.lt }) return
+        val r = f.bounds()
+        val minSide = min(r.width(), r.height())
+        if (minSide * z < Ui.dpf(context, 22f)) return // на экране мелко — не подписываем
+        val size = (minSide * 0.32f).coerceIn(Ui.dpf(context, 14f) / z, Ui.dpf(context, 64f) / z).coerceAtMost(minSide * 0.6f)
+        val c = fillCenter(f, labelPt)
+        labelPaint.textSize = size; haloPaint.textSize = size
+        haloPaint.strokeWidth = size * 0.18f
+        labelPaint.color = Board.statusFg(f.color)
+        val y = c.y + size * 0.36f
+        canvas.drawText(f.lz, c.x, y, haloPaint)
+        canvas.drawText(f.lz, c.x, y, labelPaint)
+    }
+
+    /** Подсветка заливки захватки: толстый контур цвета акцента. */
+    private fun drawFillMark(canvas: Canvas, f: BoardFill, z: Float) {
+        val path = f.path ?: return
+        linePaint.color = Ui.ACCENT
+        linePaint.strokeWidth = Ui.dpf(context, 4f) / z
+        canvas.drawPath(path, linePaint)
+        fillPaint.color = Ui.ACCENT
+        fillPaint.alpha = 28
+        canvas.drawPath(path, fillPaint)
+        fillPaint.alpha = 255
     }
 
     private val arrowPath = Path()

@@ -136,7 +136,15 @@ class BoardSticker(var x: Float, var y: Float, var sid: String, var scale: Float
 class BoardFill(val pts: FloatArray, var color: Int, var alpha: Float = DEFAULT_ALPHA) {
     var id: String = Ids.next()
 
-    fun copy() = BoardFill(pts.copyOf(), color, alpha)
+    /**
+     * Захватка на плане (0.22, ТЗ «Учёт ИГС», раздел 8): таблица ИД [lt] и номер захватки [lz]; пусто — не привязана.
+     * [ln] — писать номер на заливке. Цвет заливки статусом не меняется — его выбирает Владимир.
+     */
+    var lt = ""
+    var lz = ""
+    var ln = true
+
+    fun copy() = BoardFill(pts.copyOf(), color, alpha).also { it.lt = lt; it.lz = lz; it.ln = ln }
 
     /** Номер изменения точек: кто двигает точки — вызывает [changed]. */
     var version = 0
@@ -176,11 +184,17 @@ class BoardFill(val pts: FloatArray, var color: Int, var alpha: Float = DEFAULT_
         h = 31 * h + color
         h = 31 * h + alpha.toRawBits()
         h = 31 * h + id.hashCode()
+        h = 31 * h + lt.hashCode(); h = 31 * h + lz.hashCode(); h = 31 * h + (if (ln) 1 else 0)
         for (v in pts) h = 31 * h + v.toRawBits()
         jsonCache?.let { if (h == jsonSum) return it }
         val sb = StringBuilder(pts.size * 6 + 64)
         sb.append("{\"id\":").append(JSONObject.quote(id)).append(",\"color\":").append(color).append(",\"alpha\":").append(alpha.toDouble()).append(",\"pts\":")
         JsonNum.array(sb, pts)
+        // Привязка к захватке — только если есть: строка непривязанной заливки та же, что до 0.22.
+        if (lt.isNotEmpty()) {
+            sb.append(",\"lt\":").append(JSONObject.quote(lt)).append(",\"lz\":").append(JSONObject.quote(lz))
+            if (!ln) sb.append(",\"ln\":0")
+        }
         sb.append('}')
         return sb.toString().also { jsonCache = it; jsonSum = h }
     }
@@ -703,7 +717,7 @@ class Board(
             val p = floats(j.optJSONArray("pts"))
             if (p.size < 6) return null
             return BoardFill(p, j.optInt("color", Ui.INK), j.optDouble("alpha", BoardFill.DEFAULT_ALPHA.toDouble()).toFloat())
-                .also { it.id = jid(j) }
+                .also { it.id = jid(j); it.lt = j.optString("lt"); it.lz = j.optString("lz"); it.ln = j.optInt("ln", 1) != 0 }
         }
 
         fun parseCallout(j: JSONObject, defaultSid: String): BoardCallout {

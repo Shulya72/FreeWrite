@@ -1205,7 +1205,8 @@ class BoardActivity : Activity(), BoardView.Host {
         pushUndo()
         board.fills += BoardFill(pts, penColor)
         changed()
-        hint("Залито. Следующая захватка — снова касайтесь углов", 2500)
+        hint("Залито. Следующая захватка — снова касайтесь углов" +
+            if (board.tables.isNotEmpty()) ". Привязать к таблице — выделите заливку → «Захватка»" else "", 3500)
     }
 
     private fun showFillBar() {
@@ -1571,6 +1572,7 @@ class BoardActivity : Activity(), BoardView.Host {
     internal fun buildSelectionBar() {
         val sel = view.selection
         selBar.removeAllViews()
+        tableUi.markFromFill(sel)
         if (sel.isEmpty()) {
             selBar.visibility = View.GONE
             return

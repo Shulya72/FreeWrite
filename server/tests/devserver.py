@@ -171,7 +171,9 @@ def demo(key):
     items.append(("t1", "text", json.dumps({"id": "t1", "x": 120, "y": 280, "size": 44, "text": "Секция 3 · приёмка",
                                             "color": argb(22, 34, 58)}, ensure_ascii=False)))
     items.append(("fl1", "fill", json.dumps({"id": "fl1", "pts": [300, 400, 900, 400, 900, 700, 300, 700],
-                                             "color": argb(41, 121, 255), "alpha": 0.35})))
+                                             "color": argb(41, 121, 255), "alpha": 0.35, "lt": "tb1", "lz": "2"})))
+    items.append(("fl2", "fill", json.dumps({"id": "fl2", "pts": [950, 400, 1500, 400, 1500, 700, 950, 700],
+                                             "color": argb(46, 160, 67), "alpha": 0.35, "lt": "tb1", "lz": "3"})))
     push_all(key, items)
 
 

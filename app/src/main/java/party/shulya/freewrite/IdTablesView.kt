@@ -12,7 +12,9 @@ class TableLayout(val key: Long, val cols: List<TableCol>, val colX: FloatArray,
                   /** Шифр раздела перед названием («КЖ 6.1.1 ·»), пусто — нет. */
                   val prefix: String = "",
                   /** Объёмы по видам работ (блок внизу; null — столбца объёма нет). */
-                  val vol: List<IdTables.VolLine>? = null, val volTop: Float = 0f, val volH: Float = 0f, val volMissing: List<BoardRec> = emptyList())
+                  val vol: List<IdTables.VolLine>? = null, val volTop: Float = 0f, val volH: Float = 0f, val volMissing: List<BoardRec> = emptyList(),
+                  /** Цвет заливки захватки на плане (нормализованный номер → цвет) — значок у номера (0.22). */
+                  val swatch: Map<String, Int> = emptyMap())
 
 /** Что под пальцем в таблице ИД: шапка, названия столбцов, ячейка (строка + столбец), «+ строка», «+ следующая захватка». */
 class TableHit(val part: Int, val rec: BoardRec?, val col: String?) {
@@ -55,6 +57,8 @@ class TableDraw {
         private val ZEBRA = Color.rgb(250, 251, 253)
         private val MARK = Color.rgb(255, 241, 224)
         private val SEL = Color.rgb(227, 236, 252)
+        /** Значок цвета захватки у номера (0.22). */
+        const val SWATCH = 12f
         const val VOL_HEAD = 34f
         const val VOL_ROW = 48f
         const val VOL_NOTE = 28f
@@ -88,9 +92,11 @@ class TableDraw {
         val prefix = IdTables.sectionPrefix(b, t)
         val volOn = cols.any { it.isVol }
         val all = if (volOn) IdTables.allRows(b, t) else rows
+        val swatch = IdTables.zahColors(b, t)
         var h = 1125899906842597L
         h = 31 * h + t.title.hashCode()
         h = 31 * h + prefix.hashCode()
+        for ((zk, c) in swatch) { h = 31 * h + zk.hashCode(); h = 31 * h + c }
         if (volOn) {
             for (r in all) { h = 31 * h + r.vol.hashCode(); h = 31 * h + r.work.hashCode() }
             for (p in t.plan.values) { h = 31 * h + p.work.hashCode(); h = 31 * h + p.value.hashCode(); h = 31 * h + p.unit.hashCode() }
@@ -119,7 +125,8 @@ class TableDraw {
             } else {
                 if (c.isDate) w = max(w, tw("00.00.00", FONT, false) + 2 * PAD)
                 else if (c.isVol) for (r in rows) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, false) + 2 * PAD + 4f)
-                else for (r in rows) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, c.k == TableCol.ZAH) + 2 * PAD)
+                else for (r in rows) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, c.k == TableCol.ZAH) + 2 * PAD +
+                    if (c.k == TableCol.ZAH && swatch.containsKey(IdTables.norm(r.zah))) SWATCH + 5f else 0f)
                 w = min(max(w, if (c.k == TableCol.ZAH) 64f else 56f), if (c.k == TableCol.NOTE) 260f else 230f)
             }
             widths[ci] = w
@@ -139,7 +146,7 @@ class TableDraw {
         val missing = vol?.flatMap { it.missing } ?: emptyList()
         val volH = if (vol == null) 0f else VOL_HEAD + max(1, vol.size) * VOL_ROW + (if (missing.isNotEmpty()) VOL_NOTE else 0f) + VOL_PAD
         val height = volTop + volH + FOOT_H
-        return TableLayout(h, cols, colX, rows, total, height, info, addW, prefix, vol, volTop, volH, missing).also { t.lay = it }
+        return TableLayout(h, cols, colX, rows, total, height, info, addW, prefix, vol, volTop, volH, missing, swatch).also { t.lay = it }
     }
 
     fun bounds(b: Board, t: BoardTable, out: RectF): RectF {
@@ -349,10 +356,22 @@ class TableDraw {
         }
         val s = IdTables.cellText(b, r, c.k)
         if (s.isEmpty()) return
+        var tx = cx + PAD * k
+        if (c.k == TableCol.ZAH) {
+            // Захватка привязана к заливке на плане — значок её цвета перед номером.
+            t0(b, r)?.lay?.swatch?.get(IdTables.norm(r.zah))?.let { col ->
+                rect.set(tx, cy - SWATCH / 2f * k, tx + SWATCH * k, cy + SWATCH / 2f * k)
+                fill.color = col
+                canvas.drawRoundRect(rect, 3f * k, 3f * k, fill)
+                line.color = Board.statusFg(col); line.strokeWidth = 1f * k
+                canvas.drawRoundRect(rect, 3f * k, 3f * k, line)
+                tx += (SWATCH + 5f) * k
+            }
+        }
         text.textSize = FONT * k
         text.color = if (c.k == TableCol.ZAH) Ui.INK else Ui.INK2
         text.isFakeBoldText = c.k == TableCol.ZAH
-        canvas.drawText(fit(s, cw - 2 * PAD * k), cx + PAD * k, cy + text.textSize * 0.36f, text)
+        canvas.drawText(fit(s, cx + cw - PAD * k - tx), tx, cy + text.textSize * 0.36f, text)
         text.isFakeBoldText = false
     }
 
@@ -460,6 +479,8 @@ class TableDraw {
             txt(" — в факт не вошли. Касание — показать эти строки.", L + ww, ny, 13f, Ui.INK2)
         }
     }
+
+    private fun t0(b: Board, r: BoardRec): BoardTable? = IdTables.tableOf(b, r)
 
     /** Текст, обрезанный «…» по ширине. */
     private fun fit(s: String, w: Float): String {
