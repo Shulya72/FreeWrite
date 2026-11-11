@@ -381,4 +381,94 @@ class TablesTest {
         assertEquals(10, s.b.recs.size)
         s.a.finish()
     }
+
+    /** 0.20.1: доска 0.18, где список ИД не нетронутый (свой статус, другой порядок), тоже получает статусы ИГС. */
+    @Test
+    fun oldIdListWithOwnStatusesBecomesIgs() {
+        val b = Board.create("Старая")
+        b.statuses.clear()
+        b.statuses += listOf(BoardStatus("i1", "В оформлении", 2), BoardStatus("i0", "Конструкция не принята", 1),
+            BoardStatus("sNo", "Нет схемы", 9), BoardStatus("i2", "На подписи у Заказчика", 3), BoardStatus("i4", "Скан в архиве", 5),
+            BoardStatus("i3", "Передано в ПТО", 4))
+        b.statuses += Board.conStatuses()
+        b.stickers += BoardSticker(1f, 2f, "i4", 1f)
+        val t = BoardTable(0f, 0f, 1f, "КЖ")
+        b.tables += t
+        b.recs += BoardRec(t.id, 1.0).apply { igs = "i4" }
+        val u = Board.fromJson(JSONObject(b.toJsonString()))
+        val names = u.statuses(BoardStatus.ID).map { it.name }
+        assertEquals(IdTables.igsStatuses().map { it.name } + "Нет схемы", names)
+        assertEquals("Конструкция не выполнена", u.status(IdTables.IGS_NONE).name)
+        assertEquals("«Скан в архиве» → «Сдано в ПТО»", IdTables.IGS_PTO, u.stickers[0].sid)
+        assertEquals(IdTables.IGS_PTO, u.recs[0].igs)
+        assertTrue(u.status(IdTables.IGS_PTO).done)
+        // Второй раз ничего не меняется; удалённый статус не возвращается.
+        assertEquals(u.entryHashes(), Board.fromJson(JSONObject(u.toJsonString())).entryHashes())
+        u.statuses.removeAll { it.id == IdTables.IGS_AN }
+        assertTrue(Board.fromJson(JSONObject(u.toJsonString())).statuses.none { it.id == IdTables.IGS_AN })
+        // Доска 0.20.0 со статусом «Не выполнено» — новое название.
+        val b20 = Board.create("0.20.0")
+        b20.statuses.first { it.id == IdTables.IGS_NONE }.name = "Не выполнено"
+        assertEquals("Конструкция не выполнена", Board.fromJson(JSONObject(b20.toJsonString())).status(IdTables.IGS_NONE).name)
+    }
+
+    /** 0.20.1: палец по статусу — список рядом (без карточки); перо в «В текст» — активная ячейка, пишут где угодно. */
+    @Test
+    fun fingerStatusListAndPenWritesAnywhereIntoActiveCell() {
+        val b0 = sample()
+        val s = open(b0)
+        val root = s.a.window.decorView
+        s.view.fitRect(0f, 0f, 2600f, 900f)
+        idle()
+        val t = s.b.tables.single()
+        val rows = IdTables.allRows(s.b, t)
+
+        // Палец по ИГС — список у ячейки, карточки нет; выбор — статус.
+        pause(1000)
+        val (ix, iy) = s.cell(rows[4], TableCol.IGS)
+        tap(s.view, MotionEvent.TOOL_TYPE_FINGER, ix, iy)
+        assertTrue("список у ячейки", s.a.tableUi.popup?.isShowing == true)
+        assertTrue("карточка не открылась", s.a.tableUi.card == null)
+        s.a.tableUi.popup!!.contentView.findViewWithTag<View>("pop_status_2").performClick() // «В работе»
+        idle()
+        assertEquals(IdTables.IGS_WORK, rows[4].igs)
+        // Палец по тексту строки — карточка, как раньше.
+        val (wx, wy) = s.cell(rows[4], TableCol.WORK)
+        tap(s.view, MotionEvent.TOOL_TYPE_FINGER, wx, wy)
+        assertNotNull(s.a.tableUi.card)
+        s.a.tableUi.card!!.dismiss()
+        idle()
+
+        // «В текст»: касание пером ячейки «Захватка» — активная ячейка и панель «→ ↓ Готово».
+        root.findViewWithTag<View>("board_tool_write").performClick()
+        val (zx, zy) = s.cell(rows[4], TableCol.ZAH)
+        tap(s.view, MotionEvent.TOOL_TYPE_STYLUS, zx, zy)
+        assertEquals(rows[4] to TableCol.ZAH, s.a.tableUi.active)
+        assertEquals(View.VISIBLE, root.findViewWithTag<View>("mode_bar").visibility)
+        shot(s.view, "table-active-cell.png")
+        // Написали далеко от таблицы — текст в активную ячейку (первая надпись заменяет, следующие дописываются).
+        assertTrue(s.a.tableUi.penIntoCell(2500f, 800f, "3.1"))
+        assertEquals("3.1", rows[4].zah)
+        assertTrue(s.a.tableUi.penIntoCell(2500f, 800f, "бис"))
+        assertEquals("3.1 бис", rows[4].zah)
+        // → следующая ячейка для письма (конструкция), ↓ — та же ячейка строкой ниже.
+        root.findViewWithTag<View>("cell_next").performClick()
+        assertEquals(rows[4] to TableCol.CON, s.a.tableUi.active)
+        s.a.tableUi.penIntoCell(2500f, 800f, "Колонны")
+        assertEquals("Колонны", rows[4].con)
+        root.findViewWithTag<View>("cell_down").performClick()
+        assertEquals(rows[5] to TableCol.CON, s.a.tableUi.active)
+        root.findViewWithTag<View>("cell_done").performClick()
+        idle()
+        assertEquals(null, s.a.tableUi.active)
+        assertEquals(View.GONE, root.findViewWithTag<View>("mode_bar").visibility)
+        // Без активной ячейки надпись вдали от таблиц — обычный текст на доске (не в таблицу).
+        assertTrue(!s.a.tableUi.penIntoCell(2500f, 800f, "заметка"))
+        // Касание пером мимо таблиц снимает активную ячейку.
+        tap(s.view, MotionEvent.TOOL_TYPE_STYLUS, zx, zy)
+        assertNotNull(s.a.tableUi.active)
+        tap(s.view, MotionEvent.TOOL_TYPE_STYLUS, s.sx(2400f), s.sy(850f))
+        assertEquals(null, s.a.tableUi.active)
+        s.a.finish()
+    }
 }

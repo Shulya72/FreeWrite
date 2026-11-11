@@ -526,6 +526,7 @@ class BoardActivity : Activity(), BoardView.Host {
 
     private fun setTool(t: Tool, quiet: Boolean = false) {
         if (t != Tool.WRITE) current?.let { commit(it) }
+        if (t != Tool.WRITE) tableUi.deactivate()
         tool = t
         if (t != Tool.FILL && t != Tool.PIPETTE && fillPts.isNotEmpty()) cancelFillDraft()
         if (view.cropping != null) endCrop()
@@ -1007,6 +1008,8 @@ class BoardActivity : Activity(), BoardView.Host {
 
     override fun onTableLongPress(t: BoardTable, h: TableHit) = tableUi.onLongPress(t, h)
 
+    override fun onEmptyTap() = tableUi.deactivate()
+
     override fun onStatusTap(x: Float, y: Float) {
         board.tables.lastOrNull { view.tableDraw.bounds(board, it, android.graphics.RectF()).contains(x, y) }?.let { t ->
             val th = view.tableDraw.hit(board, t, x, y) ?: return
@@ -1199,7 +1202,17 @@ class BoardActivity : Activity(), BoardView.Host {
         modeBar.visibility = View.VISIBLE
     }
 
-    private fun hideModeBar() {
+    /** Панель режима (обрезка, точки заливки, ввод в ячейку таблицы). */
+    internal fun showModeBar(label: String, buttons: List<TextView>) {
+        modeBar.removeAllViews()
+        modeBar.addView(Ui.floatingBar(this, label, *buttons.toTypedArray()))
+        modeBar.visibility = View.VISIBLE
+    }
+
+    /** Инструмент сейчас (для таблиц: в «В текст» касание пером ячейки — писать в неё). */
+    internal val activeTool: Tool get() = tool
+
+    internal fun hideModeBar() {
         modeBar.removeAllViews()
         modeBar.visibility = View.GONE
     }
