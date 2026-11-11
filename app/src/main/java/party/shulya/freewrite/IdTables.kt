@@ -131,7 +131,7 @@ class BoardRec(var t: String, var o: Double) {
 object IdTables {
     // Номера статусов по умолчанию — одинаковые на всех планшетах (общая доска сходится). ИГС — список ИД доски:
     // у досок 0.18 его номера i0–i3 сохраняются, меняются названия (ТЗ, раздел 4).
-    const val IGS_NONE = "i0"       // Не выполнено
+    const val IGS_NONE = "i0"       // Конструкция не выполнена
     const val IGS_NOT_GIVEN = "i5"  // Не предоставлена
     const val IGS_WORK = "i1"       // В работе
     const val IGS_AN = "i6"         // На подписи АН
@@ -148,7 +148,7 @@ object IdTables {
     val WORKS = listOf("Опалубка", "Армирование", "Бетон", "Разработка", "Обратная засыпка", "Кладка", "Монтаж")
 
     fun igsStatuses() = listOf(
-        BoardStatus("i0", "Не выполнено", Color.rgb(138, 147, 163)),
+        BoardStatus("i0", "Конструкция не выполнена", Color.rgb(138, 147, 163)),
         BoardStatus("i5", "Не предоставлена", Color.rgb(198, 40, 40)),
         BoardStatus("i1", "В работе", Color.rgb(31, 95, 209)),
         BoardStatus("i6", "На подписи АН", Color.rgb(123, 63, 196)),
@@ -171,26 +171,46 @@ object IdTables {
         BoardStatus("d2", "Есть", Color.rgb(35, 128, 58), BoardStatus.DWG).also { it.done = true },
     )
 
-    /** Список ИД 0.18 по умолчанию (номер → название) — у нетронутого переименовываем в ИГС. */
-    private val OLD_ID = listOf("i0" to "Конструкция не принята", "i1" to "В оформлении", "i2" to "На подписи у Заказчика",
+    /** Названия статусов ИД 0.18 по умолчанию (номер → название): такие переименовываем в ИГС. */
+    private val OLD_ID = mapOf("i0" to "Конструкция не принята", "i1" to "В оформлении", "i2" to "На подписи у Заказчика",
         "i3" to "Передано в ПТО", "i4" to "Скан в архиве")
 
     /**
-     * Статусы доски под таблицы ИД (вызывается при чтении доски): нетронутый список ИД 0.18 становится списком ИГС
-     * (номера i0–i3 те же, «Скан в архиве» → «Сдано в ПТО»), добавляются списки Чек-листа и DWG. Всё по одинаковым номерам —
-     * у коллег получается то же самое.
+     * Статусы доски под таблицы ИД (вызывается при чтении доски), одинаково на всех планшетах:
+     *  - есть хоть один статус ИД со старым названием 0.18 (по своему номеру) — список ИД становится списком ИГС:
+     *    старые номера i0–i3 получают новые названия, «Скан в архиве» (i4) → «Сдано в ПТО» (i3), недостающие статусы ИГС
+     *    добавляются на свои места, свои статусы Владимира остаются (в конце списка);
+     *  - «Не выполнено» (название 0.20.0) → «Конструкция не выполнена» (просьба Владимира 11.11.2026);
+     *  - нет списков Чек-листа и DWG — добавляются.
+     * После переименования старых названий больше нет — второй раз не срабатывает (удалённый статус не вернётся).
      */
     fun upgrade(b: Board) {
         val ids = b.statuses.filter { it.group == BoardStatus.ID }
-        val untouched = ids.size == OLD_ID.size && ids.zip(OLD_ID).all { (s, o) -> s.id == o.first && s.name == o.second }
-        if (untouched) {
+        if (ids.any { OLD_ID[it.id] == it.name }) {
+            val canon = igsStatuses()
             val rest = b.statuses.filter { it.group != BoardStatus.ID }
+            val i4 = ids.firstOrNull { it.id == "i4" && it.name == OLD_ID["i4"] }
+            for (s in ids) if (OLD_ID[s.id] == s.name) canon.firstOrNull { it.id == s.id }?.let { c -> s.name = c.name; s.color = c.color; s.done = c.done }
+            val list = ArrayList<BoardStatus>()
+            for (c in canon) {
+                val have = ids.firstOrNull { it.id == c.id }
+                when {
+                    have != null -> list += have
+                    ids.none { it.name.equals(c.name, ignoreCase = true) } -> list += c
+                }
+            }
+            for (s in ids) if (list.none { it === s } && s !== i4) list += s
+            if (i4 != null) {
+                val to = list.firstOrNull { it.id == IGS_PTO }?.id ?: list.first().id
+                for (x in b.stickers) if (x.sid == i4.id) x.sid = to
+                for (x in b.rows) if (x.sid == i4.id) x.sid = to
+                for (x in b.recs) if (x.igs == i4.id) x.igs = to
+            }
             b.statuses.clear()
-            b.statuses.addAll(igsStatuses())
+            b.statuses.addAll(list)
             b.statuses.addAll(rest)
-            for (s in b.stickers) if (s.sid == "i4") s.sid = IGS_PTO
-            for (r in b.rows) if (r.sid == "i4") r.sid = IGS_PTO
         }
+        b.statuses.firstOrNull { it.group == BoardStatus.ID && it.id == IGS_NONE && it.name == "Не выполнено" }?.name = "Конструкция не выполнена"
         if (b.statuses.none { it.group == BoardStatus.CK }) b.statuses.addAll(ckStatuses())
         if (b.statuses.none { it.group == BoardStatus.DWG }) b.statuses.addAll(dwgStatuses())
     }

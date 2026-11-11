@@ -90,6 +90,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onTableTap(t: BoardTable, h: TableHit) {}
         /** Подержали строку таблицы ИД — меню строки. */
         fun onTableLongPress(t: BoardTable, h: TableHit) {}
+        /** Коснулись пустого места доски (снять активную ячейку таблицы). */
+        fun onEmptyTap() {}
     }
 
     enum class Kind { STICKER, TEXT, IMAGE, STROKE, CALLOUT, FILL, ROW, TABLE }
@@ -154,8 +156,11 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     // ---- Легенда (0.14): подсветить метки и выноски одного статуса, остальное притушить ----
     var highlight: String? = null
 
-    /** Строки таблиц, отмеченные для показа (например, только что добавленные в подборку). */
+    /** Строки таблиц, отмеченные для показа (контроль, открытая карточка). */
     var markedRecs: Set<BoardRec>? = null
+
+    /** Активная ячейка таблицы: перо пишет где угодно — текст встаёт в неё (рамка цвета акцента). */
+    var activeCell: Pair<BoardRec, String>? = null
         set(v) { field = v; sceneValid = false; invalidate() }
 
     // ---- Разделы (0.14) ----
@@ -1407,7 +1412,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         val o = selectableAt(x, y)
         when {
-            o == null -> { clearSelection(); if (markedRecs != null) { markedRecs = null; invalidate() } }
+            o == null -> { clearSelection(); host.onEmptyTap(); if (markedRecs != null) { markedRecs = null; invalidate() } }
             // Уже выделено (например, только что вставленная картинка): первое касание пальцем
             // разрешает тащить, второе — снимает выделение.
             selection.size == 1 && selection[0] === o -> if (fingerArmed) clearSelection() else fingerArmed = true
@@ -1680,6 +1685,15 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (t in b.tables) {
             tableDraw.bounds(b, t, rect2)
             if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) { tableDraw.draw(canvas, b, t, z, vis, marked = markedRecs, selected = selection.takeIf { s -> s.any { it is BoardRec } }); drawn++ }
+        }
+        activeCell?.let { (r, col) ->
+            val t = IdTables.tableOf(b, r) ?: return@let
+            val c = tableDraw.cellRect(b, t, r, col, rect2) ?: return@let
+            fillPaint.color = Color.argb(40, 212, 71, 12)
+            canvas.drawRect(c, fillPaint)
+            linePaint.color = Ui.ACCENT
+            linePaint.strokeWidth = Ui.dpf(context, 2.5f) / z
+            canvas.drawRect(c, linePaint)
         }
         highlight?.let { sid ->
             // Подсветка статуса: всё притушить, метки и выноски этого статуса — поверх.

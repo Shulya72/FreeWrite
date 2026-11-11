@@ -80,7 +80,10 @@ class TableUi(private val a: BoardActivity) {
 
     // ---------------------------------------------------------------- касания
 
-    /** Касание таблицы. pen — пером (точно в ячейку): статус — список рядом, текст — поле; палец — карточка строки. */
+    /**
+     * Касание таблицы. Статус (цветная «таблетка») — и пером, и пальцем — список рядом: выбор вторым касанием, случайное
+     * касание ничего не меняет. Остальная строка: пером — поле ячейки, пальцем — карточка строки.
+     */
     fun onTap(t: BoardTable, h: TableHit, pen: Boolean) {
         when (h.part) {
             TableHit.ADD -> addForm(t, next = false)
@@ -88,6 +91,8 @@ class TableUi(private val a: BoardActivity) {
             TableHit.CELL -> {
                 val r = h.rec ?: return
                 val col = h.col
+                val c = col?.let { k -> t.allCols().firstOrNull { it.k == k } }
+                if (col != null && c != null && c.isStatus) { cellAction(t, r, col); return }
                 if (!pen || col == null) { rowCard(r); return }
                 cellAction(t, r, col)
             }
@@ -108,17 +113,80 @@ class TableUi(private val a: BoardActivity) {
         }
     }
 
-    /** Касание пером по таблице в инструменте рисования/письма: на статусе — список у ячейки. true — касание забрали. */
+    /**
+     * Касание пером по таблице в инструменте рисования/письма: на статусе — список у ячейки; в «В текст» на тексте или
+     * дате — ячейка становится активной: дальше пишут где угодно, текст встаёт в неё. Касание пером мимо таблиц — снять
+     * активную ячейку. true — касание забрали (точку не рисуем).
+     */
     fun penTap(x: Float, y: Float): Boolean {
-        val t = b.tables.lastOrNull { v.tableDraw.bounds(b, it, RectF()).contains(x, y) } ?: return false
+        val t = b.tables.lastOrNull { v.tableDraw.bounds(b, it, RectF()).contains(x, y) }
+        if (t == null) {
+            if (active != null) { deactivate(); return true }
+            return false
+        }
         val h = v.tableDraw.hit(b, t, x, y) ?: return false
         if (h.part == TableHit.CELL && h.rec != null && h.col != null) {
             val c = t.allCols().firstOrNull { it.k == h.col }
             if (c != null && c.isStatus) { cellAction(t, h.rec, h.col); return true }
-            return false // по тексту — точка, пусть пишут
+            if (a.activeTool == BoardActivity.Tool.WRITE) { activate(h.rec, h.col); return true }
+            return false // ручка, маркер — точка, пусть рисуют
         }
         onTap(t, h, pen = true)
         return true
+    }
+
+    // ---------------------------------------------------------------- активная ячейка (перо пишет где угодно)
+
+    /** Ячейка, в которую идёт написанное пером (строка, столбец). */
+    internal var active: Pair<BoardRec, String>? = null
+        private set
+    private var activeFresh = false
+
+    /** Сделать ячейку активной: первая надпись заменит её текст, следующие допишутся через пробел. */
+    fun activate(r: BoardRec, col: String) {
+        active = r to col
+        activeFresh = true
+        penCell = null
+        v.activeCell = active
+        v.invalidate()
+        showCellBar()
+    }
+
+    fun deactivate() {
+        if (active == null) return
+        active = null
+        v.activeCell = null
+        v.invalidate()
+        a.hideModeBar()
+    }
+
+    /** Столбцы, куда пишут пером: текст и даты (статусы — касанием). */
+    private fun writable(t: BoardTable) = t.visibleCols().filter { !it.isStatus }
+
+    private fun showCellBar() {
+        val (r, col) = active ?: return
+        val t = IdTables.tableOf(b, r) ?: run { deactivate(); return }
+        val rows = IdTables.rowsOf(b, t)
+        val label = "Пишите где угодно → «${t.colName(col)}», ${rowTitle(t, r)}"
+        a.showModeBar(label, listOf(
+            Ui.pill(a, "→", Ui.INK, Ui.DESK).apply { tag = "cell_next"; contentDescription = "Следующая ячейка"; setOnClickListener { step(t, rows, 0, 1) } },
+            Ui.pill(a, "↓", Ui.INK, Ui.DESK).apply { tag = "cell_down"; contentDescription = "Строка ниже"; setOnClickListener { step(t, rows, 1, 0) } },
+            Ui.pill(a, "Готово", Color.WHITE, Ui.ACCENT).apply { tag = "cell_done"; setOnClickListener { deactivate() } },
+        ))
+    }
+
+    /** → — следующий столбец для письма (в конце строки — первый столбец следующей строки); ↓ — тот же столбец ниже. */
+    private fun step(t: BoardTable, rows: List<BoardRec>, dr: Int, dc: Int) {
+        val (r, col) = active ?: return
+        val cols = writable(t).map { it.k }
+        var ri = rows.indexOf(r)
+        var ci = cols.indexOf(col)
+        if (ri < 0 || ci < 0) { deactivate(); return }
+        ci += dc
+        if (ci >= cols.size) { ci = 0; ri++ }
+        ri += dr
+        if (ri >= rows.size) { a.hint("Это последняя строка — «+ строка» внизу таблицы", 2000); return }
+        activate(rows[ri], cols[ci])
     }
 
     /** Подержали строку — меню строки. */
@@ -179,6 +247,27 @@ class TableUi(private val a: BoardActivity) {
      * несколько слов подряд (пауза до 6 с) — дописываются. Над статусом — статус по началу названия. true — надпись забрали.
      */
     fun penIntoCell(x: Float, y: Float, word: String): Boolean {
+        // Есть активная ячейка — написанное где угодно идёт в неё.
+        active?.let { (r, col) ->
+            if (b.recs.none { it === r } || IdTables.tableOf(b, r) == null) { deactivate(); return@let }
+            val w = word.trim()
+            if (w.isEmpty()) { a.hint("Не разобрал — напишите ещё раз", 1800); return true }
+            val t = IdTables.tableOf(b, r)!!
+            val name = t.colName(col)
+            if (col == TableCol.DATE || col == TableCol.DCUST || col == TableCol.DPTO) {
+                val d = IdTables.parseDate(w)
+                if (d.isEmpty()) { a.hint("Дату — в виде 26.08.26", 1800); return true }
+                r.set(col, d)
+                a.hint("$name: ${IdTables.dateShort(d)}", 1200)
+            } else {
+                val nv = if (activeFresh || r.get(col).isEmpty()) w else r.get(col) + " " + w
+                r.set(col, nv)
+                a.hint("$name: $nv", 1200)
+            }
+            activeFresh = false
+            v.invalidate()
+            return true
+        }
         val t = b.tables.lastOrNull { v.tableDraw.bounds(b, it, RectF()).contains(x, y) } ?: return false
         val h = v.tableDraw.hit(b, t, x, y)
         val w = word.trim()

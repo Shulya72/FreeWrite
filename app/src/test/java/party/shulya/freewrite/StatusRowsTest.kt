@@ -53,7 +53,7 @@ class StatusRowsTest {
     @Test
     fun twoStatusListsAndOldBoards() {
         val b = Board.create("Новая")
-        assertEquals(listOf("Не выполнено", "Не предоставлена", "В работе", "На подписи АН", "Не согласована", "На подписи у заказчика",
+        assertEquals(listOf("Конструкция не выполнена", "Не предоставлена", "В работе", "На подписи АН", "Не согласована", "На подписи у заказчика",
             "Возврат на корректировку", "Сдано в ПТО"), b.statuses(BoardStatus.ID).map { it.name })
         assertEquals("сдано — «Сдано в ПТО»", listOf("Сдано в ПТО"), b.statuses(BoardStatus.ID).filter { it.done }.map { it.name })
         assertEquals(4, b.statuses(BoardStatus.CK).size)
@@ -72,7 +72,7 @@ class StatusRowsTest {
         // Старая доска с нетронутым списком «Не сдано / В работе / Сдано», меток нет — список ИД Владимира.
         val old = """{"id":"o1","title":"Старая","statuses":[{"id":"s0","name":"Не сдано","color":1},{"id":"s1","name":"В работе","color":2},{"id":"s2","name":"Сдано","color":3}]}"""
         val o1 = Board.fromJson(JSONObject(old))
-        assertEquals("Не выполнено", o1.statuses(BoardStatus.ID)[0].name)
+        assertEquals("Конструкция не выполнена", o1.statuses(BoardStatus.ID)[0].name)
         assertEquals(5, o1.statuses(BoardStatus.CON).size)
         // На двух планшетах одна и та же старая доска получает одинаковые статусы (общая доска сходится).
         assertEquals(o1.entryHashes(), Board.fromJson(JSONObject(old)).entryHashes())
