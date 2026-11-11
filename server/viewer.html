@@ -308,7 +308,7 @@ function rowH(r) { return 40 * r.scale; }
 
 // ------------------------------------------------------------ таблицы ИД (как TableDraw в приложении)
 
-const TCOLS = ["zah", "con", "work", "nsch", "aosr", "vol", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note"];
+const TCOLS = ["zah", "con", "work", "aosr", "nsch", "vol", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note"];
 const TNAME = { zah: "Захватка", con: "Конструкция", work: "Вид работ", nsch: "№ схемы", aosr: "№ АОСР", vol: "Объём по схеме", date: "Дата работ", ck: "Чек-лист", dwg: "DWG", igs: "ИГС",
   dcust: "Отдал заказчику", dpto: "Сдано в ПТО", who: "Исполнитель", note: "Примечание" };
 const TF = { T: 40, H: 26, R: 30, F: 30, P: 9, FONT: 13, HF: 11, TF: 19 };
@@ -551,7 +551,7 @@ function vLayout(v) {
   const items = vItems(v);
   const recs = new Map(B.recs.map((r) => [r.id, r]));
   const cols = ["n", "cipher", "zah", "con", "work"]
-    .concat(items.some((i) => (recs.get(i.r) || {}).ns) ? ["nsch"] : [], items.some((i) => (recs.get(i.r) || {}).na) ? ["aosr"] : [],
+    .concat(items.some((i) => (recs.get(i.r) || {}).na) ? ["aosr"] : [], items.some((i) => (recs.get(i.r) || {}).ns) ? ["nsch"] : [],
       ["igs"], vAnswers(v) ? ["res", "rd"] : []);
   const tabs = new Map(B.tables.map((t) => [t.id, t]));
   const texts = items.map((i, idx) => {

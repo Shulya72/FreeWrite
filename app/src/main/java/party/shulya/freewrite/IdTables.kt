@@ -56,7 +56,7 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
         const val ZAH = "zah"
         const val CON = "con"
         const val WORK = "work"
-        /** № исполнительной схемы и № АОСР (0.21): текст, подсказка — следующий номер. */
+        /** № АОСР и № исполнительной схемы (0.21; сначала АОСР — просьба Владимира): текст, подсказка — следующий номер. */
         const val NSCH = "nsch"
         const val AOSR = "aosr"
         /** Объём по схеме (0.21): число, единица — по виду работ. */
@@ -70,7 +70,7 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
         const val WHO = "who"
         const val NOTE = "note"
         /** Порядок — как в таблице Excel Владимира (ТЗ, раздел 3.2). */
-        val ORDER = listOf(ZAH, CON, WORK, NSCH, AOSR, VOL, DATE, CK, DWG, IGS, DCUST, DPTO, WHO, NOTE)
+        val ORDER = listOf(ZAH, CON, WORK, AOSR, NSCH, VOL, DATE, CK, DWG, IGS, DCUST, DPTO, WHO, NOTE)
 
         fun defaultName(k: String): String = when (k) {
             ZAH -> "Захватка"; CON -> "Конструкция"; WORK -> "Вид работ"; NSCH -> "№ схемы"; AOSR -> "№ АОСР"; VOL -> "Объём по схеме"; DATE -> "Дата работ"
