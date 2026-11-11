@@ -289,7 +289,7 @@ class VedomUi(private val a: BoardActivity) {
             if (wSel.isNotEmpty() && r.who.trim() !in wSel) return false
             val q = text.text.toString().trim().lowercase(Locale.ROOT)
             if (q.isNotEmpty()) {
-                val hay = (t.title + " " + r.zah + " " + r.con + " " + r.work + " " + r.who + " " + r.note).lowercase(Locale.ROOT)
+                val hay = (IdTables.fullTitle(b, t) + " " + r.zah + " " + r.con + " " + r.work + " " + r.who + " " + r.note).lowercase(Locale.ROOT)
                 if (!q.split(' ').filter { it.isNotBlank() }.all { it in hay }) return false
             }
             return true
@@ -297,7 +297,7 @@ class VedomUi(private val a: BoardActivity) {
         fun updCount() { count.text = "Отмечено: " + shown.count { checked[it.id] == true } + " из " + shown.size }
         fun render() {
             listBox.removeAllViews()
-            shown = b.tables.sortedWith { p, q -> IdTables.naturalCompare(p.title, q.title) }
+            shown = b.tables.sortedWith { p, q -> IdTables.naturalCompare(IdTables.fullTitle(b, p), IdTables.fullTitle(b, q)) }
                 .flatMap { t -> IdTables.allRows(b, t) }.filter { matches(it) }
             for ((n, r) in shown.withIndex()) {
                 if (n >= 400) { listBox.addView(Ui.text(a, "…и ещё ${shown.size - 400} — уточните отбор", 13f, Ui.MUTED)); break }
@@ -310,7 +310,7 @@ class VedomUi(private val a: BoardActivity) {
                     tag = "col_row_$n"
                     isEnabled = !inThis
                     isChecked = checked[r.id] == true && !inThis
-                    val line = listOf(t.title, t.colName(TableCol.ZAH).lowercase().take(5) + ". " + r.zah, r.con, r.work).filter { it.isNotBlank() }.joinToString(" · ")
+                    val line = listOf(IdTables.fullTitle(b, t), t.colName(TableCol.ZAH).lowercase().take(5) + ". " + r.zah, r.con, r.work).filter { it.isNotBlank() }.joinToString(" · ")
                     this.text = line + "  [" + st.name + "]" + when {
                         inThis -> "  — уже в этой ведомости"
                         elsewhere.isNotEmpty() -> "  ⚠ ждёт ответа в " + elsewhere.joinToString { it.num }
@@ -340,7 +340,7 @@ class VedomUi(private val a: BoardActivity) {
             box.addView(flow)
         }
         box.addView(Ui.text(a, "Ничего не выбрано в группе — значит «все».", 12f, Ui.MUTED))
-        group("Шифр", b.tables.sortedWith { p, q -> IdTables.naturalCompare(p.title, q.title) }.map { it.id to it.title.ifEmpty { "без шифра" } }, tSel, "col_t")
+        group("Таблица", b.tables.map { it.id to IdTables.fullTitle(b, it).ifEmpty { "без шифра" } }.sortedWith { p, q -> IdTables.naturalCompare(p.second, q.second) }, tSel, "col_t")
         group("Раздел", b.frames.filter { f -> b.tables.any { b.sectionOf(it) === f } }.map { it.id to it.title }, fSel, "col_f")
         group("ИГС", b.statuses(BoardStatus.ID).map { it.id to it.name }, iSel, "col_igs")
         group("Исполнитель", IdTables.liveRecs(b).map { it.who.trim() }.filter { it.isNotEmpty() }.distinct().sorted().map { it to it }, wSel, "col_who")
@@ -379,7 +379,7 @@ class VedomUi(private val a: BoardActivity) {
     private fun warnWaiting(x: BoardVedom, recs: List<BoardRec>) {
         val lines = recs.mapNotNull { r ->
             val o = Vedoms.waitingElsewhere(b, r, x)
-            if (o.isEmpty()) null else "• " + listOf(IdTables.tableOf(b, r)?.title.orEmpty(), r.zah, r.work).filter { it.isNotBlank() }.joinToString(" · ") +
+            if (o.isEmpty()) null else "• " + listOf(IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(), r.zah, r.work).filter { it.isNotBlank() }.joinToString(" · ") +
                 " — " + o.joinToString { it.num }
         }
         if (lines.isEmpty()) return
@@ -401,8 +401,8 @@ class VedomUi(private val a: BoardActivity) {
         box.addView(label("Шифр")); box.addView(cipher)
         if (b.tables.isNotEmpty()) box.addView(Ui.FlowRow(a).apply {
             hGap = dp(6f); vGap = dp(6f); setPadding(0, dp(6f), 0, 0)
-            for ((i, t) in b.tables.sortedWith { p, q -> IdTables.naturalCompare(p.title, q.title) }.withIndex())
-                addView(Ui.chip(a, t.title.ifEmpty { "без шифра" }, Ui.INK, Ui.DESK).apply { tag = "man_t_$i"; setOnClickListener { cipher.setText(t.title) } })
+            for ((i, n) in b.tables.map { IdTables.fullTitle(b, it) }.sortedWith { p, q -> IdTables.naturalCompare(p, q) }.withIndex())
+                addView(Ui.chip(a, n.ifEmpty { "без шифра" }, Ui.INK, Ui.DESK).apply { tag = "man_t_$i"; setOnClickListener { cipher.setText(n) } })
         })
         box.addView(label("Захватка / участок")); box.addView(zah)
         box.addView(label("Конструкция")); box.addView(con)
@@ -442,7 +442,11 @@ class VedomUi(private val a: BoardActivity) {
 
     /** Найти схемы по шифру/захватке/конструкции/видам работ; недостающее — создать после подтверждения. */
     internal fun resolveManual(x: BoardVedom, cipher: String, zah: String, con: String, works: List<String>, then: () -> Unit) {
-        val t = b.tables.firstOrNull { IdTables.norm(it.title) == IdTables.norm(cipher) }
+        // Шифр — раздел, «раздел · подраздел» или название таблицы: в разделе может быть несколько таблиц-подразделов.
+        val key = IdTables.norm(cipher)
+        val cands = b.tables.filter { IdTables.norm(IdTables.fullTitle(b, it)) == key || IdTables.norm(it.title) == key ||
+            IdTables.norm(b.sectionOf(it)?.title.orEmpty()) == key }
+        val t = cands.firstOrNull()
         val label = listOf(cipher, "захв. $zah", con, works.joinToString(" + ")).filter { it.isNotBlank() }.joinToString(" · ")
         fun createRows(table: BoardTable, list: List<String>, newTable: Boolean) {
             a.pushUndo()
@@ -455,7 +459,7 @@ class VedomUi(private val a: BoardActivity) {
             }
             val n = Vedoms.add(b, x, made)
             a.changed()
-            a.hint("Создано в таблице «${table.title}»: ${Ui.plural(made.size, "строка", "строки", "строк")}, в ведомость — $n", 2500)
+            a.hint("Создано в таблице «${IdTables.fullTitle(b, table)}»: ${Ui.plural(made.size, "строка", "строки", "строк")}, в ведомость — $n", 2500)
             then()
         }
         if (t == null) {
@@ -468,7 +472,7 @@ class VedomUi(private val a: BoardActivity) {
                 .setNegativeButton("Отмена", null).show()
             return
         }
-        val rows = IdTables.allRows(b, t)
+        val rows = cands.flatMap { IdTables.allRows(b, it) }
         val nz = IdTables.norm(zah); val nc = IdTables.norm(con)
         fun base(r: BoardRec) = IdTables.norm(r.zah) == nz && (nc.isEmpty() || IdTables.norm(r.con) == nc)
         val found = ArrayList<BoardRec>()
@@ -489,8 +493,16 @@ class VedomUi(private val a: BoardActivity) {
         }
         if (missing.isEmpty()) { then(); return }
         val ml = missing.joinToString(" + ") { it.ifEmpty { "без вида работ" } }
-        AlertDialog.Builder(a).setTitle("Нет схемы в таблице «${t.title}»")
-            .setMessage("В таблице «${t.title}» нет схемы: захватка $zah${if (con.isNotEmpty()) " · $con" else ""} · $ml. Создать строку (остальные поля — пустые) и добавить в ведомость?")
+        if (cands.size > 1) {
+            // Несколько таблиц-подразделов — спросить, в какую добавить строку.
+            AlertDialog.Builder(a).setTitle("Схемы «захватка $zah · $ml» нет — в какую таблицу добавить?")
+                .setItems(cands.map { IdTables.fullTitle(b, it) }.toTypedArray()) { _, i -> createRows(cands[i], missing.filter { it.isNotEmpty() }, newTable = false) }
+                .setNegativeButton("Не создавать") { _, _ -> then() }
+                .show()
+            return
+        }
+        AlertDialog.Builder(a).setTitle("Нет схемы в таблице «${IdTables.fullTitle(b, t)}»")
+            .setMessage("В таблице «${IdTables.fullTitle(b, t)}» нет схемы: захватка $zah${if (con.isNotEmpty()) " · $con" else ""} · $ml. Создать строку (остальные поля — пустые) и добавить в ведомость?")
             .setPositiveButton("Создать") { _, _ -> createRows(t, missing.filter { it.isNotEmpty() }, newTable = false) }
             .setNegativeButton("Не создавать") { _, _ -> then() }
             .show()
@@ -793,7 +805,7 @@ class VedomUi(private val a: BoardActivity) {
             }
             box.addView(row)
         }
-        val title = listOf(t?.title.orEmpty(), rec.zah.takeIf { it.isNotEmpty() }?.let { "захв. $it" }.orEmpty(), rec.work).filter { it.isNotBlank() }.joinToString(" · ")
+        val title = listOf(t?.let { IdTables.fullTitle(b, it) }.orEmpty(), rec.zah.takeIf { it.isNotEmpty() }?.let { "захв. $it" }.orEmpty(), rec.work).filter { it.isNotBlank() }.joinToString(" · ")
         AlertDialog.Builder(a).setTitle("История · $title").setView(ScrollView(a).apply { addView(box) })
             .setPositiveButton("Закрыть", null).show()
     }

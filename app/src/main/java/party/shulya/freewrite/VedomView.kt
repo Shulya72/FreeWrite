@@ -88,7 +88,7 @@ class VedomDraw {
             Array(cols.size) { ci ->
                 when (cols[ci]) {
                     N -> (idx + 1).toString()
-                    CIPHER -> if (t != null) t.title else i.lt
+                    CIPHER -> if (t != null) IdTables.fullTitle(b, t) else i.lt
                     TableCol.ZAH -> if (t != null) r.zah else i.lz
                     TableCol.CON -> if (t != null) r.con else i.lc
                     TableCol.WORK -> if (t != null) r.work else i.lw

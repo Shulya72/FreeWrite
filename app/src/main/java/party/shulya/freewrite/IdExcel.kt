@@ -14,6 +14,7 @@ object IdExcel {
     const val SHEET_ALL = "all"
     const val SHEET_PER = "per"
     const val MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    private const val UNIT = "~unit"
 
     /** Что выгружать: таблицы, статусы ИГС, исполнители (пустое имя — «не указан»). */
     class Filter(val tables: Set<String>, val igs: Set<String>, val who: Set<String>) {
@@ -25,7 +26,7 @@ object IdExcel {
 
     /** Отобранные строки по порядку: таблицы по шифру, строки по порядку в таблице. */
     fun rows(b: Board, f: Filter): List<Pair<BoardTable, BoardRec>> =
-        b.tables.sortedWith { p, q -> IdTables.naturalCompare(p.title, q.title) }
+        b.tables.sortedWith { p, q -> IdTables.naturalCompare(IdTables.fullTitle(b, p), IdTables.fullTitle(b, q)) }
             .flatMap { t -> IdTables.allRows(b, t).filter { f.matches(it) }.map { t to it } }
 
     // ---------------------------------------------------------------- книга
@@ -62,8 +63,8 @@ object IdExcel {
         if (SHEET_ALL in sheets) book += dataSheet("Схемы", b, list, null, custom, st)
         if (SHEET_PER in sheets) {
             val used = HashSet<String>().apply { book.forEach { add(it.name.lowercase()) } }
-            for ((t, part) in list.groupBy({ it.first }, { it }).entries.sortedWith { p, q -> IdTables.naturalCompare(p.key.title, q.key.title) }) {
-                book += dataSheet(sheetName(t.title, used), b, part, t, custom, st)
+            for ((t, part) in list.groupBy({ it.first }, { it }).entries.sortedWith { p, q -> IdTables.naturalCompare(IdTables.fullTitle(b, p.key), IdTables.fullTitle(b, q.key)) }) {
+                book += dataSheet(sheetName(IdTables.fullTitle(b, t), used), b, part, t, custom, st)
             }
         }
         if (book.isEmpty()) book += summarySheet(b, list.map { it.second }, list.map { it.first }.distinct(), today)
@@ -81,15 +82,18 @@ object IdExcel {
     private fun dataSheet(name: String, b: Board, list: List<Pair<BoardTable, BoardRec>>, only: BoardTable?, custom: Map<String, String>, st: Styles): Sheet {
         val s = Sheet(name)
         // Столбцы: для листа шифра — как в его таблице (видимые, его названия); для «Схемы» — все встроенные + свои.
-        val cols: List<Pair<String, String>> = if (only != null) only.visibleCols().map { it.k to it.title() }
+        val cols0: List<Pair<String, String>> = if (only != null) only.visibleCols().map { it.k to it.title() }
         else TableCol.ORDER.map { it to TableCol.defaultName(it) } + custom.map { it.key to it.value }
+        // После объёма — единица (м³, м²…): число остаётся числом, Excel может складывать.
+        val cols = ArrayList<Pair<String, String>>()
+        for (c in cols0) { cols += c; if (c.first == TableCol.VOL) cols += UNIT to "Ед." }
         val head = ArrayList<Cell>()
         if (only == null) head += Cell("Шифр", 1)
         for ((_, n) in cols) head += Cell(n, 1)
         s.rows.add(head)
         for ((t, r) in list) {
             val row = ArrayList<Cell>()
-            if (only == null) row += Cell(t.title, 3)
+            if (only == null) row += Cell(IdTables.fullTitle(b, t), 3)
             for ((k, _) in cols) {
                 row += when (k) {
                     TableCol.IGS, TableCol.CK, TableCol.DWG -> {
@@ -97,6 +101,8 @@ object IdExcel {
                         Cell(sx.name, st.status(sx.color))
                     }
                     TableCol.DATE, TableCol.DCUST, TableCol.DPTO -> IdTables.excelDay(r.get(k))?.let { Cell(it, 2) } ?: Cell(null, 3)
+                    TableCol.VOL -> if (r.vol.isEmpty()) Cell(null, 3) else Cell(IdTables.volNum(r.vol), 4)
+                    UNIT -> Cell(if (r.vol.isEmpty()) null else IdTables.unitFor(t, r.work).ifEmpty { null }, 3)
                     else -> Cell(r.get(k).ifEmpty { null }, 3)
                 }
             }
@@ -105,7 +111,7 @@ object IdExcel {
         s.widths = DoubleArray(head.size) { i ->
             val k = if (only == null) (if (i == 0) "cipher" else cols[i - 1].first) else cols[i].first
             when (k) {
-                "cipher" -> 14.0; TableCol.ZAH -> 16.0; TableCol.CON -> 24.0; TableCol.WORK -> 16.0
+                "cipher" -> 22.0; TableCol.VOL -> 13.0; UNIT -> 6.0; TableCol.ZAH -> 16.0; TableCol.CON -> 24.0; TableCol.WORK -> 16.0
                 TableCol.DATE, TableCol.DCUST, TableCol.DPTO -> 14.0; TableCol.CK -> 24.0; TableCol.DWG -> 12.0
                 TableCol.IGS -> 26.0; TableCol.WHO -> 18.0; TableCol.NOTE -> 34.0; else -> 18.0
             }
@@ -133,7 +139,8 @@ object IdExcel {
                     igs.map { Cell(cnt(rows, TableCol.IGS, it), 4) })
             }
         }
-        val byTable = tables.sortedWith { p, q -> IdTables.naturalCompare(p.title, q.title) }.map { t -> t.title to recs.filter { it.t == t.id } }
+        val byTable = tables.map { IdTables.fullTitle(b, it) to it }.sortedWith { p, q -> IdTables.naturalCompare(p.first, q.first) }
+            .map { (n, t) -> n to recs.filter { it.t == t.id } }
         block("Шифр", byTable + listOf("Итого" to recs))
         s.rows.add(emptyList())
         val whos = recs.map { it.who.trim() }.distinct().sortedWith { p, q -> IdTables.naturalCompare(p, q) }
@@ -144,6 +151,31 @@ object IdExcel {
         s.rows.add(emptyList())
         s.rows.add(listOf(Cell("DWG", 1)) + dwg.map { Cell(it.name, 1) })
         s.rows.add(listOf(Cell("Всего", 3)) + dwg.map { Cell(cnt(recs, TableCol.DWG, it), 4) })
+        // Объёмы: по таблицам-подразделам и всего по шифру (разделу).
+        val volT = tables.map { t -> t to IdTables.volumes(b, t, recs.filter { it.t == t.id }) }.filter { it.second.isNotEmpty() }
+        if (volT.isNotEmpty()) {
+            s.rows.add(emptyList())
+            s.rows.add(listOf("Объёмы · раздел (шифр)", "Таблица", "Вид работ", "Ед.", "Факт по схемам", "Проект", "Разница", "Выполнено, %").map { Cell(it, 1) })
+            fun row(sec: String, tbl: String, w: String, u: String, f: Double, p: Double?, style: Int = 3) {
+                s.rows.add(listOf(Cell(sec, style), Cell(tbl, style), Cell(w, style), Cell(u.ifEmpty { null }, 3), Cell(Math.round(f * 1000) / 1000.0, 4),
+                    if (p == null) Cell(null, 3) else Cell(p, 4), if (p == null) Cell(null, 3) else Cell(Math.round((f - p) * 1000) / 1000.0, 4),
+                    if (p == null || p <= 0) Cell(null, 3) else Cell(Math.round(f / p * 1000) / 10.0, 4)))
+            }
+            for ((sec, list) in volT.groupBy { b.sectionOf(it.first) }) {
+                val sn = sec?.title ?: "Вне разделов"
+                for ((t, lines) in list) for (vl in lines) row(sn, t.title, vl.work, vl.unit, vl.fact, vl.plan)
+                if (sec != null) {
+                    val works = LinkedHashMap<String, MutableList<IdTables.VolLine>>()
+                    for ((_, lines) in list) for (vl in lines) works.getOrPut(IdTables.norm(vl.work)) { ArrayList() } += vl
+                    for ((_, ls) in works) {
+                        // Проект по шифру — только если вписан у всех таблиц с этим видом работ.
+                        val plans = ls.mapNotNull { it.plan }
+                        row(sn, if (plans.isNotEmpty() && plans.size < ls.size) "Всего по шифру (проект не у всех таблиц)" else "Всего по шифру",
+                            ls[0].work, ls[0].unit, ls.sumOf { it.fact }, if (plans.size == ls.size) plans.sum() else null, 1)
+                    }
+                }
+            }
+        }
         // Открытые ведомости: сколько схем ждут ответа и сколько дней.
         val ids = recs.map { it.id }.toHashSet()
         val open = b.vedoms.filter { Vedoms.isOpen(b, it) }.mapNotNull { v ->

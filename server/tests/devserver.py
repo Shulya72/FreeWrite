@@ -133,7 +133,9 @@ def demo(key):
                                                      "title": "Захватка %d — Армирование" % (i + 1), "ck": 1, "dwg": 1,
                                                      "sid": "i%d" % (2 + i)}, ensure_ascii=False)))
     # Таблица ИД КЖ 6.1.1 у чертежа (0.20).
-    items.append(("tb1", "table", json.dumps({"id": "tb1", "x": 100, "y": 1250, "scale": 1.6, "title": "КЖ 6.1.1"}, ensure_ascii=False)))
+    items.append(("tb1", "table", json.dumps({"id": "tb1", "x": 100, "y": 1250, "scale": 1.6, "title": "Несущие стены",
+                                              "plan": [{"w": "Бетон", "v": "330", "u": "м³"}, {"w": "Опалубка", "v": "1450", "u": "м²"}]},
+                                             ensure_ascii=False)))
     plan = [("1", "i3", "k3", "d2"), ("2", "i3", "k3", "d2"), ("2.1", "i2", "k3", "d2"), ("3", "i8", "k3", "d2"),
             ("4", "i6", "k3", "d1"), ("5", "i5", "k3", "d1"), ("6", "i1", "k1", "d1"), ("7", "i0", "k0", "d0")]
     o = 1
@@ -146,10 +148,12 @@ def demo(key):
                 rec["dc"] = "2026-10-20"
             if sid == "i3":
                 rec["dp"] = "2026-10-27"
+            if sid not in ("i0",):
+                rec["v"] = "%.1f" % ((180 + o * 1.7) if w == "Опалубка" else (40 + o * 0.6))
             items.append((rid, "rec", json.dumps(rec, ensure_ascii=False)))
             o += 1
     # Ведомость заказчику (0.21): передана, ответы по частям.
-    items.append(("vd1", "vedom", json.dumps({"id": "vd1", "x": 1800, "y": 1250, "scale": 1.6, "kind": "cust", "num": "З-12",
+    items.append(("vd1", "vedom", json.dumps({"id": "vd1", "x": 2900, "y": 1650, "scale": 1.6, "kind": "cust", "num": "З-12",
                                               "to": "Технадзор заказчика", "given": "2026-11-05"}, ensure_ascii=False)))
     for n, (rid, res, rd) in enumerate([("rc1", "ok", "2026-11-06"), ("rc2", "ok", "2026-11-06"), ("rc7", "fix", "2026-11-09"),
                                         ("rc5", "", ""), ("rc6", "", "")]):

@@ -65,8 +65,8 @@ object Vedoms {
     const val NO = "no"
     const val FIX = "fix"
 
-    /** Столбцы, правки которых пишутся в историю: статусы и даты. */
-    val HIST_KEYS = setOf(TableCol.DATE, TableCol.CK, TableCol.DWG, TableCol.IGS, TableCol.DCUST, TableCol.DPTO)
+    /** Столбцы, правки которых пишутся в историю: статусы, даты и объём по схеме. */
+    val HIST_KEYS = setOf(TableCol.DATE, TableCol.CK, TableCol.DWG, TableCol.IGS, TableCol.DCUST, TableCol.DPTO, TableCol.VOL)
 
     fun kindName(k: String) = when (k) {
         AN -> "На согласование АН"; CUST -> "На подпись заказчику"; PTO -> "Сдача в ПТО"; else -> "Список"
@@ -165,7 +165,7 @@ object Vedoms {
     /** Шифр, захватка, конструкция, вид работ позиции: по строке таблицы (если она есть) или как было при добавлении. */
     fun label(b: Board, i: BoardVItem): Array<String> {
         val r = rec(b, i) ?: return arrayOf(i.lt, i.lz, i.lc, i.lw)
-        return arrayOf(IdTables.tableOf(b, r)?.title.orEmpty(), r.zah, r.con, r.work)
+        return arrayOf(IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(), r.zah, r.con, r.work)
     }
 
     fun labelText(b: Board, i: BoardVItem): String {
@@ -175,7 +175,7 @@ object Vedoms {
 
     fun remember(b: Board, i: BoardVItem) {
         val r = rec(b, i) ?: return
-        i.lt = IdTables.tableOf(b, r)?.title.orEmpty(); i.lz = r.zah; i.lc = r.con; i.lw = r.work
+        i.lt = IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(); i.lz = r.zah; i.lc = r.con; i.lw = r.work
     }
 
     /** Закрыта: ПТО — сразу после передачи; АН и заказчик — когда у всех позиций есть результат. Список не закрывается. */
@@ -341,6 +341,7 @@ object Vedoms {
 
     fun valueText(b: Board, k: String, value: String): String = when {
         value.isEmpty() -> "—"
+        k == TableCol.VOL -> IdTables.volText(value)
         k == TableCol.IGS || k == TableCol.CK || k == TableCol.DWG -> b.statuses(IdTables.groupOf(k)).firstOrNull { it.id == value }?.name ?: value
         else -> IdTables.dateLong(value)
     }

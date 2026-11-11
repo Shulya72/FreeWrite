@@ -57,19 +57,24 @@ class TableUi(private val a: BoardActivity) {
 
     /** «Таблица ИД»: касание пустого места — новая таблица с шифром (предложен раздел, где коснулись). */
     fun create(x: Float, y: Float) {
-        val sec = b.sectionAt(x, y)?.title?.takeIf { t -> b.tables.none { it.title == t } }.orEmpty()
-        val edit = EditText(a).apply { setText(sec); setSelection(sec.length); isSingleLine = true; hint = "Например: КЖ 6.1.1"; tag = "table_title" }
+        // Раздел = шифр (0.21): в разделе таблица — подраздел («Несущие стены»), шифр берётся у раздела.
+        val sec = b.sectionAt(x, y)?.title?.trim().orEmpty()
+        val edit = EditText(a).apply {
+            isSingleLine = true; tag = "table_title"
+            hint = if (sec.isNotEmpty()) "например: Несущие стены" else "например: КЖ 6.1.1"
+        }
         val box = LinearLayout(a).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20f), dp(8f), dp(20f), 0)
-            addView(Ui.text(a, "Все схемы одного шифра — в одной таблице. Строки ровные, размер — как у других таблиц доски.", 13f, Ui.MUTED))
+            addView(Ui.text(a, if (sec.isNotEmpty()) "Шифр — «$sec» (раздел). Таблица — подраздел со своей нумерацией захваток и своими объёмами. " +
+                "Пусто — одна таблица на весь шифр." else "Все схемы одного шифра — в одной таблице. Строки ровные, размер — как у других таблиц доски.", 13f, Ui.MUTED))
             addView(edit)
         }
         val d = AlertDialog.Builder(a)
-            .setTitle("Новая таблица ИД — шифр")
+            .setTitle(if (sec.isNotEmpty()) "Новая таблица в разделе «$sec»" else "Новая таблица ИД — шифр")
             .setView(box)
             .setPositiveButton("Создать") { _, _ ->
-                val title = edit.text.toString().trim()
+                val title = edit.text.toString().trim().ifEmpty { sec }
                 a.pushUndo()
                 val t = BoardTable(x, y, IdTables.defaultScale(b, a.resources.displayMetrics.density), title)
                 b.tables += t
@@ -94,6 +99,9 @@ class TableUi(private val a: BoardActivity) {
         when (h.part) {
             TableHit.ADD -> addForm(t, next = false)
             TableHit.ADD_NEXT -> addForm(t, next = true)
+            TableHit.VOL -> projectDialog(t, h.col)
+            TableHit.VOL_ADD -> projectDialog(t, null)
+            TableHit.VOL_NOTE -> showRows(v.tableDraw.layout(b, t).volMissing)
             TableHit.CELL -> {
                 val r = h.rec ?: return
                 val col = h.col
@@ -267,6 +275,11 @@ class TableUi(private val a: BoardActivity) {
                 if (d.isEmpty()) { a.hint("Дату — в виде 26.08.26", 1800); return true }
                 put(r, col, d)
                 a.hint("$name: ${IdTables.dateShort(d)}", 1200)
+            } else if (col == TableCol.VOL) {
+                val vv = IdTables.parseVol(w)
+                if (vv.isEmpty()) { a.hint("Объём — числом, например 42,3", 1800); return true }
+                put(r, col, vv)
+                a.hint("$name: ${IdTables.cellText(b, r, col)}", 1200)
             } else {
                 val nv = if (activeFresh || r.get(col).isEmpty()) w else r.get(col) + " " + w
                 r.set(col, nv)
@@ -280,7 +293,7 @@ class TableUi(private val a: BoardActivity) {
         val h = v.tableDraw.hit(b, t, x, y)
         val w = word.trim()
         if (h == null || h.part != TableHit.CELL || h.rec == null || h.col == null) {
-            if (h?.part == TableHit.TITLE && w.isNotEmpty()) { t.title = w; a.hint("Шифр таблицы: $w", 1500); return true }
+            if (h?.part == TableHit.TITLE && w.isNotEmpty()) { t.title = w; a.hint("Название таблицы: $w", 1500); return true }
             a.hint("Пишите прямо в ячейку строки", 1500)
             return true
         }
@@ -299,6 +312,11 @@ class TableUi(private val a: BoardActivity) {
                 val d = IdTables.parseDate(w)
                 if (d.isNotEmpty()) { put(r, col, d); a.hint("${c.title()}: ${IdTables.dateShort(d)}", 1200) }
                 else a.hint("Дату — в виде 26.08.26 или касанием", 1800)
+            }
+            c.isVol -> {
+                val vv = IdTables.parseVol(w)
+                if (vv.isNotEmpty()) { put(r, col, vv); a.hint("${c.title()}: ${IdTables.cellText(b, r, col)}", 1200) }
+                else a.hint("Объём — числом, например 42,3", 1800)
             }
             else -> {
                 val key = r.id + "|" + col
@@ -432,7 +450,7 @@ class TableUi(private val a: BoardActivity) {
                 head.addView(Ui.text(a, rowTitle(t, cur), 20f, Ui.INK, bold = true).apply { tag = "card_title" }, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
                 head.addView(Ui.text(a, "✕", 20f, Ui.INK2).apply { setPadding(dp(12f), dp(4f), dp(8f), dp(4f)); setOnClickListener { d.dismiss() } })
                 body.removeAllViews()
-                body.addView(Ui.text(a, listOf(t.title, cur.con).filter { it.isNotBlank() }.joinToString(" · "), 14f, Ui.INK2)
+                body.addView(Ui.text(a, listOf(IdTables.fullTitle(b, t), cur.con).filter { it.isNotBlank() }.joinToString(" · "), 14f, Ui.INK2)
                     .apply { setPadding(0, 0, 0, dp(6f)) })
                 val cols = t.allCols()
                 // Сначала статусы — крупно, касание — список (2 касания на смену).
@@ -453,7 +471,7 @@ class TableUi(private val a: BoardActivity) {
                 for (c in cols) {
                     if (c.isStatus || c.hidden && !c.isDate) continue
                     val view = if (c.isDate) line(c.title(), IdTables.dateLong(cur.get(c.k)), "card_${c.k}") { datePicker(cur, c.k) { show() } }
-                    else line(c.title(), cur.get(c.k), "card_${c.k}") { textDialog(t, cur, c.k) { show() } }
+                    else line(c.title(), if (c.isVol) IdTables.cellText(b, cur, c.k) else cur.get(c.k), "card_${c.k}") { textDialog(t, cur, c.k) { show() } }
                     body.addView(view, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8f) })
                 }
                 val rows = IdTables.rowsOf(b, t)
@@ -503,6 +521,7 @@ class TableUi(private val a: BoardActivity) {
 
     /** Поле с подсказками из уже введённого в этом столбце (частые — кнопками). */
     fun textDialog(t: BoardTable, r: BoardRec, col: String, done: () -> Unit = {}) {
+        if (col == TableCol.VOL) { volDialog(t, r, done); return }
         val name = t.colName(col)
         val edit = EditText(a).apply { setText(r.get(col)); setSelection(text.length); isSingleLine = true; tag = "cell_text" }
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
@@ -521,6 +540,96 @@ class TableUi(private val a: BoardActivity) {
             .setTitle(name + " · " + rowTitle(t, r))
             .setView(box)
             .setPositiveButton("Готово") { _, _ -> setCell(r, col, edit.text.toString().trim()); done() }
+            .setNegativeButton("Отмена", null)
+            .create()
+        d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        d.show()
+        edit.requestFocus()
+    }
+
+    /** Число для объёма: поле с цифрами (запятая или точка), единица — по виду работ. */
+    private fun numberField(value: String, tag0: String) = EditText(a).apply {
+        setText(if (value.isEmpty()) "" else value.replace('.', ','))
+        setSelection(text.length); isSingleLine = true; tag = tag0
+        inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+        keyListener = android.text.method.DigitsKeyListener.getInstance("0123456789.,")
+        textSize = 22f
+    }
+
+    /** «Объём по схеме» у строки: число; пусто — не указан. */
+    fun volDialog(t: BoardTable, r: BoardRec, done: () -> Unit = {}) {
+        val unit = IdTables.unitFor(t, r.work)
+        val edit = numberField(r.vol, "cell_text")
+        val row = LinearLayout(a).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(edit, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+            if (unit.isNotEmpty()) addView(Ui.text(a, unit, 18f, Ui.MUTED).apply { setPadding(dp(8f), 0, 0, 0) })
+        }
+        val box = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0)
+            addView(row)
+            addView(Ui.text(a, "Объём из исполнительной схемы. Итог и разница с проектом — внизу таблицы." +
+                if (Input.stylusSeen(a)) " Можно писать пером прямо в ячейку." else "", 13f, Ui.MUTED).apply { setPadding(0, dp(8f), 0, 0) })
+        }
+        val d = AlertDialog.Builder(a)
+            .setTitle(t.colName(TableCol.VOL) + " · " + rowTitle(t, r))
+            .setView(box)
+            .setPositiveButton("Готово") { _, _ ->
+                val txt = edit.text.toString().trim()
+                val vv = IdTables.parseVol(txt)
+                if (txt.isNotEmpty() && vv.isEmpty()) { a.hint("Объём — числом, например 42,3", 1800); return@setPositiveButton }
+                setCell(r, TableCol.VOL, vv); done()
+            }
+            .setNeutralButton("Без объёма") { _, _ -> setCell(r, TableCol.VOL, ""); done() }
+            .setNegativeButton("Отмена", null)
+            .create()
+        d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        d.show()
+        edit.requestFocus()
+    }
+
+    /**
+     * Проектный объём вида работ в таблице (касание строки «Объёмы» или «+ проект»): число и единица; work = null —
+     * сначала выбрать вид работ.
+     */
+    fun projectDialog(t: BoardTable, work: String?) {
+        if (work == null) {
+            val have = IdTables.volumes(b, t).map { it.work }
+            val works = (have + IdTables.allRows(b, t).map { it.work }.filter { it.isNotBlank() } + IdTables.WORKS)
+                .distinctBy { IdTables.norm(it) }
+            AlertDialog.Builder(a).setTitle("Проект — какой вид работ? · ${IdTables.fullTitle(b, t)}")
+                .setItems(works.toTypedArray()) { _, i -> projectDialog(t, works[i]) }
+                .setNegativeButton("Отмена", null).show()
+            return
+        }
+        val key = IdTables.norm(work)
+        val cur = t.plan[key]
+        var unit = IdTables.unitFor(t, work)
+        val edit = numberField(cur?.value.orEmpty(), "proj_value")
+        val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0) }
+        box.addView(edit)
+        box.addView(Ui.text(a, "Единица", 13f, Ui.MUTED, bold = true).apply { setPadding(0, dp(10f), 0, dp(4f)) })
+        val units = listOf("м³", "м²", "т", "шт", "м", "п.м.")
+        val flow = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(6f) }
+        val chips = ArrayList<TextView>()
+        fun paint() { for ((i, c) in chips.withIndex()) { val on = units[i] == unit; c.background = Ui.rounded(a, if (on) Ui.ACCENT else Ui.DESK, null, 999f); c.setTextColor(if (on) Color.WHITE else Ui.INK) } }
+        for ((i, u) in units.withIndex()) chips += Ui.pill(a, u, Ui.INK, Ui.DESK).apply { tag = "proj_unit_$i"; setOnClickListener { unit = u; paint() } }.also { flow.addView(it) }
+        paint()
+        box.addView(flow)
+        box.addView(Ui.text(a, "Факт — сумма столбца «${t.colName(TableCol.VOL)}» строк «$work». Разница и процент — внизу таблицы.", 13f, Ui.MUTED)
+            .apply { setPadding(0, dp(10f), 0, 0) })
+        val d = AlertDialog.Builder(a)
+            .setTitle("Объём по проекту · $work · ${IdTables.fullTitle(b, t)}")
+            .setView(box)
+            .setPositiveButton("Готово") { _, _ ->
+                val vv = IdTables.parseVol(edit.text.toString())
+                if (vv.isEmpty()) { a.hint("Проект — числом, например 310", 1800); return@setPositiveButton }
+                a.pushUndo()
+                t.plan[key] = VolPlan(cur?.work ?: work, vv, unit)
+                a.changed()
+                a.hint("Проект $work: ${IdTables.volText(vv)} $unit", 1500)
+            }
+            .also { if (cur != null) it.setNeutralButton("Убрать проект") { _, _ -> a.pushUndo(); t.plan.remove(key); a.changed() } }
             .setNegativeButton("Отмена", null)
             .create()
         d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
@@ -610,7 +719,7 @@ class TableUi(private val a: BoardActivity) {
             return n
         }
         val d = AlertDialog.Builder(a)
-            .setTitle((if (next) "Следующая захватка" else "Новая строка") + " · " + t.title.ifEmpty { "таблица" })
+            .setTitle((if (next) "Следующая захватка" else "Новая строка") + " · " + IdTables.fullTitle(b, t).ifEmpty { "таблица" })
             .setView(ScrollView(a).apply { addView(box) })
             .setPositiveButton("Добавить") { _, _ -> create() }
             .setNeutralButton("Добавить и следующую", null)
@@ -629,7 +738,7 @@ class TableUi(private val a: BoardActivity) {
     /** Столбцы таблицы: показать/скрыть, переименовать («Захватка» → «Участок»), свой столбец, «как у таблицы…». */
     fun columnsDialog(t: BoardTable) {
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16f), dp(8f), dp(16f), 0) }
-        val dialog = AlertDialog.Builder(a).setTitle("Столбцы · " + t.title).setView(ScrollView(a).apply { addView(box) })
+        val dialog = AlertDialog.Builder(a).setTitle("Столбцы · " + IdTables.fullTitle(b, t)).setView(ScrollView(a).apply { addView(box) })
             .setPositiveButton("Готово", null).create()
         fun ensureOwn() { if (t.cols.isEmpty()) t.cols.addAll(TableCol.defaults()) }
         lateinit var render: () -> Unit
@@ -678,7 +787,7 @@ class TableUi(private val a: BoardActivity) {
             if (others.isNotEmpty()) box.addView(Ui.pill(a, "Как у таблицы…", Ui.INK, Ui.DESK).apply {
                 tag = "col_copy"
                 setOnClickListener {
-                    AlertDialog.Builder(a).setTitle("Столбцы как у таблицы").setItems(others.map { it.title.ifEmpty { "без шифра" } }.toTypedArray()) { _, k ->
+                    AlertDialog.Builder(a).setTitle("Столбцы как у таблицы").setItems(others.map { IdTables.fullTitle(b, it).ifEmpty { "без шифра" } }.toTypedArray()) { _, k ->
                         a.pushUndo(); t.cols.clear(); t.cols.addAll(others[k].allCols().map { it.copy() }); a.changed(); render()
                     }.show()
                 }
@@ -704,7 +813,7 @@ class TableUi(private val a: BoardActivity) {
         }
         val text = EditText(a).apply { setText(f?.text.orEmpty()); isSingleLine = true; hint = "текст: захватка, конструкция…"; tag = "flt_text" }
         box.addView(text)
-        AlertDialog.Builder(a).setTitle("Отбор · " + t.title).setView(ScrollView(a).apply { addView(box) })
+        AlertDialog.Builder(a).setTitle("Отбор · " + IdTables.fullTitle(b, t)).setView(ScrollView(a).apply { addView(box) })
             .setPositiveButton("Показать") { _, _ ->
                 val nf = RowFilter(igsBoxes.filter { it.first.isChecked }.map { it.second }.toSet(),
                     whoBoxes.filter { it.first.isChecked }.map { it.second }.toSet(), text.text.toString().trim())
@@ -718,7 +827,7 @@ class TableUi(private val a: BoardActivity) {
 
     fun renameDialog(t: BoardTable) {
         val e = EditText(a).apply { setText(t.title); setSelection(text.length); isSingleLine = true; tag = "table_title" }
-        AlertDialog.Builder(a).setTitle("Шифр таблицы").setView(LinearLayout(a).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(e, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP)) })
+        AlertDialog.Builder(a).setTitle(if (b.sectionOf(t) != null) "Название таблицы (подраздел)" else "Шифр таблицы").setView(LinearLayout(a).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(e, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP)) })
             .setPositiveButton("Готово") { _, _ -> a.pushUndo(); t.title = e.text.toString().trim(); a.changed(); a.buildSelectionBar() }
             .setNegativeButton("Отмена", null).show()
     }
@@ -726,7 +835,7 @@ class TableUi(private val a: BoardActivity) {
     // ---------------------------------------------------------------- выделенное
 
     fun selectionLabel(sel: List<Any>): String? = when {
-        sel.size == 1 && sel[0] is BoardTable -> "Таблица ИД «${(sel[0] as BoardTable).title}»"
+        sel.size == 1 && sel[0] is BoardTable -> "Таблица ИД «${IdTables.fullTitle(b, sel[0] as BoardTable)}»"
         sel.isNotEmpty() && sel.all { it is BoardRec } -> "Строк: ${sel.size}"
         else -> null
     }
@@ -736,7 +845,8 @@ class TableUi(private val a: BoardActivity) {
         fun pill(text: String, tag: String, f: () -> Unit) = Ui.pill(a, text, Ui.INK, Ui.DESK).apply { this.tag = tag; setOnClickListener { f() } }
         if (sel.size == 1 && sel[0] is BoardTable) {
             val t = sel[0] as BoardTable
-            out += pill("Шифр", "sel_edit") { renameDialog(t) }
+            out += pill(if (b.sectionOf(t) != null) "Название" else "Шифр", "sel_edit") { renameDialog(t) }
+            if (t.visibleCols().any { it.isVol }) out += pill("Проект", "sel_proj") { projectDialog(t, null) }
             out += pill("+ строка", "sel_add") { addForm(t, next = true) }
             out += pill("Столбцы", "sel_cols") { columnsDialog(t) }
             out += if (t.filter == null) pill("Отбор", "sel_filter") { filterDialog(t) }
@@ -770,7 +880,7 @@ class TableUi(private val a: BoardActivity) {
         val recs = sel.filterIsInstance<BoardRec>()
         if (tables.isEmpty() && recs.size <= 1) { then(); return }
         val n = tables.sumOf { t -> b.recs.count { it.t == t.id } }
-        val msg = if (tables.isNotEmpty()) "Удалить таблицу ${tables.joinToString { "«${it.title}»" }} и ${Ui.plural(n, "строку", "строки", "строк")}?"
+        val msg = if (tables.isNotEmpty()) "Удалить таблицу ${tables.joinToString { "«${IdTables.fullTitle(b, it)}»" }} и ${Ui.plural(n, "строку", "строки", "строк")}?"
         else "Удалить ${Ui.plural(recs.size, "строку", "строки", "строк")}?"
         AlertDialog.Builder(a).setMessage("$msg «Отменить» вернёт.").setPositiveButton("Удалить") { _, _ -> then() }.setNegativeButton("Отмена", null).show()
     }
@@ -806,10 +916,10 @@ class TableUi(private val a: BoardActivity) {
             b.rows.removeAll { x -> rows.any { it === x } }
             v.clearSelection()
             a.changed()
-            a.hint("Перенесено в таблицу «${t.title}»: ${Ui.plural(rows.size, "строка", "строки", "строк")}", 2000)
+            a.hint("Перенесено в таблицу «${IdTables.fullTitle(b, t)}»: ${Ui.plural(rows.size, "строка", "строки", "строк")}", 2000)
         }
         val first = sorted.first()
-        val names = b.tables.map { "В «${it.title.ifEmpty { "без шифра" }}»" } + "Новая таблица"
+        val names = b.tables.map { "В «${IdTables.fullTitle(b, it).ifEmpty { "без шифра" }}»" } + "Новая таблица"
         AlertDialog.Builder(a).setTitle("Строки ИД → таблица")
             .setItems(names.toTypedArray()) { _, i ->
                 if (i < b.tables.size) { convert(b.tables[i]); return@setItems }
@@ -836,7 +946,7 @@ class TableUi(private val a: BoardActivity) {
             .apply { this.tag = tag; setOnClickListener { f() } }
         where.addView(chip("Вся доска", only == null && fr == null, "sum_all") { reopen(null, null) })
         for ((i, f) in b.frames.filter { f -> b.tables.any { b.sectionOf(it) === f } }.withIndex()) where.addView(chip(f.title, fr === f, "sum_sec_$i") { reopen(null, f) })
-        for ((i, t) in b.tables.withIndex()) where.addView(chip(t.title.ifEmpty { "без шифра" }, only === t, "sum_tbl_$i") { reopen(t, null) })
+        for ((i, t) in b.tables.withIndex()) where.addView(chip(IdTables.fullTitle(b, t).ifEmpty { "без шифра" }, only === t, "sum_tbl_$i") { reopen(t, null) })
         box.addView(where)
         // Главные цифры.
         val grid = android.widget.GridLayout(a).apply { columnCount = 2; tag = "sum_kpi" }
@@ -867,7 +977,7 @@ class TableUi(private val a: BoardActivity) {
                     gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4f), 0, dp(4f)); tag = "sum_row_$i"; isClickable = true
                     setOnClickListener { dialog?.dismiss(); val r = v.tableDraw.bounds(b, t, RectF()); v.fitRect(r.left, r.top, r.right, r.bottom) }
                 }
-                row.addView(Ui.text(a, t.title.ifEmpty { "без шифра" }, 14f, Ui.INK, bold = true), LinearLayout.LayoutParams(dp(110f), Ui.WRAP))
+                row.addView(Ui.text(a, IdTables.fullTitle(b, t).ifEmpty { "без шифра" }, 14f, Ui.INK, bold = true), LinearLayout.LayoutParams(dp(150f), Ui.WRAP))
                 val bar = LinearLayout(a)
                 for (st in s.igs.reversed()) {
                     val n = s.count(rows, st)
@@ -927,6 +1037,41 @@ class TableUi(private val a: BoardActivity) {
                     addView(Ui.text(a, "ждут ${Ui.plural(n, "схема", "схемы", "схем")} · $days0 дн.", 14f, if (days0 > s.longDays) Ui.BAD else Ui.INK2))
                 }
                 box.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
+            }
+        }
+        // Объёмы (0.21): по таблицам-подразделам и всего по шифру (разделу).
+        val volT = s.tables.map { (t, rows) -> t to IdTables.volumes(b, t, rows) }.filter { it.second.isNotEmpty() }
+        if (volT.isNotEmpty()) {
+            head("Объёмы: факт по схемам / проект")
+            fun valText(f: Double, p: Double?, u: String, partial: Boolean = false): Pair<String, Int> = when {
+                partial -> "${IdTables.volFmt(f)} $u · проект вписан не у всех таблиц".replace("  ", " ") to Ui.INK2
+                p == null -> "${IdTables.volFmt(f)} $u · проект не вписан".replace("  ", " ") to Ui.INK2
+                f > p + 1e-9 -> "${IdTables.volFmt(f)} из ${IdTables.volFmt(p)} $u · перебор +${IdTables.volFmt(f - p)} $u" to Ui.BAD
+                else -> "${IdTables.volFmt(f)} из ${IdTables.volFmt(p)} $u · ${Math.round(if (p > 0) f / p * 100 else 0.0)} %" to Color.rgb(31, 79, 160)
+            }
+            fun vline(label: String, f: Double, p: Double?, u: String, tag: String, bold: Boolean = false, partial: Boolean = false) {
+                val (txt, col) = valText(f, p, u, partial)
+                val row = LinearLayout(a).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(3f), 0, dp(3f)); this.tag = tag }
+                row.addView(Ui.text(a, label, 14f, Ui.INK, bold = bold), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+                row.addView(Ui.text(a, txt, 14f, col, bold = true))
+                box.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            }
+            var n = 0
+            for ((sec, list) in volT.groupBy { b.sectionOf(it.first) }) {
+                box.addView(Ui.text(a, sec?.title ?: "Вне разделов", 14f, Ui.INK2, bold = true).apply { setPadding(0, dp(8f), 0, dp(2f)) })
+                for ((t, lines) in list) for (vl in lines) vline("${t.title.ifEmpty { "таблица" }} · ${vl.work.lowercase()}", vl.fact, vl.plan, vl.unit, "sum_vol_${n++}")
+                if (sec != null) {
+                    // Всего по шифру: факт — все таблицы раздела, проект — сумма вписанных.
+                    val works = LinkedHashMap<String, Triple<String, String, MutableList<IdTables.VolLine>>>()
+                    for ((_, lines) in list) for (vl in lines) works.getOrPut(IdTables.norm(vl.work)) { Triple(vl.work, vl.unit, ArrayList()) }.third += vl
+                    for ((_, w) in works) {
+                        // Проект по шифру — только если вписан у всех таблиц с этим видом работ (иначе процент обманет).
+                        val plans = w.third.mapNotNull { it.plan }
+                        val partial = plans.isNotEmpty() && plans.size < w.third.size
+                        vline("Всего по шифру ${sec.title} · ${w.first.lowercase()}", w.third.sumOf { it.fact },
+                            if (plans.isEmpty() || partial) null else plans.sum(), w.second, "sum_vol_total_${n++}", bold = true, partial = partial)
+                    }
+                }
             }
         }
         if (s.whos.isNotEmpty()) {
@@ -990,7 +1135,7 @@ class TableUi(private val a: BoardActivity) {
             }
             box.addView(flow)
         }
-        group("Шифры", b.tables.map { it.id to it.title.ifEmpty { "без шифра" } }, tSel, "exp_t")
+        group("Таблицы", b.tables.map { it.id to IdTables.fullTitle(b, it).ifEmpty { "без шифра" } }, tSel, "exp_t")
         group("ИГС", b.statuses(BoardStatus.ID).map { it.id to it.name }, iSel, "exp_igs")
         group("Исполнители", all.who.sorted().map { it to it.ifEmpty { "не указан" } }, wSel, "exp_who")
         group("Листы в файле", listOf(IdExcel.SHEET_SUMMARY to "Сводка", IdExcel.SHEET_ALL to "Все схемы", IdExcel.SHEET_PER to "По листу на шифр"), sheets, "exp_sheet")
