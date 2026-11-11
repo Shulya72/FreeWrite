@@ -76,11 +76,11 @@ class VedomDraw {
         for (r in b.recs) recs[r.id] = r
         val tables = HashMap<String, BoardTable>()
         for (t in b.tables) tables[t.id] = t
-        val cols = arrayListOf(N, CIPHER, TableCol.ZAH, TableCol.CON, TableCol.WORK)
-        // № АОСР и № схемы — если вписаны хоть у одной схемы ведомости.
+        val cols = arrayListOf(N, CIPHER)
+        // № АОСР и № схемы — если вписаны хоть у одной схемы ведомости; как в таблицах — перед захваткой.
         if (items.any { recs[it.r]?.aosr?.isNotBlank() == true }) cols += TableCol.AOSR
         if (items.any { recs[it.r]?.nsch?.isNotBlank() == true }) cols += TableCol.NSCH
-        cols += TableCol.IGS
+        cols += TableCol.ZAH; cols += TableCol.CON; cols += TableCol.WORK; cols += TableCol.IGS
         if (answers) { cols += RES; cols += RD }
         val title = Vedoms.title(v)
         val state = Vedoms.state(b, v)

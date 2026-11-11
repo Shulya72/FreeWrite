@@ -206,15 +206,15 @@ object IdExcel {
         s.rows.add(listOf(Cell(Vedoms.summary(b, v, today))))
         s.rows.add(emptyList())
         val answers = Vedoms.hasAnswers(v.kind) && !v.isDraft
-        val head = arrayListOf("№", "Шифр", "Захватка", "Конструкция", "Вид работ", "№ АОСР", "№ схемы", "Дата работ", "Исполнитель", "ИГС сейчас")
+        val head = arrayListOf("№", "Шифр", "№ АОСР", "№ схемы", "Захватка", "Конструкция", "Вид работ", "Дата работ", "Исполнитель", "ИГС сейчас")
         if (answers) { head += "Ответ"; head += "Дата ответа" }
         s.rows.add(head.map { Cell(it, 1) })
         val headRow = s.rows.size
         for ((n, i) in Vedoms.items(b, v).withIndex()) {
             val l = Vedoms.label(b, i)
             val r = Vedoms.rec(b, i)
-            val row = arrayListOf(Cell(n + 1, 4), Cell(l[0].ifEmpty { null }, 3), Cell(l[1].ifEmpty { null }, 3), Cell(l[2].ifEmpty { null }, 3),
-                Cell(l[3].ifEmpty { null }, 3), Cell(r?.aosr?.ifEmpty { null }, 3), Cell(r?.nsch?.ifEmpty { null }, 3), r?.date?.let { IdTables.excelDay(it) }?.let { Cell(it, 2) } ?: Cell(null, 3), Cell(r?.who?.ifEmpty { null }, 3))
+            val row = arrayListOf(Cell(n + 1, 4), Cell(l[0].ifEmpty { null }, 3), Cell(r?.aosr?.ifEmpty { null }, 3), Cell(r?.nsch?.ifEmpty { null }, 3),
+                Cell(l[1].ifEmpty { null }, 3), Cell(l[2].ifEmpty { null }, 3), Cell(l[3].ifEmpty { null }, 3), r?.date?.let { IdTables.excelDay(it) }?.let { Cell(it, 2) } ?: Cell(null, 3), Cell(r?.who?.ifEmpty { null }, 3))
             row += if (r != null) IdTables.status(b, BoardStatus.ID, r.igs).let { Cell(it.name, st.status(it.color)) } else Cell("строка удалена", 3)
             if (answers) {
                 row += if (i.res.isEmpty()) Cell("Ждём", 3) else Cell(Vedoms.resName(v.kind, i.res), st.status(Vedoms.resColor(i.res)))
@@ -222,7 +222,7 @@ object IdExcel {
             }
             s.rows.add(row)
         }
-        s.widths = doubleArrayOf(6.0, 22.0, 16.0, 24.0, 16.0, 14.0, 16.0, 13.0, 18.0, 26.0, 18.0, 13.0).copyOf(head.size)
+        s.widths = doubleArrayOf(6.0, 22.0, 16.0, 14.0, 16.0, 24.0, 16.0, 13.0, 18.0, 26.0, 18.0, 13.0).copyOf(head.size)
         s.filterCols = head.size
         s.filterFrom = headRow
         s.freeze = headRow

@@ -779,7 +779,7 @@ class TableUi(private val a: BoardActivity) {
                     AlertDialog.Builder(a).setTitle("Новый столбец").setView(LinearLayout(a).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(e, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP)) })
                         .setPositiveButton("Добавить") { _, _ ->
                             val n = e.text.toString().trim()
-                            if (n.isNotEmpty()) { a.pushUndo(); ensureOwn(); t.cols.add(2.coerceAtMost(t.cols.size), TableCol(TableCol.newCustomKey(), n)); a.changed(); render() }
+                            if (n.isNotEmpty()) { a.pushUndo(); ensureOwn(); t.cols.add((t.cols.indexOfFirst { it.k == TableCol.WORK } + 1).takeIf { it > 0 } ?: t.cols.size, TableCol(TableCol.newCustomKey(), n)); a.changed(); render() }
                         }.setNegativeButton("Отмена", null).show()
                 }
             }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(10f) })

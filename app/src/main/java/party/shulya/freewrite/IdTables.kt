@@ -69,8 +69,8 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
         const val DPTO = "dpto"
         const val WHO = "who"
         const val NOTE = "note"
-        /** Порядок — как в таблице Excel Владимира (ТЗ, раздел 3.2). */
-        val ORDER = listOf(ZAH, CON, WORK, AOSR, NSCH, VOL, DATE, CK, DWG, IGS, DCUST, DPTO, WHO, NOTE)
+        /** Порядок (ТЗ, раздел 3.2; 0.21 — Владимир): № АОСР, № схемы, захватка, конструкция, вид работ, объём, дата… */
+        val ORDER = listOf(AOSR, NSCH, ZAH, CON, WORK, VOL, DATE, CK, DWG, IGS, DCUST, DPTO, WHO, NOTE)
 
         fun defaultName(k: String): String = when (k) {
             ZAH -> "Захватка"; CON -> "Конструкция"; WORK -> "Вид работ"; NSCH -> "№ схемы"; AOSR -> "№ АОСР"; VOL -> "Объём по схеме"; DATE -> "Дата работ"
