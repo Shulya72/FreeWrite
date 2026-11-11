@@ -91,6 +91,7 @@ object IdExcel {
         if (only == null) head += Cell("Шифр", 1)
         for ((_, n) in cols) head += Cell(n, 1)
         s.rows.add(head)
+        val colors = HashMap<String, Map<String, Int>>()
         for ((t, r) in list) {
             val row = ArrayList<Cell>()
             if (only == null) row += Cell(IdTables.fullTitle(b, t), 3)
@@ -103,6 +104,9 @@ object IdExcel {
                     TableCol.DATE, TableCol.DCUST, TableCol.DPTO -> IdTables.excelDay(r.get(k))?.let { Cell(it, 2) } ?: Cell(null, 3)
                     TableCol.VOL -> if (r.vol.isEmpty()) Cell(null, 3) else Cell(IdTables.volNum(r.vol), 4)
                     UNIT -> Cell(if (r.vol.isEmpty()) null else IdTables.unitFor(t, r.work).ifEmpty { null }, 3)
+                    // Захватка привязана к заливке на плане — ячейка цветом заливки (0.22).
+                    TableCol.ZAH -> colors.getOrPut(t.id) { IdTables.zahColors(b, t) }[IdTables.norm(r.zah)]
+                        ?.let { Cell(r.zah.ifEmpty { null }, st.status(it)) } ?: Cell(r.zah.ifEmpty { null }, 3)
                     else -> Cell(r.get(k).ifEmpty { null }, 3)
                 }
             }

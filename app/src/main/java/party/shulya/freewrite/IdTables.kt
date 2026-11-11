@@ -472,6 +472,36 @@ object IdTables {
         else -> r.get(k)
     }
 
+    // ---------------------------------------------------------------- захватки на плане (0.22)
+
+    /** Заливки, привязанные к захватке таблицы. */
+    fun fillsOf(b: Board, t: BoardTable, zah: String): List<BoardFill> {
+        val z = norm(zah)
+        return b.fills.filter { it.lt == t.id && norm(it.lz) == z }
+    }
+
+    /** Строки (схемы) захватки в таблице: опалубка, бетон… */
+    fun zahRows(b: Board, t: BoardTable, zah: String): List<BoardRec> {
+        val z = norm(zah)
+        return allRows(b, t).filter { norm(it.zah) == z }
+    }
+
+    /** Таблица привязанной заливки (null — не привязана или таблицы уже нет). */
+    fun tableOfFill(b: Board, f: BoardFill): BoardTable? = if (f.lt.isEmpty()) null else table(b, f.lt)
+
+    /** Захватки таблицы по порядку строк (без повторов). */
+    fun zahList(b: Board, t: BoardTable): List<String> {
+        val seen = HashSet<String>()
+        return allRows(b, t).map { it.zah.trim() }.filter { it.isNotEmpty() && seen.add(norm(it)) }
+    }
+
+    /** Цвет заливки захватки (для значка у номера в таблице): нормализованный номер → цвет первой заливки. */
+    fun zahColors(b: Board, t: BoardTable): Map<String, Int> {
+        val m = HashMap<String, Int>()
+        for (f in b.fills) if (f.lt == t.id) m.getOrPut(norm(f.lz)) { f.color }
+        return m
+    }
+
     // ---------------------------------------------------------------- раздел = шифр, таблица = подраздел (0.21)
 
     /**
