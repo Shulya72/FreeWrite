@@ -328,6 +328,8 @@ object BoardShare {
         mergeList(local.callouts, inc.callouts, { it.id }, take, drop, all)
         mergeList(local.frames, inc.frames, { it.id }, take, drop, all)
         mergeList(local.rows, inc.rows, { it.id }, take, drop, all)
+        mergeList(local.tables, inc.tables, { it.id }, take, drop, all)
+        mergeList(local.recs, inc.recs, { it.id }, take, drop, all)
 
         val after = local.entryHashes()
         for (id in take) {
