@@ -81,9 +81,9 @@ class ZahvatkiTest {
         val back = Board.fromJson(JSONObject(b.toJsonString()))
         assertEquals(t.id, back.fills[0].lt); assertEquals("1", back.fills[0].lz); assertTrue(back.fills[0].ln)
         assertTrue(!back.fills[1].ln)
-        assertEquals(listOf(f0), IdTables.fillsOf(b, t, "1"))
-        assertEquals(2, IdTables.zahRows(b, t, "№1").size)
-        assertEquals(listOf("1", "2", "3"), IdTables.zahList(b, t))
+        assertEquals(listOf(f0), IdTables.fillsOf(b, t, "", "1"))
+        assertEquals(2, IdTables.zahRows(b, t, "", "№1").size)
+        assertEquals(listOf("" to "1", "" to "2", "" to "3"), IdTables.zahList(b, t))
         assertEquals(Color.rgb(41, 121, 255), IdTables.zahColors(b, t)["1"])
         // Копия заливки — та же захватка (несколько заливок у одной захватки); отмена — назад.
         assertEquals("1", f0.copy().lz)
@@ -175,7 +175,7 @@ class ZahvatkiTest {
         idle()
         assertEquals(t.id, f0.lt); assertEquals("1", f0.lz)
         // Выделенная привязанная заливка — строки захватки подсвечены в таблице, подпись на панели.
-        assertEquals(IdTables.zahRows(s.b, t, "1").toSet(), s.view.markedRecs)
+        assertEquals(IdTables.zahRows(s.b, t, "", "1").toSet(), s.view.markedRecs)
         s.view.clearSelection()
         idle()
         assertNull("выделение снято — подсветка тоже", s.view.markedRecs)
@@ -198,18 +198,18 @@ class ZahvatkiTest {
 
         // Касание заливки — подсветка строк захватки (опалубка и бетон).
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, s.sx(1200f), s.sy(450f))
-        assertEquals(IdTables.zahRows(s.b, t, "2").toSet(), s.view.markedRecs)
+        assertEquals(IdTables.zahRows(s.b, t, "", "2").toSet(), s.view.markedRecs)
         assertTrue(texts(root).any { it.startsWith("Захватка 2 · Несущие стены") || it.startsWith("Захватка 2 · КЖ 6.1.1 · Несущие стены") })
         // «В таблице» — экран переезжает к строкам.
         root.findViewWithTag<View>("sel_zah_rows").performClick()
         idle()
-        val rr = s.view.tableDraw.rowRect(s.b, t, IdTables.zahRows(s.b, t, "2")[0], RectF())!!
+        val rr = s.view.tableDraw.rowRect(s.b, t, IdTables.zahRows(s.b, t, "", "2")[0], RectF())!!
         assertTrue("строки на экране", s.sy(rr.centerY()) in 0f..s.view.height.toFloat())
         s.view.clearSelection()
         idle()
 
         // Касание номера захватки «2» в таблице (палец) — её заливка подсвечена и на экране; «← К таблице», «Готово».
-        val row2 = IdTables.zahRows(s.b, t, "2")[0]
+        val row2 = IdTables.zahRows(s.b, t, "", "2")[0]
         val (zx, zy) = s.cell(row2, TableCol.ZAH)
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, zx, zy)
         assertEquals(setOf(f1), s.view.markedFills)
@@ -222,7 +222,7 @@ class ZahvatkiTest {
         idle()
         assertNull(s.view.markedFills)
         // Номер захватки без заливки («3») — как раньше: карточка строки.
-        val row3 = IdTables.zahRows(s.b, t, "3")[0]
+        val row3 = IdTables.zahRows(s.b, t, "", "3")[0]
         s.view.fitRect(0f, 0f, 4200f, 2400f); idle()
         val (z3x, z3y) = s.cell(row3, TableCol.ZAH)
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, z3x, z3y)

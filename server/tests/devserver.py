@@ -67,7 +67,7 @@ def demo(key):
     rnd = random.Random(5)
     items = []
     ids = [("i0", "Конструкция не выполнена", argb(138, 147, 163)), ("i5", "Не предоставлена", argb(198, 40, 40)),
-           ("i1", "В работе", argb(31, 95, 209)), ("i6", "На подписи АН", argb(123, 63, 196)),
+           ("i1", "В работе", argb(31, 95, 209)), ("i9", "Сборка", argb(0, 131, 143)), ("i6", "На подписи АН", argb(123, 63, 196)),
            ("i7", "Не согласована", argb(142, 27, 47)), ("i2", "На подписи у заказчика", argb(184, 138, 0)),
            ("i8", "Возврат на корректировку", argb(212, 100, 12)), ("i3", "Сдано в ПТО", argb(35, 128, 58))]
     cks = [("k0", "Не выполнено", argb(138, 147, 163)), ("k1", "Не предъявлено", argb(198, 40, 40)),
@@ -91,7 +91,7 @@ def demo(key):
         items.append((sid, "status", json.dumps({"id": sid, "name": name, "color": color, "g": "con"}, ensure_ascii=False)))
     items.append(("~order", "meta", json.dumps({"order": [x[0] for x in ids + cons + cks + dwgs]})))
     items.append(("~title", "meta", json.dumps({"title": "План ИГС по БК5 (проверка сайта)"}, ensure_ascii=False)))
-    frames = [("f1", 0, 0, 2600, 1500, "КЖ 6.1.1"), ("f2", 2900, 0, 2000, 1500, "КЖ 6.1.2")]
+    frames = [("f1", 0, 0, 2600, 1500, "КЖ 6.1.1"), ("f2", 2900, 0, 2000, 1500, "КЖ 6.1.2"), ("f3", 0, 2500, 2700, 1500, "КЖ8")]
     for fid, x, y, w, h, t in frames:
         items.append((fid, "frame", json.dumps({"id": fid, "x": x, "y": y, "w": w, "h": h, "title": t}, ensure_ascii=False)))
     # Чертёж — картинка.
@@ -152,6 +152,29 @@ def demo(key):
                 rec["v"] = "%.1f" % ((180 + o * 1.7) if w == "Опалубка" else (40 + o * 0.6))
             items.append((rid, "rec", json.dumps(rec, ensure_ascii=False)))
             o += 1
+    # Лестницы КЖ8 (0.22.1): участок (LM1, LM2), захватка — этаж, тип конструкции — марш / площадка.
+    items.append(("tb2", "table", json.dumps({"id": "tb2", "x": 100, "y": 2600, "scale": 1.6, "title": "Лестничные марши",
+                                              "plan": [{"w": "Бетон", "v": "48", "u": "м³"}]}, ensure_ascii=False)))
+    o2 = 1
+    for u in ("LM1", "LM2"):
+        for fl in ("2 этаж", "3 этаж"):
+            for con in ("Марш", "Площадка межэтажная"):
+                for w in ("Опалубка", "Бетон"):
+                    rid = "rl%d" % o2
+                    sid = "i3" if fl == "2 этаж" else ("i9" if u == "LM1" else "i1")
+                    rec = {"id": rid, "t": "tb2", "o": o2, "na": "АОСР КЖ8-%03d" % o2, "u": u, "z": fl, "c": con, "w": w,
+                           "ck": "k3" if sid != "i1" else "k1", "dwg": "d2" if sid != "i1" else "d1", "sid": sid, "who": "Монолит-Строй"}
+                    if sid != "i1":
+                        rec["v"] = "%.1f" % ((6.5 if con == "Марш" else 4.2) if w == "Опалубка" else (2.1 if con == "Марш" else 1.4))
+                    items.append((rid, "rec", json.dumps(rec, ensure_ascii=False)))
+                    o2 += 1
+    items.append(("fl3", "fill", json.dumps({"id": "fl3", "pts": [1600, 400, 1900, 400, 1900, 700, 1600, 700],
+                                             "color": argb(255, 152, 0), "alpha": 0.35, "lt": "tb2", "lu": "LM1", "lz": "3 этаж"},
+                                            ensure_ascii=False)))
+    items.append(("vd2", "vedom", json.dumps({"id": "vd2", "x": 2900, "y": 2600, "scale": 1.6, "kind": "cust", "num": "З-13",
+                                              "to": "Технадзор заказчика"}, ensure_ascii=False)))
+    for n, rid in enumerate(["rl5", "rl6", "rl7", "rl8"]):
+        items.append(("vj%d" % n, "vitem", json.dumps({"id": "vj%d" % n, "v": "vd2", "r": rid, "o": n + 1}, ensure_ascii=False)))
     # Ведомость заказчику (0.21): передана, ответы по частям.
     items.append(("vd1", "vedom", json.dumps({"id": "vd1", "x": 2900, "y": 1650, "scale": 1.6, "kind": "cust", "num": "З-12",
                                               "to": "Технадзор заказчика", "given": "2026-11-05"}, ensure_ascii=False)))

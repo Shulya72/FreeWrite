@@ -105,7 +105,7 @@ object IdExcel {
                     TableCol.VOL -> if (r.vol.isEmpty()) Cell(null, 3) else Cell(IdTables.volNum(r.vol), 4)
                     UNIT -> Cell(if (r.vol.isEmpty()) null else IdTables.unitFor(t, r.work).ifEmpty { null }, 3)
                     // Захватка привязана к заливке на плане — ячейка цветом заливки (0.22).
-                    TableCol.ZAH -> colors.getOrPut(t.id) { IdTables.zahColors(b, t) }[IdTables.norm(r.zah)]
+                    TableCol.ZAH -> colors.getOrPut(t.id) { IdTables.zahColors(b, t) }[r.zkey()]
                         ?.let { Cell(r.zah.ifEmpty { null }, st.status(it)) } ?: Cell(r.zah.ifEmpty { null }, 3)
                     else -> Cell(r.get(k).ifEmpty { null }, 3)
                 }
@@ -115,7 +115,7 @@ object IdExcel {
         s.widths = DoubleArray(head.size) { i ->
             val k = if (only == null) (if (i == 0) "cipher" else cols[i - 1].first) else cols[i].first
             when (k) {
-                "cipher" -> 22.0; TableCol.VOL -> 13.0; UNIT -> 6.0; TableCol.ZAH -> 16.0; TableCol.CON -> 24.0; TableCol.WORK -> 16.0
+                "cipher" -> 22.0; TableCol.VOL -> 13.0; UNIT -> 6.0; TableCol.UCH -> 12.0; TableCol.ZAH -> 16.0; TableCol.CON -> 24.0; TableCol.WORK -> 16.0
                 TableCol.NSCH, TableCol.AOSR -> 16.0; TableCol.DATE, TableCol.DCUST, TableCol.DPTO -> 14.0; TableCol.CK -> 24.0; TableCol.DWG -> 12.0
                 TableCol.IGS -> 26.0; TableCol.WHO -> 18.0; TableCol.NOTE -> 34.0; else -> 18.0
             }
@@ -206,19 +206,19 @@ object IdExcel {
         s.rows.add(listOf(Cell("Ведомость ${v.num} — ${Vedoms.kindName(v.kind)}", 5)))
         s.rows.add(listOf(Cell("Объект: " + b.title)))
         if (v.to.isNotBlank()) s.rows.add(listOf(Cell("Кому: " + v.to)))
-        s.rows.add(listOf(Cell(if (v.isDraft) "Черновик (не передана)" else "Дата передачи: " + IdTables.dateLong(v.given))))
+        s.rows.add(listOf(Cell(if (v.isDraft) (if (v.kind == Vedoms.LIST) "Список" else "Сборка (схемы на столе)") else Vedoms.giveLabel(v.kind) + " с " + IdTables.dateLong(v.given))))
         s.rows.add(listOf(Cell(Vedoms.summary(b, v, today))))
         s.rows.add(emptyList())
         val answers = Vedoms.hasAnswers(v.kind) && !v.isDraft
-        val head = arrayListOf("№", "Шифр", "№ АОСР", "№ схемы", "Захватка", "Конструкция", "Вид работ", "Дата работ", "Исполнитель", "ИГС сейчас")
+        val head = arrayListOf("№", "Шифр", "№ АОСР", "№ схемы", "Участок", "Захватка", "Тип конструкции", "Вид работ", "Дата работ", "Исполнитель", "ИГС сейчас")
         if (answers) { head += "Ответ"; head += "Дата ответа" }
         s.rows.add(head.map { Cell(it, 1) })
         val headRow = s.rows.size
         for ((n, i) in Vedoms.items(b, v).withIndex()) {
             val l = Vedoms.label(b, i)
             val r = Vedoms.rec(b, i)
-            val row = arrayListOf(Cell(n + 1, 4), Cell(l[0].ifEmpty { null }, 3), Cell(r?.aosr?.ifEmpty { null }, 3), Cell(r?.nsch?.ifEmpty { null }, 3),
-                Cell(l[1].ifEmpty { null }, 3), Cell(l[2].ifEmpty { null }, 3), Cell(l[3].ifEmpty { null }, 3), r?.date?.let { IdTables.excelDay(it) }?.let { Cell(it, 2) } ?: Cell(null, 3), Cell(r?.who?.ifEmpty { null }, 3))
+            val row = arrayListOf(Cell(n + 1, 4), Cell(l.title.ifEmpty { null }, 3), Cell(r?.aosr?.ifEmpty { null }, 3), Cell(r?.nsch?.ifEmpty { null }, 3),
+                Cell(l.uch.ifEmpty { null }, 3), Cell(l.zah.ifEmpty { null }, 3), Cell(l.con.ifEmpty { null }, 3), Cell(l.work.ifEmpty { null }, 3), r?.date?.let { IdTables.excelDay(it) }?.let { Cell(it, 2) } ?: Cell(null, 3), Cell(r?.who?.ifEmpty { null }, 3))
             row += if (r != null) IdTables.status(b, BoardStatus.ID, r.igs).let { Cell(it.name, st.status(it.color)) } else Cell("строка удалена", 3)
             if (answers) {
                 row += if (i.res.isEmpty()) Cell("Ждём", 3) else Cell(Vedoms.resName(v.kind, i.res), st.status(Vedoms.resColor(i.res)))
@@ -226,7 +226,7 @@ object IdExcel {
             }
             s.rows.add(row)
         }
-        s.widths = doubleArrayOf(6.0, 22.0, 16.0, 14.0, 16.0, 24.0, 16.0, 13.0, 18.0, 26.0, 18.0, 13.0).copyOf(head.size)
+        s.widths = doubleArrayOf(6.0, 22.0, 16.0, 14.0, 12.0, 16.0, 24.0, 16.0, 13.0, 18.0, 26.0, 18.0, 13.0).copyOf(head.size)
         s.filterCols = head.size
         s.filterFrom = headRow
         s.freeze = headRow

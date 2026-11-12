@@ -281,7 +281,7 @@ function prepFill(d) {
     l = Math.min(l, p[i]); r = Math.max(r, p[i]); t = Math.min(t, p[i + 1]); b = Math.max(b, p[i + 1]);
   }
   path.closePath();
-  return { color: d.color | 0, alpha: d.alpha == null ? 0.35 : d.alpha, path, l, t, r, b, pts: p, lt: d.lt || "", lz: d.lz || "", ln: d.ln !== 0 };
+  return { color: d.color | 0, alpha: d.alpha == null ? 0.35 : d.alpha, path, l, t, r, b, pts: p, lt: d.lt || "", lu: d.lu || "", lz: d.lz || "", ln: d.ln !== 0 };
 }
 
 // Размеры как в приложении (BoardView).
@@ -314,8 +314,8 @@ function rowH(r) { return 40 * r.scale; }
 
 // ------------------------------------------------------------ таблицы ИД (как TableDraw в приложении)
 
-const TCOLS = ["aosr", "nsch", "zah", "con", "work", "vol", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note"];
-const TNAME = { zah: "Захватка", con: "Конструкция", work: "Вид работ", nsch: "№ схемы", aosr: "№ АОСР", vol: "Объём по схеме", date: "Дата работ", ck: "Чек-лист", dwg: "DWG", igs: "ИГС",
+const TCOLS = ["aosr", "nsch", "uch", "zah", "con", "work", "vol", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note"];
+const TNAME = { uch: "Участок", zah: "Захватка", con: "Тип конструкции", work: "Вид работ", nsch: "№ схемы", aosr: "№ АОСР", vol: "Объём по схеме", date: "Дата работ", ck: "Чек-лист", dwg: "DWG", igs: "ИГС",
   dcust: "Отдал заказчику", dpto: "Сдано в ПТО", who: "Исполнитель", note: "Примечание" };
 const TF = { T: 40, H: 26, R: 30, F: 30, P: 9, FONT: 13, HF: 11, TF: 19 };
 const TGROUP = { igs: "id", ck: "ck", dwg: "dwg" };
@@ -337,7 +337,7 @@ function isSt(k) { return k === "igs" || k === "ck" || k === "dwg"; }
 function isDate(k) { return k === "date" || k === "dcust" || k === "dpto"; }
 function recVal(r, k) {
   switch (k) {
-    case "zah": return r.z || ""; case "con": return r.c || ""; case "work": return r.w || ""; case "nsch": return r.ns || ""; case "aosr": return r.na || ""; case "vol": return r.v || ""; case "date": return r.d || "";
+    case "uch": return r.u || ""; case "zah": return r.z || ""; case "con": return r.c || ""; case "work": return r.w || ""; case "nsch": return r.ns || ""; case "aosr": return r.na || ""; case "vol": return r.v || ""; case "date": return r.d || "";
     case "ck": return r.ck || "k0"; case "dwg": return r.dwg || "d0"; case "igs": return r.sid || "i0";
     case "dcust": return r.dc || ""; case "dpto": return r.dp || ""; case "who": return r.who || ""; case "note": return r.n || "";
     default: return (r.x && r.x[k]) || "";
@@ -351,6 +351,9 @@ function cellText(r, k) {
 }
 // Объёмы (0.21): как IdTables в приложении.
 function normW(s) { return String(s || "").toLowerCase().replace(/ё/g, "е").replace(/захватка|захв\.|участок/g, "").replace(/[\s№"«»]/g, "").replace(/[.,;:]+$/, ""); }
+// Участок + захватка (как IdTables.zkey): «этаж 3» участка LM1 и LM2 — разные захватки.
+function zkey(u, z) { const nu = normW(u); return nu ? nu + "|" + normW(z) : normW(z); }
+function zahLabel(u, z) { return [String(u || "").trim(), String(z || "").trim()].filter(Boolean).join(" · "); }
 function defaultUnit(w) { w = String(w || "").toLowerCase();
   return /опалуб/.test(w) ? "м²" : /армир|арматур/.test(w) ? "т" : /монтаж/.test(w) ? "шт" : /бетон|засыпк|разработ|кладк|грунт/.test(w) ? "м³" : ""; }
 function planOf(t, w) { return (t.plan || []).find((p) => normW(p.w) === normW(w)); }
@@ -388,9 +391,9 @@ function tLayout(t) {
       w = Math.min(Math.max(w, c.k === "igs" ? 120 : 70), 300);
     } else {
       if (isDate(c.k)) w = Math.max(w, tw("00.00.00", TF.FONT, false) + 2 * TF.P);
-      else for (const r of rows) w = Math.max(w, tw(cellText(r, c.k), TF.FONT, c.k === "zah") + 2 * TF.P + (c.k === "vol" ? 4 : 0) +
-        (c.k === "zah" && B.fills.some((f) => f.lt === t.id && normW(f.lz) === normW(r.z)) ? 17 : 0));
-      w = Math.min(Math.max(w, c.k === "zah" ? 64 : 56), c.k === "note" ? 260 : 230);
+      else for (const r of rows) w = Math.max(w, tw(cellText(r, c.k), TF.FONT, c.k === "zah" || c.k === "uch") + 2 * TF.P + (c.k === "vol" ? 4 : 0) +
+        (c.k === "zah" && B.fills.some((f) => f.lt === t.id && zkey(f.lu, f.lz) === zkey(r.u, r.z)) ? 17 : 0));
+      w = Math.min(Math.max(w, c.k === "zah" || c.k === "uch" ? 64 : 56), c.k === "note" ? 260 : 230);
     }
     return w;
   });
@@ -399,7 +402,7 @@ function tLayout(t) {
   const prefix = secPrefix(t);
   const vol = cols.some((c) => c.k === "vol") && rows.length ? volumes(t, rows) : null;
   const swatch = new Map();
-  for (const f of B.fills) if (f.lt === t.id && !swatch.has(normW(f.lz))) swatch.set(normW(f.lz), f.color);
+  for (const f of B.fills) if (f.lt === t.id && !swatch.has(zkey(f.lu, f.lz))) swatch.set(zkey(f.lu, f.lz), f.color);
   const missing = vol ? vol.reduce((s, v) => s + v.missing, 0) : 0;
   const need = Math.max(TF.P * 2 + tw(t.title || "Без шифра", TF.TF, true) + (prefix ? measure(prefix + " ·", 14, false) + 8 : 0) + 24 + tw(info, 12, false) + TF.P,
     TF.P * 3 + tw("+ строка", TF.FONT, true) + tw("+ следующая захватка", TF.FONT, true) + TF.P * 2, vol ? 1000 : 0);
@@ -460,13 +463,14 @@ function drawTable(t, z, hl) {
         const v = cellText(r, c.k); if (!v) return;
         let tx = cx + TF.P * k;
         // Захватка привязана к заливке на плане — значок её цвета перед номером (0.22).
-        const sw = c.k === "zah" ? L.swatch.get(normW(r.z)) : undefined;
+        const sw = c.k === "zah" ? L.swatch.get(zkey(r.u, r.z)) : undefined;
         if (sw !== undefined) {
           rrect(tx, cy - 6 * k, 12 * k, 12 * k, 3 * k); ctx.fillStyle = css(sw, 1); ctx.fill();
           ctx.strokeStyle = statusFg(sw); ctx.lineWidth = k; ctx.stroke(); tx += 17 * k;
         }
-        ctx.font = (c.k === "zah" ? "bold " : "") + fs + "px " + FONT;
-        ctx.fillStyle = c.k === "zah" ? C.ink : C.ink2;
+        const strong = c.k === "zah" || c.k === "uch";
+        ctx.font = (strong ? "bold " : "") + fs + "px " + FONT;
+        ctx.fillStyle = strong ? C.ink : C.ink2;
         ctx.fillText(fitText(v, cx + cw - TF.P * k - tx), tx, cy + fs * 0.36);
       }
     });
@@ -540,7 +544,7 @@ function drawVolumes(t, L, x0, top, w, k) {
 const VF = { HD: 58, H: 26, R: 30, F: 30, P: 9, FONT: 13, HF: 11, TF: 19 };
 const VKIND = { an: ["На согласование АН", "А", 0xff7b3fc4 | 0], cust: ["На подпись заказчику", "З", 0xffb88a00 | 0],
   pto: ["Сдача в ПТО", "П", 0xff23803a | 0], list: ["Список", "С", 0xff4b5873 | 0] };
-const VCOL = { n: "№", cipher: "Шифр", zah: "Захватка", con: "Конструкция", work: "Вид работ", nsch: "№ схемы", aosr: "№ АОСР", igs: "ИГС сейчас", res: "Ответ", rd: "Дата ответа" };
+const VCOL = { n: "№", cipher: "Шифр", uch: "Участок", zah: "Захватка", con: "Тип конструкции", work: "Вид работ", nsch: "№ схемы", aosr: "№ АОСР", igs: "ИГС сейчас", res: "Ответ", rd: "Дата ответа" };
 function vKind(v) { return VKIND[v.kind] || VKIND.list; }
 function vAnswers(v) { return (v.kind === "an" || v.kind === "cust") && !!v.given; }
 function vItems(v) { return B.vitems.filter((i) => i.v === v.id).sort((a, b) => ((a.o || 0) - (b.o || 0)) || (a.id < b.id ? -1 : 1)); }
@@ -553,7 +557,8 @@ function vClosed(v) {
   if (v.kind === "an" || v.kind === "cust") { const it = vItems(v); return it.length > 0 && it.every((i) => !!i.res); }
   return false;
 }
-function vState(v) { return !v.given ? (v.kind === "list" ? "список" : "черновик") : vClosed(v) ? "закрыта" : "передана " + dShort(v.given); }
+const VGIVE = { an: "На подписи АН", cust: "На подписи у заказчика", pto: "Сдано в ПТО" };
+function vState(v) { return !v.given ? (v.kind === "list" ? "список" : "сборка") : vClosed(v) ? "закрыта" : (VGIVE[v.kind] || "передана") + " · " + dShort(v.given); }
 function vSummary(v) {
   const it = vItems(v); const head = plural(it.length, "схема", "схемы", "схем");
   if (!vAnswers(v)) return head;
@@ -566,13 +571,14 @@ function vSummary(v) {
 function vLayout(v) {
   const items = vItems(v);
   const recs = new Map(B.recs.map((r) => [r.id, r]));
+  const tabs = new Map(B.tables.map((t) => [t.id, t]));
   const cols = ["n", "cipher"]
     .concat(items.some((i) => (recs.get(i.r) || {}).na) ? ["aosr"] : [], items.some((i) => (recs.get(i.r) || {}).ns) ? ["nsch"] : [],
+      items.some((i) => { const r = recs.get(i.r); return r && tabs.has(r.t) ? !!r.u : !!i.lu; }) ? ["uch"] : [],
       ["zah", "con", "work", "igs"], vAnswers(v) ? ["res", "rd"] : []);
-  const tabs = new Map(B.tables.map((t) => [t.id, t]));
   const texts = items.map((i, idx) => {
     const r = recs.get(i.r), t = r && tabs.get(r.t);
-    return cols.map((c) => c === "n" ? String(idx + 1) : c === "cipher" ? (t ? fullTitle(t) : i.lt || "") : c === "zah" ? (t ? r.z || "" : i.lz || "")
+    return cols.map((c) => c === "n" ? String(idx + 1) : c === "cipher" ? (t ? fullTitle(t) : i.lt || "") : c === "uch" ? (t ? r.u || "" : i.lu || "") : c === "zah" ? (t ? r.z || "" : i.lz || "")
       : c === "con" ? (t ? r.c || "" : i.lc || "") : c === "work" ? (t ? r.w || "" : i.lw || "")
       : c === "nsch" ? (t ? r.ns || "" : "") : c === "aosr" ? (t ? r.na || "" : "") : c === "igs" ? (t ? stIn("id", r.sid || "i0").name : "строка удалена")
       : c === "res" ? resName(v, i.res || "") : c === "rd" ? dShort(i.rd || "") : "");
@@ -586,7 +592,7 @@ function vLayout(v) {
   const widths = cols.map((c, ci) => {
     const pill = c === "igs" || c === "res";
     let w = tw(VCOL[c], VF.HF, true) + 2 * VF.P;
-    for (const row of texts) w = Math.max(w, tw(row[ci], VF.FONT, pill || c === "zah" || c === "n") + 2 * VF.P + (pill ? 22 : 0));
+    for (const row of texts) w = Math.max(w, tw(row[ci], VF.FONT, pill || c === "zah" || c === "uch" || c === "n") + 2 * VF.P + (pill ? 22 : 0));
     return c === "n" ? Math.max(w, 34) : c === "rd" ? Math.max(w, tw("00.00.00", VF.FONT, false) + 2 * VF.P)
       : c === "igs" ? Math.min(Math.max(w, 120), 300) : c === "res" ? Math.min(Math.max(w, 100), 220) : Math.min(Math.max(w, 56), 230);
   });
@@ -632,8 +638,8 @@ function drawVedom(v, z) {
       if (c === "igs" && L.igsColor[i]) return pill(txt, L.igsColor[i], cx, ry, cw, false);
       if (c === "res") return pill(txt, resColor(it.res || ""), cx, ry, cw, !it.res);
       if (!txt) return;
-      ctx.font = (c === "zah" ? "bold " : "") + fs + "px " + FONT;
-      ctx.fillStyle = c === "zah" ? C.ink : (c === "n" || c === "igs") ? C.muted : C.ink2;
+      ctx.font = (c === "zah" || c === "uch" ? "bold " : "") + fs + "px " + FONT;
+      ctx.fillStyle = c === "zah" || c === "uch" ? C.ink : (c === "n" || c === "igs") ? C.muted : C.ink2;
       ctx.fillText(fitText(txt, cw - 2 * VF.P * k), cx + VF.P * k, ry + R / 2 + fs * 0.36);
     });
   });
@@ -654,7 +660,7 @@ function drawVedom(v, z) {
   ctx.font = 12 * k + "px " + FONT; ctx.fillStyle = C.ink2;
   ctx.fillText(fitText(L.info, w - VF.P * 2.8 * k), x0 + VF.P * 1.4 * k, y0 + 45 * k + 12 * k * 0.36);
   if (!L.items.length) { ctx.font = VF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText("Схем пока нет", x0 + VF.P * k, top + R / 2 + VF.FONT * k * 0.36); }
-  if (L.foot) { ctx.font = VF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText(v.kind === "list" ? "список" : "черновик — ещё не передана", x0 + VF.P * k, bottom + VF.F / 2 * k + VF.FONT * k * 0.36); }
+  if (L.foot) { ctx.font = VF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText(v.kind === "list" ? "список" : "сборка — схемы на столе, ещё не унесли", x0 + VF.P * k, bottom + VF.F / 2 * k + VF.FONT * k * 0.36); }
   outline();
 }
 
@@ -875,11 +881,14 @@ function render() {
   // Номера захваток на привязанных заливках (0.22, как в приложении).
   for (const f of B.fills) if (f.lt && f.ln && f.lz && visible(f.l, f.t, f.r, f.b) && B.tables.some((t) => t.id === f.lt)) {
     const side = Math.min(f.r - f.l, f.b - f.t); if (side * z < 22) continue;
-    const size = Math.min(Math.max(side * 0.32, 14 / z), 64 / z, side * 0.6);
-    const c = fillCenter(f);
-    ctx.font = "bold " + size + "px " + FONT; ctx.textAlign = "center";
-    ctx.lineJoin = "round"; ctx.lineWidth = size * 0.18; ctx.strokeStyle = "#fff"; ctx.strokeText(f.lz, c[0], c[1] + size * 0.36);
-    ctx.fillStyle = statusFg(f.color); ctx.fillText(f.lz, c[0], c[1] + size * 0.36);
+    let size = Math.min(Math.max(side * 0.32, 14 / z), 64 / z, side * 0.6);
+    const c = fillCenter(f), text = zahLabel(f.lu, f.lz);
+    ctx.font = "bold " + size + "px " + FONT;
+    // С участком подпись длиннее («LM1 · 3») — не шире заливки.
+    const tw0 = ctx.measureText(text).width; if (tw0 > (f.r - f.l) * 0.9) { size = Math.max(size * (f.r - f.l) * 0.9 / tw0, 10 / z); ctx.font = "bold " + size + "px " + FONT; }
+    ctx.textAlign = "center";
+    ctx.lineJoin = "round"; ctx.lineWidth = size * 0.18; ctx.strokeStyle = "#fff"; ctx.strokeText(text, c[0], c[1] + size * 0.36);
+    ctx.fillStyle = statusFg(f.color); ctx.fillText(text, c[0], c[1] + size * 0.36);
     ctx.textAlign = "left";
   }
   // Разделы (рамки).

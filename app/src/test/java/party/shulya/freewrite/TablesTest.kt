@@ -75,12 +75,13 @@ class TablesTest {
         val b = sample()
         val t = b.tables[0]
         t.cols.addAll(TableCol.defaults())
-        t.cols.first { it.k == TableCol.ZAH }.name = "Участок"
+        t.cols.first { it.k == TableCol.ZAH }.name = "Этаж"
         t.cols.first { it.k == TableCol.AOSR }.hidden = true; t.cols.first { it.k == TableCol.NSCH }.hidden = true
+        t.cols.first { it.k == TableCol.UCH }.hidden = true
         t.cols.first { it.k == TableCol.NOTE }.hidden = true
         t.cols.add(t.cols.indexOfFirst { it.k == TableCol.CON } + 1, TableCol("cabc12", "Секция"))
         b.recs[0].extra["cabc12"] = "1"
-        assertEquals(listOf("Участок", "Конструкция", "Секция"), t.visibleCols().take(3).map { it.title() })
+        assertEquals(listOf("Этаж", "Тип конструкции", "Секция"), t.visibleCols().take(3).map { it.title() })
         assertTrue(t.visibleCols().none { it.k == TableCol.NOTE })
 
         // JSON туда-обратно — те же строки.
@@ -332,7 +333,7 @@ class TablesTest {
         lasso(s.view, s.sx(t.x + 4f), s.sy(r0.top + 4f), s.sx(t.x + 70f * t.scale), s.sy(r3.bottom - 4f))
         assertEquals(rows.take(4).toSet(), s.view.selection.toSet())
         root.findViewWithTag<View>("sel_igs").performClick()
-        latest().window!!.decorView.findViewWithTag<View>("bulk_status_7").performClick() // «Сдано в ПТО»
+        latest().window!!.decorView.findViewWithTag<View>("bulk_status_8").performClick() // «Сдано в ПТО»
         idle()
         assertTrue(rows.take(4).all { it.igs == IdTables.IGS_PTO })
         assertEquals(IdTables.IGS_NONE, rows[4].igs)

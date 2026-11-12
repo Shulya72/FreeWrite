@@ -114,7 +114,7 @@ class VolumeTest {
             for (k in listOf("zah", "con", "work", "date", "ck", "dwg", "igs", "dcust", "dpto", "who", "note")) put(JSONObject().put("k", k))
         })
         val ot = IdTables.parseTable(old)
-        assertEquals(listOf("aosr", "nsch", "zah", "con", "work", "vol", "date"), ot.cols.take(7).map { it.k })
+        assertEquals(listOf("aosr", "nsch", "uch", "zah", "con", "work", "vol", "date"), ot.cols.take(8).map { it.k })
         // № схемы и № АОСР: следующий номер — последнее число +1 с нулями.
         assertEquals("ИС-13", IdTables.nextNumber("ИС-12"))
         assertEquals("АОСР 6.1.1-026", IdTables.nextNumber("АОСР 6.1.1-025"))
@@ -122,7 +122,7 @@ class VolumeTest {
         assertEquals(listOf("ИС-14"), IdTables.nextNumbers(b, t1, TableCol.NSCH))
         val back2 = Board.fromJson(JSONObject(b.toJsonString()))
         assertEquals("ИС-13", back2.recs[1].nsch); assertEquals("АОСР 6.1.1-025", back2.recs[0].aosr)
-        assertEquals(listOf("№ АОСР", "№ схемы", "Захватка", "Конструкция", "Вид работ", "Объём по схеме", "Дата работ"), t1.visibleCols().take(7).map { it.title() })
+        assertEquals(listOf("№ АОСР", "№ схемы", "Участок", "Захватка", "Тип конструкции", "Вид работ", "Объём по схеме", "Дата работ"), t1.visibleCols().take(8).map { it.title() })
         val snap = b.snapshot()
         t1.plan.remove("бетон")
         assertEquals("170", b.restored(snap).tables[0].plan["бетон"]!!.value)

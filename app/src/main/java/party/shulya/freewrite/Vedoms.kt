@@ -26,8 +26,8 @@ class BoardVedom(var x: Float, var y: Float, var scale: Float, var kind: String,
 
 /**
  * Позиция ведомости: схема [r] (строка таблицы), порядок [o], результат [res] и его дата [rd].
- * lt/lz/lc/lw — шифр, захватка, конструкция, вид работ на момент добавления: ведомость в архиве читается, даже если
- * строку потом удалили.
+ * lt/lu/lz/lc/lw — шифр, участок, захватка, тип конструкции, вид работ на момент добавления: ведомость в архиве
+ * читается, даже если строку потом удалили.
  */
 class BoardVItem(var v: String, var r: String, var o: Double) {
     var id: String = Ids.next()
@@ -35,10 +35,14 @@ class BoardVItem(var v: String, var r: String, var o: Double) {
     var res = ""
     var rd = ""
     var lt = ""
+    var lu = ""
     var lz = ""
     var lc = ""
     var lw = ""
 }
+
+/** Подпись позиции ведомости: шифр (полное имя таблицы), участок, захватка, тип конструкции, вид работ. */
+class VLabel(val title: String, val uch: String, val zah: String, val con: String, val work: String)
 
 /**
  * Событие истории схемы (ТЗ, раздел 7): кто, когда, что было → стало ([k] — столбец: статус или дата), по какой ведомости
@@ -96,6 +100,15 @@ object Vedoms {
         OK -> Color.rgb(35, 128, 58); NO -> Color.rgb(142, 27, 47); FIX -> Color.rgb(212, 100, 12); else -> Color.rgb(138, 147, 163)
     }
 
+    /** Что значит передача по виду ведомости: «На подписи у заказчика», «На подписи АН», «Сдано в ПТО». */
+    fun giveLabel(k: String) = when (k) { AN -> "На подписи АН"; CUST -> "На подписи у заказчика"; PTO -> "Сдано в ПТО"; else -> "" }
+
+    /** Кнопка передачи: «Унесли заказчику», «Унесли на АН», «Сдали в ПТО». */
+    fun giveVerb(k: String) = when (k) { AN -> "Унесли на АН"; CUST -> "Унесли заказчику"; PTO -> "Сдали в ПТО"; else -> "" }
+
+    /** Схемы с этими статусами при сборке ведомости получают «Сборка» (дальше по пути — не трогаем). */
+    private val TO_ASSEMBLY = setOf(IdTables.IGS_WORK, IdTables.IGS_NOT_GIVEN, IdTables.IGS_BACK, IdTables.IGS_AN_NO)
+
     /** Статус ИГС, который ставит передача ведомости ("" — никакого). */
     fun giveStatus(k: String) = when (k) { AN -> IdTables.IGS_AN; CUST -> IdTables.IGS_CUST; PTO -> IdTables.IGS_PTO; else -> "" }
 
@@ -128,7 +141,7 @@ object Vedoms {
         sb.append("{\"id\":").append(q(i.id)).append(",\"v\":").append(q(i.v)).append(",\"r\":").append(q(i.r))
         sb.append(",\"o\":").append(JSONObject.numberToString(i.o))
         fun s(k: String, x: String) { if (x.isNotEmpty()) sb.append(",\"").append(k).append("\":").append(q(x)) }
-        s("res", i.res); s("rd", i.rd); s("lt", i.lt); s("lz", i.lz); s("lc", i.lc); s("lw", i.lw)
+        s("res", i.res); s("rd", i.rd); s("lt", i.lt); s("lu", i.lu); s("lz", i.lz); s("lc", i.lc); s("lw", i.lw)
         sb.append('}')
         return sb.toString()
     }
@@ -136,7 +149,7 @@ object Vedoms {
     fun parseItem(j: JSONObject) = BoardVItem(j.optString("v"), j.optString("r"), j.optDouble("o", 0.0).takeIf { it.isFinite() } ?: 0.0).also {
         it.id = j.optString("id", "")
         it.res = j.optString("res").takeIf { r -> r == OK || r == NO || r == FIX }.orEmpty()
-        it.rd = j.optString("rd"); it.lt = j.optString("lt"); it.lz = j.optString("lz"); it.lc = j.optString("lc"); it.lw = j.optString("lw")
+        it.rd = j.optString("rd"); it.lt = j.optString("lt"); it.lu = j.optString("lu"); it.lz = j.optString("lz"); it.lc = j.optString("lc"); it.lw = j.optString("lw")
     }
 
     fun eventJson(e: BoardEvent): String {
@@ -162,20 +175,20 @@ object Vedoms {
 
     fun endOrder(b: Board, v: BoardVedom): Double = (b.vitems.filter { it.v == v.id }.maxOfOrNull { it.o } ?: 0.0) + 1.0
 
-    /** Шифр, захватка, конструкция, вид работ позиции: по строке таблицы (если она есть) или как было при добавлении. */
-    fun label(b: Board, i: BoardVItem): Array<String> {
-        val r = rec(b, i) ?: return arrayOf(i.lt, i.lz, i.lc, i.lw)
-        return arrayOf(IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(), r.zah, r.con, r.work)
+    /** Шифр, участок, захватка, тип конструкции, вид работ позиции: по строке таблицы (если она есть) или как было при добавлении. */
+    fun label(b: Board, i: BoardVItem): VLabel {
+        val r = rec(b, i) ?: return VLabel(i.lt, i.lu, i.lz, i.lc, i.lw)
+        return VLabel(IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(), r.uch, r.zah, r.con, r.work)
     }
 
     fun labelText(b: Board, i: BoardVItem): String {
         val l = label(b, i)
-        return listOf(l[0], l[1].takeIf { it.isNotEmpty() }?.let { "захв. $it" }.orEmpty(), l[2], l[3]).filter { it.isNotBlank() }.joinToString(" · ")
+        return listOf(l.title, l.uch, l.zah.takeIf { it.isNotEmpty() }?.let { "захв. $it" }.orEmpty(), l.con, l.work).filter { it.isNotBlank() }.joinToString(" · ")
     }
 
     fun remember(b: Board, i: BoardVItem) {
         val r = rec(b, i) ?: return
-        i.lt = IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(); i.lz = r.zah; i.lc = r.con; i.lw = r.work
+        i.lt = IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(); i.lu = r.uch; i.lz = r.zah; i.lc = r.con; i.lw = r.work
     }
 
     /** Закрыта: ПТО — сразу после передачи; АН и заказчик — когда у всех позиций есть результат. Список не закрывается. */
@@ -191,8 +204,16 @@ object Vedoms {
     /** Открыта и ждёт ответа: передана, есть позиции без результата. */
     fun isOpen(b: Board, v: BoardVedom) = !v.isDraft && hasAnswers(v.kind) && !isClosed(b, v)
 
+    /** Кнопка состояния в шапке ведомости: «Сборка ▾», «На подписи у заказчика · 12.11.26 ▾», «Закрыта ✓», «Список». */
+    fun stateChip(b: Board, v: BoardVedom): String = when {
+        v.kind == LIST -> "Список"
+        v.isDraft -> "Сборка ▾"
+        isClosed(b, v) -> "Закрыта ✓"
+        else -> giveLabel(v.kind) + " · " + IdTables.dateShort(v.given) + " ▾"
+    }
+
     fun state(b: Board, v: BoardVedom): String = when {
-        v.isDraft -> if (v.kind == LIST) "список" else "черновик"
+        v.isDraft -> if (v.kind == LIST) "список" else "сборка"
         isClosed(b, v) -> "закрыта"
         hasAnswers(v.kind) -> "передана " + IdTables.dateShort(v.given)
         else -> "передана " + IdTables.dateShort(v.given)
@@ -226,13 +247,13 @@ object Vedoms {
         return "$p-${max + 1}"
     }
 
-    /** Другие открытые ведомости, где эта схема ждёт ответа. */
+    /** Другие ведомости, где эта схема ждёт ответа или лежит в сборке (АН, заказчик, ПТО; списки не считаются). */
     fun waitingElsewhere(b: Board, rec: BoardRec, except: BoardVedom?): List<BoardVedom> {
         val out = ArrayList<BoardVedom>()
         for (i in b.vitems) {
             if (i.r != rec.id || i.res.isNotEmpty() || i.v == except?.id) continue
             val v = vedom(b, i.v) ?: continue
-            if (!v.isDraft && hasAnswers(v.kind) && out.none { it === v }) out += v
+            if (v.kind != LIST && (v.isDraft || hasAnswers(v.kind)) && out.none { it === v }) out += v
         }
         return out
     }
@@ -256,8 +277,11 @@ object Vedoms {
         return true
     }
 
-    /** Добавить схемы в ведомость (уже бывшие в ней — пропускаются). Возвращает, сколько добавлено. */
-    fun add(b: Board, v: BoardVedom, recs: List<BoardRec>): Int {
+    /**
+     * Добавить схемы в ведомость (уже бывшие в ней — пропускаются). Возвращает, сколько добавлено. Ведомость в сборке
+     * (АН, заказчик, ПТО): схемы «В работе», «Не предоставлена», «Возврат», «Не согласована» → «Сборка» (лежат на столе).
+     */
+    fun add(b: Board, v: BoardVedom, recs: List<BoardRec>, who: String = "", now: Long = System.currentTimeMillis()): Int {
         val have = b.vitems.filter { it.v == v.id }.map { it.r }.toHashSet()
         var o = endOrder(b, v)
         var n = 0
@@ -266,10 +290,44 @@ object Vedoms {
             val i = BoardVItem(v.id, r.id, o)
             remember(b, i)
             b.vitems += i
+            if (v.isDraft && v.kind != LIST && r.igs in TO_ASSEMBLY) set(b, r, TableCol.IGS, IdTables.IGS_ASSEMBLY, who, v.num, "в сборке", now)
             o += 1.0
             n++
         }
         return n
+    }
+
+    /**
+     * Схемы ушли из сборки (убрали из ведомости, удалили ведомость в сборке): «Сборка» → статус, что был до неё (по истории),
+     * иначе «В работе».
+     */
+    fun unassemble(b: Board, v: BoardVedom, items: List<BoardVItem>, who: String = "", now: Long = System.currentTimeMillis()) {
+        if (!v.isDraft || v.kind == LIST) return
+        for (i in items) {
+            val r = rec(b, i) ?: continue
+            if (r.igs != IdTables.IGS_ASSEMBLY) continue
+            val prev = b.events.filter { it.r == r.id && it.k == TableCol.IGS && it.to == IdTables.IGS_ASSEMBLY }.maxByOrNull { it.at }?.from
+            set(b, r, TableCol.IGS, prev?.takeIf { it.isNotEmpty() && it != IdTables.IGS_ASSEMBLY } ?: IdTables.IGS_WORK, who, v.num, "убрана из сборки", now)
+        }
+    }
+
+    /** Можно ли вернуть переданную ведомость в сборку: ответов ещё нет (ПТО — всегда). */
+    fun canUngive(b: Board, v: BoardVedom) = !v.isDraft && v.kind != LIST && (v.kind == PTO || items(b, v).none { it.res.isNotEmpty() })
+
+    /** Вернуть в сборку (ошиблись с «Унесли»): статус передачи → «Сборка», дата передачи у схем убирается. */
+    fun ungive(b: Board, v: BoardVedom, who: String, now: Long = System.currentTimeMillis()) {
+        if (!canUngive(b, v)) return
+        val st = giveStatus(v.kind)
+        for (i in items(b, v)) {
+            val r = rec(b, i)
+            if (r != null) {
+                if (r.igs == st) set(b, r, TableCol.IGS, IdTables.IGS_ASSEMBLY, who, v.num, "снова в сборке", now)
+                if (v.kind == CUST && r.dcust == v.given) set(b, r, TableCol.DCUST, "", who, v.num, "снова в сборке", now)
+                if (v.kind == PTO && r.dpto == v.given) set(b, r, TableCol.DPTO, "", who, v.num, "снова в сборке", now)
+            }
+            if (v.kind == PTO) { i.res = ""; i.rd = "" }
+        }
+        v.given = ""
     }
 
     /**
@@ -282,7 +340,7 @@ object Vedoms {
         for (i in items(b, v)) {
             remember(b, i)
             val r = rec(b, i) ?: continue
-            if (st.isNotEmpty()) set(b, r, TableCol.IGS, st, who, v.num, "передана в ведомости", now)
+            if (st.isNotEmpty()) set(b, r, TableCol.IGS, st, who, v.num, giveVerb(v.kind).lowercase(), now)
             when (v.kind) {
                 CUST -> set(b, r, TableCol.DCUST, date, who, v.num, "", now)
                 PTO -> { set(b, r, TableCol.DPTO, date, who, v.num, "", now); i.res = OK; i.rd = date }
