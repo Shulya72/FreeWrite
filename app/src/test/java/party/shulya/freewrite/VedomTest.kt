@@ -75,9 +75,11 @@ class VedomTest {
         val v = BoardVedom(1500f, 100f, 1.5f, Vedoms.CUST, Vedoms.nextNum(b, Vedoms.CUST))
         b.vedoms += v
         assertEquals("З-1", v.num)
-        assertEquals(15, Vedoms.add(b, v, recs))
+        assertEquals(15, Vedoms.add(b, v, recs, "Владимир Шульмин", now = 500L))
         assertEquals("повторно не добавляются", 0, Vedoms.add(b, v, recs.take(3)))
-        assertEquals("черновик", Vedoms.state(b, v))
+        assertEquals("сборка", Vedoms.state(b, v))
+        assertEquals("Сборка ▾", Vedoms.stateChip(b, v))
+        assertTrue("в сборке — схемы «Сборка»", recs.all { it.igs == IdTables.IGS_ASSEMBLY })
 
         // Передать 10.11: всем — «На подписи у заказчика» и «Отдал заказчику».
         Vedoms.give(b, v, "2026-11-10", "Владимир Шульмин", now = 1000L)
@@ -107,7 +109,8 @@ class VedomTest {
         // История схемы: кто, когда, было → стало, по какой ведомости.
         val h = Vedoms.history(b, r0)
         assertEquals(listOf("ИГС: На подписи у заказчика → Сдано в ПТО · ведомость З-1", "Сдано в ПТО: — → 11.11.2026 · ведомость З-1",
-            "ИГС: В работе → На подписи у заказчика · ведомость З-1", "Отдал заказчику: — → 10.11.2026 · ведомость З-1").sorted(),
+            "ИГС: Сборка → На подписи у заказчика · ведомость З-1", "Отдал заказчику: — → 10.11.2026 · ведомость З-1",
+            "ИГС: В работе → Сборка · ведомость З-1").sorted(),
             h.map { Vedoms.eventText(b, it) }.sorted())
         assertEquals(setOf("Владимир Шульмин"), h.map { it.who }.toSet())
         assertEquals("Иван Петров", Vedoms.history(b, Vedoms.rec(b, items[12])!!).first().who)
@@ -142,7 +145,7 @@ class VedomTest {
         assertTrue(Remote.pending(b).map { it.kind }.toSet().containsAll(listOf("vedom", "vitem", "event")))
         val base = sample()
         val v2 = BoardVedom(0f, 0f, 1f, Vedoms.AN, "А-1").also { base.vedoms += it }
-        Vedoms.add(base, v2, base.recs.take(4))
+        Vedoms.add(base, v2, base.recs.take(4), "Владимир Шульмин")
         val t10 = java.util.Calendar.getInstance().apply { clear(); set(2026, 10, 10, 12, 0) }.timeInMillis
         Vedoms.give(base, v2, "2026-11-10", "Владимир Шульмин", now = t10)
         base.toJsonString(stampDevice = "dev0")
@@ -169,6 +172,47 @@ class VedomTest {
         assertEquals(setOf(ia[0].r, ia[2].r, ia[3].r), sa.ctrlLong.map { it.id }.toSet())
         assertEquals(setOf(ia[0].r), IgsSummary(pa, longDays = 7, today = "2026-11-19").ctrlLong.map { it.id }.toSet().minus(setOf(ia[2].r, ia[3].r)))
         assertEquals("2026-11-10", sa.signingSince(Vedoms.rec(pa, ia[2])!!))
+    }
+
+    /** 0.22.1: «Сборка» → «На подписи у заказчика» (Владимир); убрали из сборки — прежний статус; назад в сборку; старые доски. */
+    @Test
+    fun assemblyThenCarriedToCustomer() {
+        val b = sample()
+        val recs = b.recs.take(4)
+        recs[3].igs = IdTables.IGS_BACK        // возврат на корректировку — тоже в сборку
+        val last = b.recs.last()               // «Конструкция не выполнена» — статус не трогаем
+        val v = BoardVedom(0f, 0f, 1f, Vedoms.CUST, "З-1").also { b.vedoms += it }
+        Vedoms.add(b, v, recs + last, "Владимир Шульмин")
+        assertTrue(recs.all { it.igs == IdTables.IGS_ASSEMBLY })
+        assertEquals(IdTables.IGS_NONE, last.igs)
+        assertEquals("Сборка", IdTables.status(b, BoardStatus.ID, IdTables.IGS_ASSEMBLY).name)
+        // Убрали из сборки — статус, что был до неё.
+        val it3 = Vedoms.items(b, v).first { i -> i.r == recs[3].id }
+        Vedoms.unassemble(b, v, listOf(it3), "Владимир Шульмин")
+        b.vitems.remove(it3)
+        assertEquals(IdTables.IGS_BACK, recs[3].igs)
+        // Уже в сборке в другой ведомости — предупреждение при сборе.
+        assertEquals(listOf(v), Vedoms.waitingElsewhere(b, recs[0], null))
+        // Унесли заказчику — «На подписи у заказчика», дата; кнопка состояния.
+        Vedoms.give(b, v, "2026-11-12", "Владимир Шульмин")
+        assertTrue(recs.take(3).all { it.igs == IdTables.IGS_CUST && it.dcust == "2026-11-12" })
+        assertEquals("На подписи у заказчика · 12.11.26 ▾", Vedoms.stateChip(b, v))
+        // Ошиблись — назад в сборку (ответов ещё нет): снова «Сборка», дата убрана.
+        assertTrue(Vedoms.canUngive(b, v))
+        Vedoms.ungive(b, v, "Владимир Шульмин")
+        assertTrue(v.isDraft)
+        assertTrue(recs.take(3).all { it.igs == IdTables.IGS_ASSEMBLY && it.dcust.isEmpty() })
+        Vedoms.give(b, v, "2026-11-13", "Владимир Шульмин")
+        Vedoms.answer(b, v, Vedoms.items(b, v)[0], Vedoms.OK, "2026-11-14", "Владимир Шульмин")
+        assertTrue("есть ответ — назад нельзя", !Vedoms.canUngive(b, v))
+        // Старая доска (0.21) — статус «Сборка» встаёт после «В работе», один раз, одинаково на всех планшетах.
+        val old = Board.create("Старая")
+        old.statuses.removeAll { it.id == IdTables.IGS_ASSEMBLY }
+        val back = Board.fromJson(JSONObject(old.toJsonString()))
+        val ids = back.statuses(BoardStatus.ID).map { it.id }
+        assertEquals(ids.indexOf(IdTables.IGS_WORK) + 1, ids.indexOf(IdTables.IGS_ASSEMBLY))
+        assertEquals(1, ids.count { it == IdTables.IGS_ASSEMBLY })
+        assertEquals(ids, Board.fromJson(JSONObject(back.toJsonString())).statuses(BoardStatus.ID).map { it.id })
     }
 
     @Test
@@ -306,7 +350,9 @@ class VedomTest {
         s.view.invalidate()
         shot(s.view, "vedom-draft.png")
 
-        // «Передать →» внизу ведомости → окно с датой → «Передать»: всем статус и дата.
+        // В сборке: схемы — «Сборка», кнопка состояния в шапке — «Сборка ▾».
+        assertTrue(items.all { Vedoms.rec(s.b, it)!!.igs == IdTables.IGS_ASSEMBLY })
+        // «На подписи у заказчика →» внизу ведомости → окно с датой → «Унесли заказчику»: всем статус и дата.
         val vb = s.view.vedomDraw.bounds(s.b, v, RectF())
         val lay = s.view.vedomDraw.layout(s.b, v)
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, s.sx(v.x + (lay.giveX + 20f) * v.scale), s.sy(vb.bottom - 10f * v.scale))
@@ -436,7 +482,23 @@ class VedomTest {
         assertEquals("Лоток №1", s.b.recs.last().zah)
         assertEquals(4, Vedoms.items(s.b, v).size)
         // Передать АН → согласовано → «Согласованные → заказчику».
-        Vedoms.give(s.b, v, "2026-11-10", "Владимир Шульмин")
+        // Кнопка состояния в шапке: касание → «Сборка» / «На подписи АН» → окно с датой → «Унесли на АН».
+        val hb = s.view.vedomDraw.bounds(s.b, v, RectF())
+        s.view.fitRect(hb.left, hb.top, hb.right, hb.bottom); idle()
+        assertEquals("Сборка ▾", s.view.vedomDraw.layout(s.b, v).state)
+        val hh = s.view.vedomDraw.hit(s.b, v, hb.right - 30f * v.scale, v.y + 22f * v.scale)!!
+        assertEquals(VedomHit.STATE, hh.part)
+        s.a.vedomUi.onTap(v, hh, pen = false)
+        idle()
+        latest().window!!.decorView.findViewWithTag<View>("vstate_give").performClick()
+        idle()
+        assertEquals("Унесли на АН", latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).text.toString())
+        latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+        idle()
+        assertTrue(!v.isDraft)
+        assertTrue(Vedoms.items(s.b, v).mapNotNull { Vedoms.rec(s.b, it) }.all { it.igs == IdTables.IGS_AN })
+        s.view.invalidate()
+        shot(s.view, "vedom-an-given.png")
         s.a.vedomUi.answerDate = "2026-11-11"
         s.a.vedomUi.setAnswer(v, Vedoms.items(s.b, v), Vedoms.OK)
         idle()

@@ -154,6 +154,7 @@ object IdTables {
     const val IGS_NONE = "i0"       // Конструкция не выполнена
     const val IGS_NOT_GIVEN = "i5"  // Не предоставлена
     const val IGS_WORK = "i1"       // В работе
+    const val IGS_ASSEMBLY = "i9"   // Сборка — схема готова, лежит в пачке ведомости на столе (0.22.1, Владимир)
     const val IGS_AN = "i6"         // На подписи АН
     const val IGS_AN_NO = "i7"      // Не согласована
     const val IGS_CUST = "i2"       // На подписи у заказчика
@@ -171,6 +172,7 @@ object IdTables {
         BoardStatus("i0", "Конструкция не выполнена", Color.rgb(138, 147, 163)),
         BoardStatus("i5", "Не предоставлена", Color.rgb(198, 40, 40)),
         BoardStatus("i1", "В работе", Color.rgb(31, 95, 209)),
+        BoardStatus("i9", "Сборка", Color.rgb(0, 131, 143)),
         BoardStatus("i6", "На подписи АН", Color.rgb(123, 63, 196)),
         BoardStatus("i7", "Не согласована", Color.rgb(142, 27, 47)),
         BoardStatus("i2", "На подписи у заказчика", Color.rgb(184, 138, 0)),
@@ -190,6 +192,9 @@ object IdTables {
         BoardStatus("d1", "Нет", Color.rgb(198, 40, 40), BoardStatus.DWG),
         BoardStatus("d2", "Есть", Color.rgb(35, 128, 58), BoardStatus.DWG).also { it.done = true },
     )
+
+    /** Номера, которые есть только в списке ИГС (не в старых списках ИД): по ним узнаём список ИГС. */
+    private val IGS_ONLY = setOf("i5", "i6", "i7", "i8")
 
     /** Названия статусов ИД 0.18 по умолчанию (номер → название): такие переименовываем в ИГС. */
     private val OLD_ID = mapOf("i0" to "Конструкция не принята", "i1" to "В оформлении", "i2" to "На подписи у Заказчика",
@@ -231,6 +236,14 @@ object IdTables {
             b.statuses.addAll(rest)
         }
         b.statuses.firstOrNull { it.group == BoardStatus.ID && it.id == IGS_NONE && it.name == "Не выполнено" }?.name = "Конструкция не выполнена"
+        // 0.22.1: статус «Сборка» (схема лежит в пачке ведомости) — после «В работе»; одинаково на всех планшетах.
+        val ids2 = b.statuses.filter { it.group == BoardStatus.ID }
+        if (ids2.any { it.id in IGS_ONLY } && ids2.none { it.id == IGS_ASSEMBLY || it.name.equals("Сборка", ignoreCase = true) }) {
+            val st = igsStatuses().first { it.id == IGS_ASSEMBLY }
+            val after = b.statuses.indexOfFirst { it.group == BoardStatus.ID && it.id == IGS_WORK }
+            val at = if (after >= 0) after + 1 else b.statuses.indexOfLast { it.group == BoardStatus.ID } + 1
+            b.statuses.add(at.coerceIn(0, b.statuses.size), st)
+        }
         if (b.statuses.none { it.group == BoardStatus.CK }) b.statuses.addAll(ckStatuses())
         if (b.statuses.none { it.group == BoardStatus.DWG }) b.statuses.addAll(dwgStatuses())
     }

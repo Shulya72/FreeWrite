@@ -21,6 +21,8 @@ class VedomHit(val part: Int, val item: BoardVItem?, val col: String?) {
         const val CELL = 2
         const val ADD = 3
         const val GIVE = 4
+        /** Кнопка состояния в шапке: «Сборка ▾» / «На подписи у заказчика ▾». */
+        const val STATE = 5
     }
 }
 
@@ -42,6 +44,7 @@ class VedomDraw {
         const val PAD = 9f
         const val FONT = 13f
         const val HEAD_FONT = 11f
+        const val CHIP_PAD = 10f
         const val TITLE_FONT = 19f
         const val N = "n"
         const val CIPHER = "cipher"
@@ -83,7 +86,7 @@ class VedomDraw {
         cols += TableCol.ZAH; cols += TableCol.CON; cols += TableCol.WORK; cols += TableCol.IGS
         if (answers) { cols += RES; cols += RD }
         val title = Vedoms.title(v)
-        val state = Vedoms.state(b, v)
+        val state = Vedoms.stateChip(b, v)
         val info = listOf(v.to.takeIf { it.isNotBlank() }?.let { "Кому: $it" }.orEmpty(), Vedoms.summary(b, v, today)).filter { it.isNotEmpty() }.joinToString(" · ")
         val texts = Array(items.size) { idx ->
             val i = items[idx]
@@ -131,10 +134,10 @@ class VedomDraw {
             widths[ci] = w
         }
         var total = widths.sum()
-        val need = max(PAD * 2 + tw(title, TITLE_FONT, true) + 24f + tw(state, 12f, true) + PAD, PAD * 2 + tw(info, 12f, false))
+        val need = max(PAD * 2 + tw(title, TITLE_FONT, true) + 24f + tw(state, 12.5f, true) + CHIP_PAD * 2 + PAD, PAD * 2 + tw(info, 12f, false))
         val foot = v.isDraft
         val addW = PAD + tw("+ схемы", FONT, true) + PAD * 2
-        val need2 = if (foot && v.kind != Vedoms.LIST) addW + tw("Передать →", FONT, true) + PAD * 2 else addW
+        val need2 = if (foot && v.kind != Vedoms.LIST) addW + tw(Vedoms.giveLabel(v.kind) + " →", FONT, true) + PAD * 2 else addW
         val needAll = max(need, need2)
         if (needAll > total) { widths[widths.size - 1] += needAll - total; total = needAll }
         val colX = FloatArray(cols.size + 1)
@@ -154,7 +157,14 @@ class VedomDraw {
         val u = (x - v.x) / v.scale
         val w = (y - v.y) / v.scale
         if (u < 0f || u > l.w || w < 0f || w > l.h) return null
-        if (w < HEAD_H) return VedomHit(VedomHit.TITLE, null, null)
+        if (w < HEAD_H) {
+            // Кнопка состояния справа в шапке (с запасом под палец).
+            text.textSize = 12.5f; text.isFakeBoldText = true
+            val cw = text.measureText(l.state) + CHIP_PAD * 2
+            text.isFakeBoldText = false
+            if (v.kind != Vedoms.LIST && w < 40f && u > l.w - PAD * 1.4f - cw - 12f) return VedomHit(VedomHit.STATE, null, null)
+            return VedomHit(VedomHit.TITLE, null, null)
+        }
         var col: String? = l.cols.lastOrNull()
         for (i in l.cols.indices) if (u < l.colX[i + 1]) { col = l.cols[i]; break }
         if (w < rowsTop()) return VedomHit(VedomHit.HEAD, null, col)
@@ -251,10 +261,19 @@ class VedomDraw {
         text.textSize = TITLE_FONT * k
         text.color = Ui.INK
         canvas.drawText(l.title, x0 + PAD * 1.4f * k, y0 + 22f * k + text.textSize * 0.36f, text)
-        text.textSize = 12f * k
-        text.color = Board.statusFg(kc)
+        // Состояние — кнопкой: «Сборка ▾» / «На подписи у заказчика · дата ▾» (касание — выбрать), «Закрыта ✓».
+        text.textSize = 12.5f * k
         val sw = text.measureText(l.state)
-        canvas.drawText(l.state, x0 + w - PAD * 1.4f * k - sw, y0 + 22f * k + text.textSize * 0.36f, text)
+        val fg = Board.statusFg(kc)
+        rect.set(x0 + w - PAD * 1.4f * k - sw - CHIP_PAD * 2 * k, y0 + 10f * k, x0 + w - PAD * 1.4f * k, y0 + 34f * k)
+        if (v.kind != Vedoms.LIST) {
+            fill.color = if (v.isDraft) Color.WHITE else fg
+            canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, fill)
+            line.color = fg; line.strokeWidth = 1.4f * k
+            canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, line)
+        }
+        text.color = if (v.kind != Vedoms.LIST && !v.isDraft) Color.WHITE else fg
+        canvas.drawText(l.state, rect.left + CHIP_PAD * k, y0 + 22f * k + text.textSize * 0.36f, text)
         text.isFakeBoldText = false
         text.color = Ui.INK2
         canvas.drawText(fit(l.info, w - PAD * 2.8f * k), x0 + PAD * 1.4f * k, y0 + 45f * k + text.textSize * 0.36f, text)
@@ -269,7 +288,7 @@ class VedomDraw {
             text.color = Ui.ACCENT
             val fy = bottom + FOOT_H / 2f * k + text.textSize * 0.36f
             canvas.drawText("+ схемы", x0 + PAD * k, fy, text)
-            if (v.kind != Vedoms.LIST) canvas.drawText("Передать →", x0 + (l.giveX + PAD) * k, fy, text)
+            if (v.kind != Vedoms.LIST) canvas.drawText(Vedoms.giveLabel(v.kind) + " →", x0 + (l.giveX + PAD) * k, fy, text)
             text.isFakeBoldText = false
         }
         outline(canvas, x0, y0, w, h, k, kc)

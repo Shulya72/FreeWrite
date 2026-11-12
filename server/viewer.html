@@ -553,7 +553,8 @@ function vClosed(v) {
   if (v.kind === "an" || v.kind === "cust") { const it = vItems(v); return it.length > 0 && it.every((i) => !!i.res); }
   return false;
 }
-function vState(v) { return !v.given ? (v.kind === "list" ? "список" : "черновик") : vClosed(v) ? "закрыта" : "передана " + dShort(v.given); }
+const VGIVE = { an: "На подписи АН", cust: "На подписи у заказчика", pto: "Сдано в ПТО" };
+function vState(v) { return !v.given ? (v.kind === "list" ? "список" : "сборка") : vClosed(v) ? "закрыта" : (VGIVE[v.kind] || "передана") + " · " + dShort(v.given); }
 function vSummary(v) {
   const it = vItems(v); const head = plural(it.length, "схема", "схемы", "схем");
   if (!vAnswers(v)) return head;
@@ -654,7 +655,7 @@ function drawVedom(v, z) {
   ctx.font = 12 * k + "px " + FONT; ctx.fillStyle = C.ink2;
   ctx.fillText(fitText(L.info, w - VF.P * 2.8 * k), x0 + VF.P * 1.4 * k, y0 + 45 * k + 12 * k * 0.36);
   if (!L.items.length) { ctx.font = VF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText("Схем пока нет", x0 + VF.P * k, top + R / 2 + VF.FONT * k * 0.36); }
-  if (L.foot) { ctx.font = VF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText(v.kind === "list" ? "список" : "черновик — ещё не передана", x0 + VF.P * k, bottom + VF.F / 2 * k + VF.FONT * k * 0.36); }
+  if (L.foot) { ctx.font = VF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText(v.kind === "list" ? "список" : "сборка — схемы на столе, ещё не унесли", x0 + VF.P * k, bottom + VF.F / 2 * k + VF.FONT * k * 0.36); }
   outline();
 }
 

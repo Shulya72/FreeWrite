@@ -332,7 +332,7 @@ class TablesTest {
         lasso(s.view, s.sx(t.x + 4f), s.sy(r0.top + 4f), s.sx(t.x + 70f * t.scale), s.sy(r3.bottom - 4f))
         assertEquals(rows.take(4).toSet(), s.view.selection.toSet())
         root.findViewWithTag<View>("sel_igs").performClick()
-        latest().window!!.decorView.findViewWithTag<View>("bulk_status_7").performClick() // «Сдано в ПТО»
+        latest().window!!.decorView.findViewWithTag<View>("bulk_status_8").performClick() // «Сдано в ПТО»
         idle()
         assertTrue(rows.take(4).all { it.igs == IdTables.IGS_PTO })
         assertEquals(IdTables.IGS_NONE, rows[4].igs)

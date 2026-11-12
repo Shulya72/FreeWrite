@@ -61,7 +61,7 @@ class VedomUi(private val a: BoardActivity) {
         val today = IdTables.today()
         val groups = listOf(
             "Ждут ответа" to b.vedoms.filter { Vedoms.isOpen(b, it) }.sortedBy { it.given },
-            "Черновики" to b.vedoms.filter { it.isDraft && it.kind != Vedoms.LIST },
+            "В сборке" to b.vedoms.filter { it.isDraft && it.kind != Vedoms.LIST },
             "Списки" to b.vedoms.filter { it.kind == Vedoms.LIST },
             "Закрыты — архив" to b.vedoms.filter { Vedoms.isClosed(b, it) }.sortedByDescending { it.given },
         )
@@ -84,7 +84,7 @@ class VedomUi(private val a: BoardActivity) {
             }
         }
         if (b.vedoms.isEmpty()) box.addView(Ui.text(a, "Ведомостей пока нет. Ведомость — пачка схем, которую отдают АН, заказчику или в ПТО: " +
-            "собрали схемы → «Передать» — всем разом статус и дата → отмечаете ответы по частям, в разные дни.", 14f, Ui.INK2).apply { setPadding(0, dp(12f), 0, 0) })
+            "собрали схемы («Сборка» — лежат на столе) → «Унесли» — всем разом статус и дата → отмечаете ответы по частям, в разные дни.", 14f, Ui.INK2).apply { setPadding(0, dp(12f), 0, 0) })
         dialog = AlertDialog.Builder(a).setTitle("Ведомости").setView(ScrollView(a).apply { addView(box) })
             .setNegativeButton("Закрыть", null).show()
     }
@@ -153,13 +153,13 @@ class VedomUi(private val a: BoardActivity) {
                 val nv = BoardVedom(x, y, s, kind, num.text.toString().trim().ifEmpty { Vedoms.nextNum(b, kind) })
                 nv.to = to.text.toString().trim()
                 b.vedoms += nv
-                val n = if (recs.isNullOrEmpty()) 0 else Vedoms.add(b, nv, recs)
+                val n = if (recs.isNullOrEmpty()) 0 else Vedoms.add(b, nv, recs, who())
                 a.changed()
                 v.clearSelection()
                 goTo(nv)
                 if (recs.isNullOrEmpty()) collectDialog(nv)
                 else {
-                    a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")}. Дальше — «Передать»", 2500)
+                    a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} — «Сборка». Унесёте — «${Vedoms.giveLabel(kind)} →»", 2500)
                     warnWaiting(nv, recs)
                 }
             }
@@ -196,6 +196,7 @@ class VedomUi(private val a: BoardActivity) {
         when (h.part) {
             VedomHit.ADD -> collectDialog(x)
             VedomHit.GIVE -> giveDialog(x)
+            VedomHit.STATE -> stateDialog(x)
             VedomHit.CELL -> {
                 val i = h.item ?: return
                 if (h.col == VedomDraw.RES || h.col == VedomDraw.RD) { resultPopup(x, listOf(i)); return }
@@ -249,14 +250,59 @@ class VedomUi(private val a: BoardActivity) {
         val passed = items.any { Vedoms.vedom(b, it.v)?.isDraft == false }
         fun go() {
             a.pushUndo()
+            // Из сборки: «Сборка» → статус, что был до неё.
+            for ((vid, its) in items.groupBy { it.v }) Vedoms.vedom(b, vid)?.let { Vedoms.unassemble(b, it, its, who()) }
             b.vitems.removeAll { i -> items.any { it === i } }
             v.clearSelection()
             a.changed()
-            a.hint("Убрано из ведомости: ${items.size}. Статусы схем не менялись", 2000)
+            a.hint("Убрано из ведомости: ${items.size}" + if (passed) ". Статусы схем не менялись" else "", 2000)
         }
         if (!passed && items.size == 1) { go(); return }
-        AlertDialog.Builder(a).setMessage("Убрать из ведомости ${Ui.plural(items.size, "схему", "схемы", "схем")}? Статусы и даты схем не меняются. «Отменить» вернёт.")
+        AlertDialog.Builder(a).setMessage("Убрать из ведомости ${Ui.plural(items.size, "схему", "схемы", "схем")}? " +
+            (if (passed) "Статусы и даты схем не меняются." else "У схем вернётся статус, что был до «Сборки».") + " «Отменить» вернёт.")
             .setPositiveButton("Убрать") { _, _ -> go() }.setNegativeButton("Отмена", null).show()
+    }
+
+    /**
+     * Кнопка состояния в шапке ведомости: «Сборка» (схемы лежат на столе) или «На подписи у заказчика» (унесли; для АН —
+     * «На подписи АН», для ПТО — «Сдано в ПТО»). Из «Сборки» — окно с датой; назад в «Сборку» — пока нет ответов.
+     */
+    fun stateDialog(x: BoardVedom) {
+        if (x.kind == Vedoms.LIST) return
+        if (Vedoms.isClosed(b, x) && x.kind != Vedoms.PTO) { a.hint("Ведомость ${x.num} закрыта — ответы получены по всем схемам", 2000); return }
+        var dlg: AlertDialog? = null
+        val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16f), dp(4f), dp(16f), dp(8f)) }
+        fun option(title: String, sub: String, color: Int, cur: Boolean, tag: String, f: () -> Unit) {
+            val fg = Board.statusFg(color)
+            box.addView(LinearLayout(a).apply {
+                orientation = LinearLayout.VERTICAL
+                background = GradientDrawable().apply { cornerRadius = Ui.dpf(a, 12f); setColor(Board.statusBg(color)); setStroke(dp(if (cur) 3f else 1.5f), fg) }
+                setPadding(dp(14f), dp(10f), dp(14f), dp(10f))
+                minimumHeight = dp(56f)
+                this.tag = tag; isClickable = true
+                setOnClickListener { dlg?.dismiss(); if (!cur) f() }
+                addView(Ui.text(a, title + if (cur) "  — сейчас" else "", 16f, fg, bold = true))
+                addView(Ui.text(a, sub, 13f, Ui.INK2))
+            }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8f) })
+        }
+        val asm = IdTables.status(b, BoardStatus.ID, IdTables.IGS_ASSEMBLY)
+        val gv = IdTables.status(b, BoardStatus.ID, Vedoms.giveStatus(x.kind))
+        option("Сборка", "схемы готовы и лежат на столе — у схем статус «${asm.name}»", asm.color, x.isDraft, "vstate_asm") {
+            if (!Vedoms.canUngive(b, x)) { a.hint("Уже есть ответы — вернуть в сборку нельзя", 2000); return@option }
+            AlertDialog.Builder(a).setTitle("Вернуть ${x.num} в сборку?")
+                .setMessage("Схемы снова «${asm.name}»" + (if (x.kind == Vedoms.CUST) ", дата «Отдал заказчику» убирается" else if (x.kind == Vedoms.PTO) ", дата «Сдано в ПТО» убирается" else "") + ". «Отменить» вернёт.")
+                .setPositiveButton("Вернуть") { _, _ ->
+                    a.pushUndo(); Vedoms.ungive(b, x, who()); a.changed(); a.buildSelectionBar()
+                    a.hint("${x.num} — снова сборка", 1500)
+                }.setNegativeButton("Отмена", null).show()
+        }
+        option(Vedoms.giveLabel(x.kind), when (x.kind) {
+            Vedoms.CUST -> "унесли заказчику — у схем «${gv.name}» и дата «Отдал заказчику»"
+            Vedoms.AN -> "унесли на АН — у схем «${gv.name}»"
+            else -> "отдали в ПТО — у схем «${gv.name}» и дата «Сдано в ПТО»"
+        } + if (!x.isDraft) " · ${IdTables.dateLong(x.given)}" else "", gv.color, !x.isDraft, "vstate_give") { giveDialog(x) }
+        dlg = AlertDialog.Builder(a).setTitle("${Vedoms.title(x)} — состояние").setView(ScrollView(a).apply { addView(box) })
+            .setNegativeButton("Закрыть", null).show()
     }
 
     // ---------------------------------------------------------------- сбор
@@ -313,7 +359,7 @@ class VedomUi(private val a: BoardActivity) {
                     val line = listOf(IdTables.fullTitle(b, t), t.colName(TableCol.ZAH).lowercase().take(5) + ". " + r.zah, r.con, r.work).filter { it.isNotBlank() }.joinToString(" · ")
                     this.text = line + "  [" + st.name + "]" + when {
                         inThis -> "  — уже в этой ведомости"
-                        elsewhere.isNotEmpty() -> "  ⚠ ждёт ответа в " + elsewhere.joinToString { it.num }
+                        elsewhere.isNotEmpty() -> "  ⚠ уже в ведомости " + elsewhere.joinToString { it.num }
                         else -> ""
                     }
                     setTextColor(if (elsewhere.isNotEmpty()) Ui.WARN else Ui.INK)
@@ -364,9 +410,9 @@ class VedomUi(private val a: BoardActivity) {
                 val pick = shown.filter { checked[it.id] == true && it.id !in have }
                 if (pick.isEmpty()) { a.hint("Ничего не отмечено", 1500); return@setPositiveButton }
                 a.pushUndo()
-                val n = Vedoms.add(b, x, pick)
+                val n = Vedoms.add(b, x, pick, who())
                 a.changed()
-                a.hint("В ведомость ${x.num} добавлено: ${Ui.plural(n, "схема", "схемы", "схем")}" + if (x.isDraft && x.kind != Vedoms.LIST) ". Дальше — «Передать»" else "", 2500)
+                a.hint("В ведомость ${x.num} добавлено: ${Ui.plural(n, "схема", "схемы", "схем")}" + if (x.isDraft && x.kind != Vedoms.LIST) ". Сборка — унесёте: «${Vedoms.giveLabel(x.kind)} →»" else "", 2500)
             }
             .setNeutralButton("Вписать вручную", null)
             .setNegativeButton("Отмена", null)
@@ -383,8 +429,8 @@ class VedomUi(private val a: BoardActivity) {
                 " — " + o.joinToString { it.num }
         }
         if (lines.isEmpty()) return
-        AlertDialog.Builder(a).setTitle("Уже ждут ответа")
-            .setMessage("Эти схемы уже ждут ответа в других ведомостях:\n" + lines.take(20).joinToString("\n") + if (lines.size > 20) "\n…" else "")
+        AlertDialog.Builder(a).setTitle("Уже в других ведомостях")
+            .setMessage("Эти схемы уже в других ведомостях (в сборке или ждут ответа):\n" + lines.take(20).joinToString("\n") + if (lines.size > 20) "\n…" else "")
             .setPositiveButton("Понятно", null).show()
     }
 
@@ -457,7 +503,7 @@ class VedomUi(private val a: BoardActivity) {
                 val r = BoardRec(table.id, o).apply { this.zah = zah; this.con = con; this.work = w }
                 b.recs += r; made += r; o += 1.0
             }
-            val n = Vedoms.add(b, x, made)
+            val n = Vedoms.add(b, x, made, who())
             a.changed()
             a.hint("Создано в таблице «${IdTables.fullTitle(b, table)}»: ${Ui.plural(made.size, "строка", "строки", "строк")}, в ведомость — $n", 2500)
             then()
@@ -486,7 +532,7 @@ class VedomUi(private val a: BoardActivity) {
         }
         if (found.isNotEmpty()) {
             a.pushUndo()
-            val n = Vedoms.add(b, x, found)
+            val n = Vedoms.add(b, x, found, who())
             a.changed()
             a.hint(if (n == found.size) "Добавлено: ${Ui.plural(n, "схема", "схемы", "схем")}" else "Добавлено: $n (остальные уже были в ведомости)", 1800)
             warnWaiting(x, found)
@@ -510,10 +556,10 @@ class VedomUi(private val a: BoardActivity) {
 
     // ---------------------------------------------------------------- передача
 
-    /** «Передать»: дата (сегодня, можно поправить) → всем схемам разом статус и дата. */
+    /** Из «Сборки» — «Унесли» (на подпись заказчику / на АН / в ПТО): дата (сегодня, можно поправить) → всем схемам статус и дата. */
     fun giveDialog(x: BoardVedom) {
         if (x.kind == Vedoms.LIST) { a.hint("Список не передают — это просто список схем", 1800); return }
-        if (!x.isDraft) { a.hint("Ведомость уже передана ${IdTables.dateLong(x.given)}", 1800); return }
+        if (!x.isDraft) { a.hint("${x.num} уже «${Vedoms.giveLabel(x.kind)}» с ${IdTables.dateLong(x.given)}", 1800); return }
         val items = Vedoms.items(b, x)
         if (items.isEmpty()) { a.hint("Сначала добавьте схемы — «+ схемы»", 1800); return }
         var date = IdTables.today()
@@ -525,17 +571,17 @@ class VedomUi(private val a: BoardActivity) {
         }
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0) }
         box.addView(Ui.text(a, "${Ui.plural(items.size, "схема", "схемы", "схем")} $what", 15f, Ui.INK))
-        val dateBtn = Ui.pill(a, "Дата передачи: ${IdTables.dateLong(date)}", Ui.INK, Ui.DESK).apply { tag = "give_date" }
-        dateBtn.setOnClickListener { pickDate(date) { d -> if (d.isNotEmpty()) { date = d; dateBtn.text = "Дата передачи: ${IdTables.dateLong(date)}" } } }
+        val dateBtn = Ui.pill(a, "Дата: ${IdTables.dateLong(date)}", Ui.INK, Ui.DESK).apply { tag = "give_date" }
+        dateBtn.setOnClickListener { pickDate(date) { d -> if (d.isNotEmpty()) { date = d; dateBtn.text = "Дата: ${IdTables.dateLong(date)}" } } }
         box.addView(dateBtn, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(12f) })
-        AlertDialog.Builder(a).setTitle("Передать ${Vedoms.title(x)}")
+        AlertDialog.Builder(a).setTitle("${x.num}: ${Vedoms.giveVerb(x.kind).lowercase()}?")
             .setView(box)
-            .setPositiveButton("Передать") { _, _ ->
+            .setPositiveButton(Vedoms.giveVerb(x.kind)) { _, _ ->
                 a.pushUndo()
                 Vedoms.give(b, x, date, who())
                 a.changed()
                 a.buildSelectionBar()
-                a.hint("${x.num} передана ${IdTables.dateLong(date)}: ${Ui.plural(items.size, "схема", "схемы", "схем")} — «$st»" +
+                a.hint("${x.num} — «${Vedoms.giveLabel(x.kind)}» с ${IdTables.dateLong(date)}: ${Ui.plural(items.size, "схема", "схемы", "схем")} — «$st»" +
                     if (Vedoms.hasAnswers(x.kind)) ". Ответы — касание «Ждём» у строки" else "", 3500)
             }
             .setNegativeButton("Отмена", null)
@@ -582,10 +628,10 @@ class VedomUi(private val a: BoardActivity) {
         val nv = BoardVedom(nx, ny, x.scale, Vedoms.CUST, Vedoms.nextNum(b, Vedoms.CUST))
         nv.to = b.vedoms.lastOrNull { it.kind == Vedoms.CUST && it.to.isNotBlank() }?.to.orEmpty()
         b.vedoms += nv
-        val n = Vedoms.add(b, nv, ok)
+        val n = Vedoms.add(b, nv, ok, who())
         a.changed()
         goTo(nv)
-        a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} из ${x.num}. Отдадите заказчику — «Передать»", 3000)
+        a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} из ${x.num}. Унесёте заказчику — «На подписи у заказчика →»", 3000)
     }
 
     private fun resButton(x: BoardVedom, res: String, current: String?, tag: String, pick: () -> Unit): TextView {
@@ -622,7 +668,7 @@ class VedomUi(private val a: BoardActivity) {
 
     /** Список ответов рядом с ячейкой «Ответ» (палец и перо): выбор вторым касанием, случайное касание ничего не меняет. */
     fun resultPopup(x: BoardVedom, items: List<BoardVItem>) {
-        if (x.isDraft) { a.hint(if (x.kind == Vedoms.LIST) "Это список — ответов в нём нет" else "Ответы отмечают после «Передать»", 1800); return }
+        if (x.isDraft) { a.hint(if (x.kind == Vedoms.LIST) "Это список — ответов в нём нет" else "Ответы отмечают, когда унесли: «${Vedoms.giveLabel(x.kind)} →»", 1800); return }
         if (!Vedoms.hasAnswers(x.kind)) { a.hint("Ведомость в ПТО закрыта сразу при передаче", 1800); return }
         popup?.dismiss()
         val rect = items.singleOrNull()?.let { v.vedomDraw.cellRect(b, x, it, VedomDraw.RES, RectF()) }
@@ -718,7 +764,7 @@ class VedomUi(private val a: BoardActivity) {
                         .apply { setPadding(0, dp(12f), 0, 0) })
                     body.addView(answerBox(x, cur.res, { show() }) { res -> setAnswer(x, listOf(cur), res); show() })
                 } else if (x.isDraft && x.kind != Vedoms.LIST) {
-                    body.addView(Ui.text(a, "Черновик: ответы — после «Передать».", 14f, Ui.MUTED).apply { setPadding(0, dp(10f), 0, 0) })
+                    body.addView(Ui.text(a, "Сборка: ответы — когда унесли («${Vedoms.giveLabel(x.kind)}»).", 14f, Ui.MUTED).apply { setPadding(0, dp(10f), 0, 0) })
                 }
                 val acts = LinearLayout(a)
                 acts.addView(btn("Показать в таблице", "card_show", rec != null) { d.dismiss(); showInTable(x, cur) }, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
@@ -783,7 +829,7 @@ class VedomUi(private val a: BoardActivity) {
             box.addView(Ui.text(a, "В ведомостях", 14f, Ui.MUTED, bold = true).apply { setPadding(0, dp(4f), 0, dp(4f)) })
             for ((x, i) in inV) {
                 val res = when {
-                    x.isDraft -> "черновик"
+                    x.isDraft -> "сборка"
                     !Vedoms.hasAnswers(x.kind) -> "передана " + IdTables.dateShort(x.given)
                     else -> "передана " + IdTables.dateShort(x.given) + " · " + Vedoms.resName(x.kind, i.res).lowercase() +
                         if (i.rd.isNotEmpty()) " " + IdTables.dateShort(i.rd) else ""
@@ -824,7 +870,8 @@ class VedomUi(private val a: BoardActivity) {
         if (sel.size == 1 && sel[0] is BoardVedom) {
             val x = sel[0] as BoardVedom
             if (x.isDraft) out += pill("+ схемы", "sel_vadd") { collectDialog(x) }
-            if (x.isDraft && x.kind != Vedoms.LIST) out += Ui.pill(a, "Передать", Color.WHITE, Ui.ACCENT).apply { tag = "sel_give"; setOnClickListener { giveDialog(x) } }
+            if (x.isDraft && x.kind != Vedoms.LIST) out += Ui.pill(a, Vedoms.giveLabel(x.kind), Color.WHITE, Ui.ACCENT).apply { tag = "sel_give"; setOnClickListener { giveDialog(x) } }
+            if (x.kind != Vedoms.LIST) out += pill("Состояние", "sel_vstate") { stateDialog(x) }
             if (Vedoms.isOpen(b, x)) out += pill("Ответ всем ждущим", "sel_vanswer") {
                 val wait = Vedoms.items(b, x).filter { it.res.isEmpty() }
                 if (wait.isNotEmpty()) resultPopup(x, wait)
@@ -854,7 +901,7 @@ class VedomUi(private val a: BoardActivity) {
                 if (i >= drafts.size) { create(recs); return@setItems }
                 val x = drafts[i]
                 a.pushUndo()
-                val n = Vedoms.add(b, x, recs)
+                val n = Vedoms.add(b, x, recs, who())
                 a.changed()
                 v.clearSelection()
                 a.hint("В ${x.num} добавлено: $n" + if (n < recs.size) " (остальные уже были)" else "", 2000)
@@ -893,13 +940,17 @@ class VedomUi(private val a: BoardActivity) {
         val its = sel.filterIsInstance<BoardVItem>()
         if (vs.isEmpty() && its.isEmpty()) { then(); return }
         val n = vs.sumOf { x -> b.vitems.count { it.v == x.id } }
-        val msg = if (vs.isNotEmpty()) "Удалить ведомость ${vs.joinToString { it.num }} (${Ui.plural(n, "позиция", "позиции", "позиций")})? Статусы и даты схем и их история не меняются."
+        val msg = if (vs.isNotEmpty()) "Удалить ведомость ${vs.joinToString { it.num }} (${Ui.plural(n, "позиция", "позиции", "позиций")})? " +
+            (if (vs.any { it.isDraft && it.kind != Vedoms.LIST }) "У схем в сборке вернётся статус, что был до «Сборки»; у переданных статусы не меняются." else "Статусы и даты схем и их история не меняются.")
         else "Убрать из ведомости ${Ui.plural(its.size, "схему", "схемы", "схем")}? Статусы и даты схем не меняются."
         AlertDialog.Builder(a).setMessage("$msg «Отменить» вернёт.").setPositiveButton("Удалить") { _, _ -> then() }.setNegativeButton("Отмена", null).show()
     }
 
     fun removeSelected(sel: List<Any>) {
-        for (x in sel.filterIsInstance<BoardVedom>()) Vedoms.remove(b, x)
+        // Ведомость в сборке удалили — у её схем вернётся статус, что был до «Сборки».
+        for (x in sel.filterIsInstance<BoardVedom>()) { Vedoms.unassemble(b, x, Vedoms.items(b, x), who()); Vedoms.remove(b, x) }
+        val its = sel.filterIsInstance<BoardVItem>()
+        for ((vid, l) in its.groupBy { it.v }) Vedoms.vedom(b, vid)?.let { Vedoms.unassemble(b, it, l, who()) }
         b.vitems.removeAll { i -> sel.any { it === i } }
     }
 

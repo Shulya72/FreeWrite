@@ -96,6 +96,15 @@ object Vedoms {
         OK -> Color.rgb(35, 128, 58); NO -> Color.rgb(142, 27, 47); FIX -> Color.rgb(212, 100, 12); else -> Color.rgb(138, 147, 163)
     }
 
+    /** Что значит передача по виду ведомости: «На подписи у заказчика», «На подписи АН», «Сдано в ПТО». */
+    fun giveLabel(k: String) = when (k) { AN -> "На подписи АН"; CUST -> "На подписи у заказчика"; PTO -> "Сдано в ПТО"; else -> "" }
+
+    /** Кнопка передачи: «Унесли заказчику», «Унесли на АН», «Сдали в ПТО». */
+    fun giveVerb(k: String) = when (k) { AN -> "Унесли на АН"; CUST -> "Унесли заказчику"; PTO -> "Сдали в ПТО"; else -> "" }
+
+    /** Схемы с этими статусами при сборке ведомости получают «Сборка» (дальше по пути — не трогаем). */
+    private val TO_ASSEMBLY = setOf(IdTables.IGS_WORK, IdTables.IGS_NOT_GIVEN, IdTables.IGS_BACK, IdTables.IGS_AN_NO)
+
     /** Статус ИГС, который ставит передача ведомости ("" — никакого). */
     fun giveStatus(k: String) = when (k) { AN -> IdTables.IGS_AN; CUST -> IdTables.IGS_CUST; PTO -> IdTables.IGS_PTO; else -> "" }
 
@@ -191,8 +200,16 @@ object Vedoms {
     /** Открыта и ждёт ответа: передана, есть позиции без результата. */
     fun isOpen(b: Board, v: BoardVedom) = !v.isDraft && hasAnswers(v.kind) && !isClosed(b, v)
 
+    /** Кнопка состояния в шапке ведомости: «Сборка ▾», «На подписи у заказчика · 12.11.26 ▾», «Закрыта ✓», «Список». */
+    fun stateChip(b: Board, v: BoardVedom): String = when {
+        v.kind == LIST -> "Список"
+        v.isDraft -> "Сборка ▾"
+        isClosed(b, v) -> "Закрыта ✓"
+        else -> giveLabel(v.kind) + " · " + IdTables.dateShort(v.given) + " ▾"
+    }
+
     fun state(b: Board, v: BoardVedom): String = when {
-        v.isDraft -> if (v.kind == LIST) "список" else "черновик"
+        v.isDraft -> if (v.kind == LIST) "список" else "сборка"
         isClosed(b, v) -> "закрыта"
         hasAnswers(v.kind) -> "передана " + IdTables.dateShort(v.given)
         else -> "передана " + IdTables.dateShort(v.given)
@@ -226,13 +243,13 @@ object Vedoms {
         return "$p-${max + 1}"
     }
 
-    /** Другие открытые ведомости, где эта схема ждёт ответа. */
+    /** Другие ведомости, где эта схема ждёт ответа или лежит в сборке (АН, заказчик, ПТО; списки не считаются). */
     fun waitingElsewhere(b: Board, rec: BoardRec, except: BoardVedom?): List<BoardVedom> {
         val out = ArrayList<BoardVedom>()
         for (i in b.vitems) {
             if (i.r != rec.id || i.res.isNotEmpty() || i.v == except?.id) continue
             val v = vedom(b, i.v) ?: continue
-            if (!v.isDraft && hasAnswers(v.kind) && out.none { it === v }) out += v
+            if (v.kind != LIST && (v.isDraft || hasAnswers(v.kind)) && out.none { it === v }) out += v
         }
         return out
     }
@@ -256,8 +273,11 @@ object Vedoms {
         return true
     }
 
-    /** Добавить схемы в ведомость (уже бывшие в ней — пропускаются). Возвращает, сколько добавлено. */
-    fun add(b: Board, v: BoardVedom, recs: List<BoardRec>): Int {
+    /**
+     * Добавить схемы в ведомость (уже бывшие в ней — пропускаются). Возвращает, сколько добавлено. Ведомость в сборке
+     * (АН, заказчик, ПТО): схемы «В работе», «Не предоставлена», «Возврат», «Не согласована» → «Сборка» (лежат на столе).
+     */
+    fun add(b: Board, v: BoardVedom, recs: List<BoardRec>, who: String = "", now: Long = System.currentTimeMillis()): Int {
         val have = b.vitems.filter { it.v == v.id }.map { it.r }.toHashSet()
         var o = endOrder(b, v)
         var n = 0
@@ -266,10 +286,44 @@ object Vedoms {
             val i = BoardVItem(v.id, r.id, o)
             remember(b, i)
             b.vitems += i
+            if (v.isDraft && v.kind != LIST && r.igs in TO_ASSEMBLY) set(b, r, TableCol.IGS, IdTables.IGS_ASSEMBLY, who, v.num, "в сборке", now)
             o += 1.0
             n++
         }
         return n
+    }
+
+    /**
+     * Схемы ушли из сборки (убрали из ведомости, удалили ведомость в сборке): «Сборка» → статус, что был до неё (по истории),
+     * иначе «В работе».
+     */
+    fun unassemble(b: Board, v: BoardVedom, items: List<BoardVItem>, who: String = "", now: Long = System.currentTimeMillis()) {
+        if (!v.isDraft || v.kind == LIST) return
+        for (i in items) {
+            val r = rec(b, i) ?: continue
+            if (r.igs != IdTables.IGS_ASSEMBLY) continue
+            val prev = b.events.filter { it.r == r.id && it.k == TableCol.IGS && it.to == IdTables.IGS_ASSEMBLY }.maxByOrNull { it.at }?.from
+            set(b, r, TableCol.IGS, prev?.takeIf { it.isNotEmpty() && it != IdTables.IGS_ASSEMBLY } ?: IdTables.IGS_WORK, who, v.num, "убрана из сборки", now)
+        }
+    }
+
+    /** Можно ли вернуть переданную ведомость в сборку: ответов ещё нет (ПТО — всегда). */
+    fun canUngive(b: Board, v: BoardVedom) = !v.isDraft && v.kind != LIST && (v.kind == PTO || items(b, v).none { it.res.isNotEmpty() })
+
+    /** Вернуть в сборку (ошиблись с «Унесли»): статус передачи → «Сборка», дата передачи у схем убирается. */
+    fun ungive(b: Board, v: BoardVedom, who: String, now: Long = System.currentTimeMillis()) {
+        if (!canUngive(b, v)) return
+        val st = giveStatus(v.kind)
+        for (i in items(b, v)) {
+            val r = rec(b, i)
+            if (r != null) {
+                if (r.igs == st) set(b, r, TableCol.IGS, IdTables.IGS_ASSEMBLY, who, v.num, "снова в сборке", now)
+                if (v.kind == CUST && r.dcust == v.given) set(b, r, TableCol.DCUST, "", who, v.num, "снова в сборке", now)
+                if (v.kind == PTO && r.dpto == v.given) set(b, r, TableCol.DPTO, "", who, v.num, "снова в сборке", now)
+            }
+            if (v.kind == PTO) { i.res = ""; i.rd = "" }
+        }
+        v.given = ""
     }
 
     /**
@@ -282,7 +336,7 @@ object Vedoms {
         for (i in items(b, v)) {
             remember(b, i)
             val r = rec(b, i) ?: continue
-            if (st.isNotEmpty()) set(b, r, TableCol.IGS, st, who, v.num, "передана в ведомости", now)
+            if (st.isNotEmpty()) set(b, r, TableCol.IGS, st, who, v.num, giveVerb(v.kind).lowercase(), now)
             when (v.kind) {
                 CUST -> set(b, r, TableCol.DCUST, date, who, v.num, "", now)
                 PTO -> { set(b, r, TableCol.DPTO, date, who, v.num, "", now); i.res = OK; i.rd = date }

@@ -206,7 +206,7 @@ object IdExcel {
         s.rows.add(listOf(Cell("Ведомость ${v.num} — ${Vedoms.kindName(v.kind)}", 5)))
         s.rows.add(listOf(Cell("Объект: " + b.title)))
         if (v.to.isNotBlank()) s.rows.add(listOf(Cell("Кому: " + v.to)))
-        s.rows.add(listOf(Cell(if (v.isDraft) "Черновик (не передана)" else "Дата передачи: " + IdTables.dateLong(v.given))))
+        s.rows.add(listOf(Cell(if (v.isDraft) (if (v.kind == Vedoms.LIST) "Список" else "Сборка (схемы на столе)") else Vedoms.giveLabel(v.kind) + " с " + IdTables.dateLong(v.given))))
         s.rows.add(listOf(Cell(Vedoms.summary(b, v, today))))
         s.rows.add(emptyList())
         val answers = Vedoms.hasAnswers(v.kind) && !v.isDraft
