@@ -59,6 +59,29 @@ def put_image(key, name, data):
              data=base64.b64encode(chunk).decode())
 
 
+def plan_png(w=1200, h=800):
+    """Показательный чертёж (без сторонних библиотек): рамка листа, штамп, три помещения с дверями, колонна."""
+    import struct
+    import zlib
+    px = bytearray(b"\xff" * (w * h))
+
+    def box(l, t, r, b):
+        for y in range(max(0, t), min(h, b)):
+            px[y * w + max(0, l):y * w + min(w, r)] = b"\x00" * (min(w, r) - max(0, l))
+    box(10, 10, 1190, 14); box(10, 786, 1190, 790); box(10, 10, 14, 790); box(1186, 10, 1190, 790)
+    box(900, 700, 1186, 704); box(900, 700, 904, 786)
+    box(100, 100, 1000, 106); box(100, 594, 1000, 600); box(100, 100, 106, 600); box(994, 100, 1000, 600)
+    box(397, 100, 403, 330); box(397, 350, 403, 600); box(697, 100, 703, 330); box(697, 350, 703, 600)
+    box(540, 330, 560, 350)
+    raw = b"".join(b"\x00" + bytes(px[y * w:(y + 1) * w]) for y in range(h))
+
+    def chunk(tag, data):
+        c = struct.pack(">I", len(data)) + tag + data
+        return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0)) + \
+        chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+
+
 def argb(r, g, b):
     return (0xFF << 24 | r << 16 | g << 8 | b) - (1 << 32)
 
@@ -91,7 +114,7 @@ def demo(key):
         items.append((sid, "status", json.dumps({"id": sid, "name": name, "color": color, "g": "con"}, ensure_ascii=False)))
     items.append(("~order", "meta", json.dumps({"order": [x[0] for x in ids + cons + cks + dwgs]})))
     items.append(("~title", "meta", json.dumps({"title": "План ИГС по БК5 (проверка сайта)"}, ensure_ascii=False)))
-    frames = [("f1", 0, 0, 2600, 1500, "КЖ 6.1.1"), ("f2", 2900, 0, 2000, 1500, "КЖ 6.1.2"), ("f3", 0, 2500, 2700, 1500, "КЖ8")]
+    frames = [("f1", 0, 0, 2600, 1500, "КЖ 6.1.1"), ("f2", 2900, 0, 2000, 1500, "КЖ 6.1.2"), ("f3", 0, 4700, 2700, 1500, "КЖ8")]
     for fid, x, y, w, h, t in frames:
         items.append((fid, "frame", json.dumps({"id": fid, "x": x, "y": y, "w": w, "h": h, "title": t}, ensure_ascii=False)))
     # Чертёж — картинка.
@@ -134,8 +157,16 @@ def demo(key):
                                                      "sid": "i%d" % (2 + i)}, ensure_ascii=False)))
     # Таблица ИД КЖ 6.1.1 у чертежа (0.20).
     items.append(("tb1", "table", json.dumps({"id": "tb1", "x": 100, "y": 1250, "scale": 1.6, "title": "Несущие стены",
-                                              "plan": [{"w": "Бетон", "v": "330", "u": "м³"}, {"w": "Опалубка", "v": "1450", "u": "м²"}]},
+                                              "plan": [{"w": "Бетон", "v": "330", "u": "м³"}, {"w": "Опалубка", "v": "1450", "u": "м²"}],
+                                              "sheets": [{"id": "sh1", "f": "plan-demo.png", "pw": 1200, "ph": 800,
+                                                          "n": "План на отм. +3.300", "crop": [0.05, 0.08, 0.88, 0.86]}]},
                                              ensure_ascii=False)))
+    # Области захваток на листе плана (0.23): доли картинки целиком.
+    for zid, z, (l, t, r, b) in [("zn1", "1", (103, 103, 400, 597)), ("zn2", "2", (400, 103, 700, 597)),
+                                 ("zn3", "3", (700, 103, 997, 350)), ("zn4", "4", (700, 350, 997, 597))]:
+        pts = [l / 1200, t / 800, r / 1200, t / 800, r / 1200, b / 800, l / 1200, b / 800]
+        items.append((zid, "zone", json.dumps({"id": zid, "t": "tb1", "s": "sh1", "z": z, "color": argb(41, 121, 255),
+                                               "pts": [round(v, 5) for v in pts]})))
     plan = [("1", "i3", "k3", "d2"), ("2", "i3", "k3", "d2"), ("2.1", "i2", "k3", "d2"), ("3", "i8", "k3", "d2"),
             ("4", "i6", "k3", "d1"), ("5", "i5", "k3", "d1"), ("6", "i1", "k1", "d1"), ("7", "i0", "k0", "d0")]
     o = 1
@@ -153,7 +184,7 @@ def demo(key):
             items.append((rid, "rec", json.dumps(rec, ensure_ascii=False)))
             o += 1
     # Лестницы КЖ8 (0.22.1): участок (LM1, LM2), захватка — этаж, тип конструкции — марш / площадка.
-    items.append(("tb2", "table", json.dumps({"id": "tb2", "x": 100, "y": 2600, "scale": 1.6, "title": "Лестничные марши",
+    items.append(("tb2", "table", json.dumps({"id": "tb2", "x": 100, "y": 4800, "scale": 1.6, "title": "Лестничные марши",
                                               "plan": [{"w": "Бетон", "v": "48", "u": "м³"}]}, ensure_ascii=False)))
     o2 = 1
     for u in ("LM1", "LM2"):
@@ -171,7 +202,7 @@ def demo(key):
     items.append(("fl3", "fill", json.dumps({"id": "fl3", "pts": [1600, 400, 1900, 400, 1900, 700, 1600, 700],
                                              "color": argb(255, 152, 0), "alpha": 0.35, "lt": "tb2", "lu": "LM1", "lz": "3 этаж"},
                                             ensure_ascii=False)))
-    items.append(("vd2", "vedom", json.dumps({"id": "vd2", "x": 2900, "y": 2600, "scale": 1.6, "kind": "cust", "num": "З-13",
+    items.append(("vd2", "vedom", json.dumps({"id": "vd2", "x": 2900, "y": 4800, "scale": 1.6, "kind": "cust", "num": "З-13",
                                               "to": "Технадзор заказчика"}, ensure_ascii=False)))
     for n, rid in enumerate(["rl5", "rl6", "rl7", "rl8"]):
         items.append(("vj%d" % n, "vitem", json.dumps({"id": "vj%d" % n, "v": "vd2", "r": rid, "o": n + 1}, ensure_ascii=False)))
@@ -198,6 +229,7 @@ def demo(key):
     items.append(("fl2", "fill", json.dumps({"id": "fl2", "pts": [950, 400, 1500, 400, 1500, 700, 950, 700],
                                              "color": argb(46, 160, 67), "alpha": 0.35, "lt": "tb1", "lz": "3"})))
     push_all(key, items)
+    put_image(key, "plan-demo.png", plan_png())
 
 
 def from_file(key, path, images_dir):

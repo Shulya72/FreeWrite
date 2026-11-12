@@ -200,10 +200,11 @@ const B = {
   statuses: [], strokes: [], texts: [], images: [], fills: [], frames: [], callouts: [], stickers: [], rows: [],
   tables: [], recs: [],  // таблицы ИД и их строки (0.20, ТЗ «Учёт ИГС»)
   vedoms: [], vitems: [], // ведомости и их позиции (0.21)
+  zones: [], // области захваток на листах плана таблиц (0.23)
 };
 
 function rebuild() {
-  const by = { status: [], stroke: [], text: [], image: [], fill: [], frame: [], callout: [], sticker: [], row: [], table: [], rec: [], vedom: [], vitem: [] };
+  const by = { status: [], stroke: [], text: [], image: [], fill: [], frame: [], callout: [], sticker: [], row: [], table: [], rec: [], vedom: [], vitem: [], zone: [] };
   B.title = "Доска";
   for (const [id, o] of B.objs) {
     if (id === "~title") { if (o.d && o.d.title) B.title = o.d.title; continue; }
@@ -228,6 +229,9 @@ function rebuild() {
   for (const t of B.tables) t._lay = null;
   B.vedoms = by.vedom.map((o) => o.d);
   B.vitems = by.vitem.map((o) => o.d);
+  B.zones = by.zone.map((o) => o.d).filter((z) => tids.has(z.t) && Array.isArray(z.pts) && z.pts.length >= 6);
+  // Открытая вкладка плана — своя у каждой таблицы, переживает обновление доски.
+  for (const t of B.tables) t._tab = TAB.get(t.id) || 0;
   for (const t of B.texts) t._w = null;
   for (const c of B.callouts) c._w = null;
   for (const r of B.rows) r._key = null;
@@ -354,6 +358,37 @@ function normW(s) { return String(s || "").toLowerCase().replace(/ё/g, "е").re
 // Участок + захватка (как IdTables.zkey): «этаж 3» участка LM1 и LM2 — разные захватки.
 function zkey(u, z) { const nu = normW(u); return nu ? nu + "|" + normW(z) : normW(z); }
 function zahLabel(u, z) { return [String(u || "").trim(), String(z || "").trim()].filter(Boolean).join(" · "); }
+
+// ------------------------------------------------------------ план под таблицей (0.23, как TablePlan в приложении)
+
+const PF = { HEAD: 46, TABS: 34, PAD: 12, LEG: 36, MINW: 900 };
+const NO_ROWS = 0xffa0a8b6 | 0;
+const TAB = new Map(); // таблица → открытая вкладка
+function sheetsOf(t) { return (t.sheets || []).filter((s) => s && s.f); }
+function curSheet(t) { const ss = sheetsOf(t); return ss[Math.min(Math.max(0, t._tab || 0), ss.length - 1)] || null; }
+function sheetCrop(s) { return s.crop && s.crop.length === 4 ? s.crop : [0, 0, 1, 1]; }
+function sheetAspect(s) { const c = sheetCrop(s), w = (s.pw || 1) * (c[2] - c[0]), h = (s.ph || 1) * (c[3] - c[1]); return w > 0 && h > 0 ? h / w : 0.7; }
+function sheetName(t, i) { const s = sheetsOf(t)[i]; return (s && s.n) || "Лист " + (i + 1); }
+/** Самый отстающий статус ИГС захватки (по порядку списка ИГС): зелёная — только когда сданы все её схемы. */
+function zahStatus(t, u, z) {
+  const k = zkey(u, z), rows = tRows(t).filter((r) => zkey(r.u, r.z) === k);
+  if (!rows.length) return null;
+  const list = statuses("id"); let best = null, bi = 1e9;
+  for (const r of rows) { let i = list.findIndex((s) => s.id === (r.sid || "i0")); if (i < 0) i = 0; if (i < bi) { bi = i; best = list[i] || stIn("id", r.sid || "i0"); } }
+  return best;
+}
+function zoneColor(t, z) { if (t.zc === "own") return z.color | 0; const st = zahStatus(t, z.u, z.z); return st ? st.color : NO_ROWS; }
+function zonesOf(t) { const ids = new Set(sheetsOf(t).map((s) => s.id)); return B.zones.filter((z) => z.t === t.id && ids.has(z.s)); }
+function planLegend(t) {
+  const seen = new Set(), counts = new Map(); let none = 0;
+  for (const z of zonesOf(t)) {
+    const k = zkey(z.u, z.z); if (seen.has(k)) continue; seen.add(k);
+    const st = zahStatus(t, z.u, z.z); if (!st) none++; else counts.set(st.id, (counts.get(st.id) || 0) + 1);
+  }
+  const out = []; for (const s of statuses("id").slice().reverse()) if (counts.has(s.id)) out.push([s, counts.get(s.id)]);
+  if (none) out.push([null, none]);
+  return out;
+}
 function defaultUnit(w) { w = String(w || "").toLowerCase();
   return /опалуб/.test(w) ? "м²" : /армир|арматур/.test(w) ? "т" : /монтаж/.test(w) ? "шт" : /бетон|засыпк|разработ|кладк|грунт/.test(w) ? "м³" : ""; }
 function planOf(t, w) { return (t.plan || []).find((p) => normW(p.w) === normW(w)); }
@@ -392,7 +427,7 @@ function tLayout(t) {
     } else {
       if (isDate(c.k)) w = Math.max(w, tw("00.00.00", TF.FONT, false) + 2 * TF.P);
       else for (const r of rows) w = Math.max(w, tw(cellText(r, c.k), TF.FONT, c.k === "zah" || c.k === "uch") + 2 * TF.P + (c.k === "vol" ? 4 : 0) +
-        (c.k === "zah" && B.fills.some((f) => f.lt === t.id && zkey(f.lu, f.lz) === zkey(r.u, r.z)) ? 17 : 0));
+        (c.k === "zah" && (sheetsOf(t).length || B.fills.some((f) => f.lt === t.id && zkey(f.lu, f.lz) === zkey(r.u, r.z))) ? 17 : 0));
       w = Math.min(Math.max(w, c.k === "zah" || c.k === "uch" ? 64 : 56), c.k === "note" ? 260 : 230);
     }
     return w;
@@ -403,14 +438,24 @@ function tLayout(t) {
   const vol = cols.some((c) => c.k === "vol") && rows.length ? volumes(t, rows) : null;
   const swatch = new Map();
   for (const f of B.fills) if (f.lt === t.id && !swatch.has(zkey(f.lu, f.lz))) swatch.set(zkey(f.lu, f.lz), f.color);
+  const sheets = sheetsOf(t);
+  for (const z of zonesOf(t)) swatch.set(zkey(z.u, z.z), zoneColor(t, z));
   const missing = vol ? vol.reduce((s, v) => s + v.missing, 0) : 0;
   const need = Math.max(TF.P * 2 + tw(t.title || "Без шифра", TF.TF, true) + (prefix ? measure(prefix + " ·", 14, false) + 8 : 0) + 24 + tw(info, 12, false) + TF.P,
-    TF.P * 3 + tw("+ строка", TF.FONT, true) + tw("+ следующая захватка", TF.FONT, true) + TF.P * 2, vol ? 1000 : 0);
+    TF.P * 3 + tw("+ строка", TF.FONT, true) + tw("+ следующая захватка", TF.FONT, true) + TF.P * 2, vol ? 1000 : 0, sheets.length ? PF.MINW : 0);
   if (need > total) { if (widths.length) widths[widths.length - 1] += need - total; total = need; }
   const colX = [0]; for (const w of widths) colX.push(colX[colX.length - 1] + w);
   const volTop = TF.T + TF.H + Math.max(1, rows.length) * TF.R;
   const volH = vol ? 34 + Math.max(1, vol.length) * 48 + (missing ? 28 : 0) + 8 : 0;
-  t._lay = { rows, cols, colX, w: total, h: volTop + volH + TF.F, info, prefix, vol, volTop, volH, missing, swatch };
+  let h = volTop + volH + TF.F, plan = null;
+  if (sheets.length) {
+    const cur = curSheet(t), tabsH = sheets.length > 1 ? PF.TABS : 0, tabX = [PF.PAD];
+    sheets.forEach((sh, i) => tabX.push(tabX[i] + tw(sheetName(t, i), 12.5, true) + 26 + 6));
+    const sheetW = total - 2 * PF.PAD, sheetH = sheetW * sheetAspect(cur);
+    plan = { top: h, tabsH, tabX, sheetTop: h + PF.HEAD + tabsH, sheetW, sheetH, legend: planLegend(t) };
+    h += PF.HEAD + tabsH + sheetH + PF.PAD + PF.LEG;
+  }
+  t._lay = { rows, cols, colX, w: total, h, info, prefix, vol, volTop, volH, missing, swatch, plan, hasPlan: !!sheets.length };
   return t._lay;
 }
 function tableBox(t) { const l = tLayout(t), k = t.scale || 1; return { l: t.x, t: t.y, r: t.x + l.w * k, b: t.y + l.h * k }; }
@@ -435,6 +480,7 @@ function drawTable(t, z, hl) {
       ctx.fillStyle = hl && r.sid !== hl ? "#e1e4ea" : css(stIn("id", r.sid || "i0").color, 1);
       ctx.fillRect(x0 + L.colX[igsI] * k, ry + 3 * k, (L.colX[igsI + 1] - L.colX[igsI]) * k, R - 6 * k);
     });
+    if (L.plan) drawPlan(t, L, x0, y0, w, k, z); // план видно и издалека
     outline(); return;
   }
   ctx.fillStyle = "#f1f4f8"; ctx.fillRect(x0, y0 + TF.T * k, w, TF.H * k);
@@ -467,6 +513,9 @@ function drawTable(t, z, hl) {
         if (sw !== undefined) {
           rrect(tx, cy - 6 * k, 12 * k, 12 * k, 3 * k); ctx.fillStyle = css(sw, 1); ctx.fill();
           ctx.strokeStyle = statusFg(sw); ctx.lineWidth = k; ctx.stroke(); tx += 17 * k;
+        } else if (c.k === "zah" && L.hasPlan) {
+          rrect(tx + 0.75 * k, cy - 5.25 * k, 10.5 * k, 10.5 * k, 3 * k); ctx.setLineDash([2.5 * k, 2 * k]);
+          ctx.strokeStyle = "#d4470c"; ctx.lineWidth = 1.3 * k; ctx.stroke(); ctx.setLineDash([]); tx += 17 * k;
         }
         const strong = c.k === "zah" || c.k === "uch";
         ctx.font = (strong ? "bold " : "") + fs + "px " + FONT;
@@ -495,7 +544,76 @@ function drawTable(t, z, hl) {
   ctx.fillText(L.info, x0 + w - TF.P * 1.4 * k - ctx.measureText(L.info).width, y0 + TF.T / 2 * k + 12 * k * 0.36);
   if (!L.rows.length) { ctx.font = TF.FONT * k + "px " + FONT; ctx.fillStyle = C.muted; ctx.fillText("Строк пока нет", x0 + TF.P * k, top + R / 2 + TF.FONT * k * 0.36); }
   if (L.vol) drawVolumes(t, L, x0, y0 + L.volTop * k, w, k);
+  if (L.plan) drawPlan(t, L, x0, y0, w, k, z);
   outline();
+}
+
+// План под таблицей (0.23): шапка, вкладки, лист с обрезкой, области захваток, легенда.
+function drawPlan(t, L, x0, y0, w, k, z) {
+  const P = L.plan, top = y0 + P.top * k, sh = curSheet(t);
+  ctx.fillStyle = "#f3f6fa"; ctx.fillRect(x0, top, w, PF.HEAD * k);
+  ctx.strokeStyle = C.rule; ctx.lineWidth = k; ctx.beginPath(); ctx.moveTo(x0, top); ctx.lineTo(x0 + w, top); ctx.stroke();
+  const ty = top + PF.HEAD / 2 * k + 16 * k * 0.36;
+  ctx.font = "bold " + 16 * k + "px " + FONT; ctx.fillStyle = C.ink; ctx.fillText("План захваток", x0 + TF.P * 1.4 * k, ty);
+  const tw0 = ctx.measureText("План захваток").width;
+  ctx.font = 12.5 * k + "px " + FONT; ctx.fillStyle = C.muted;
+  const sub = [sheetsOf(t).length === 1 && sh.n ? sh.n : "", t.zc === "own" ? "цвет — свой у каждой захватки" : "цвет — по ИГС"].filter(Boolean).join(" · ");
+  ctx.fillText(sub, x0 + TF.P * 1.4 * k + tw0 + 12 * k, ty);
+  if (P.tabsH) {
+    const ty0 = top + PF.HEAD * k;
+    for (let i = 0; i < P.tabX.length - 1; i++) {
+      const on = i === Math.min(Math.max(0, t._tab || 0), sheetsOf(t).length - 1);
+      const rx = x0 + P.tabX[i] * k, rw = (P.tabX[i + 1] - P.tabX[i] - 6) * k;
+      rrect(rx, ty0 + 5 * k, rw, (P.tabsH - 5) * k, 7 * k); ctx.fillStyle = on ? "#fff" : "#eaeef4"; ctx.fill();
+      if (on) { ctx.fillStyle = "#d4470c"; ctx.fillRect(rx + 4 * k, ty0 + 5 * k, rw - 8 * k, 2.5 * k); }
+      ctx.font = (on ? "bold " : "") + 12.5 * k + "px " + FONT; ctx.fillStyle = on ? C.ink : C.ink2;
+      ctx.fillText(sheetName(t, i), rx + 13 * k, ty0 + (5 + (P.tabsH - 5) / 2) * k + 12.5 * k * 0.36 + 2 * k);
+    }
+  }
+  const sx = x0 + PF.PAD * k, sy = y0 + P.sheetTop * k, sw = P.sheetW * k, shh = P.sheetH * k, c = sheetCrop(sh);
+  if (visible(sx, sy, sx + sw, sy + shh)) {
+    const bmp = sw * z < 3 ? null : imageFor({ file: sh.f }, sw / (c[2] - c[0]) * z);
+    if (bmp) { ctx.imageSmoothingQuality = "high"; ctx.drawImage(bmp, c[0] * bmp.width, c[1] * bmp.height, (c[2] - c[0]) * bmp.width, (c[3] - c[1]) * bmp.height, sx, sy, sw, shh); }
+    else { ctx.fillStyle = C.desk; ctx.fillRect(sx, sy, sw, shh); }
+    ctx.save(); ctx.beginPath(); ctx.rect(sx, sy, sw, shh); ctx.clip();
+    for (const zn of B.zones) {
+      if (zn.t !== t.id || zn.s !== sh.id) continue;
+      ctx.beginPath();
+      for (let i = 0; i + 1 < zn.pts.length; i += 2) {
+        const px = sx + (zn.pts[i] - c[0]) / (c[2] - c[0]) * sw, py = sy + (zn.pts[i + 1] - c[1]) / (c[3] - c[1]) * shh;
+        if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+      }
+      ctx.closePath();
+      const col = zoneColor(t, zn);
+      ctx.fillStyle = css(col, 100 / 255); ctx.fill();
+      ctx.strokeStyle = css(col, 230 / 255); ctx.lineWidth = 1.5 / z; ctx.stroke();
+    }
+    ctx.restore();
+  }
+  const ly = sy + shh + (PF.PAD + PF.LEG / 2) * k, cy = ly + 12.5 * k * 0.36;
+  let lx = x0 + TF.P * 1.4 * k;
+  ctx.font = 12.5 * k + "px " + FONT;
+  if (t.zc === "own") { ctx.fillStyle = C.muted; ctx.fillText("Цвет — свой у каждой захватки", lx, cy); return; }
+  if (!P.legend.length) { ctx.fillStyle = C.muted; ctx.fillText("Захватки на плане пока не обведены", lx, cy); return; }
+  for (const [st, n] of P.legend) {
+    const col = st ? st.color : NO_ROWS;
+    rrect(lx, ly - 7 * k, 14 * k, 14 * k, 3 * k); ctx.fillStyle = css(col, 0.35); ctx.fill(); ctx.strokeStyle = css(col, 1); ctx.lineWidth = 1.5 * k; ctx.stroke();
+    const txt = (st ? st.name : "строк нет") + " — " + n;
+    ctx.fillStyle = C.ink2; ctx.fillText(txt, lx + 20 * k, cy);
+    lx += 20 * k + ctx.measureText(txt).width + 18 * k;
+  }
+}
+
+/** Щелчок по вкладке плана — открыть лист. */
+function planTabAt(wx, wy) {
+  for (const t of B.tables) {
+    const L = tLayout(t), P = L.plan, k = t.scale || 1;
+    if (!P || !P.tabsH) continue;
+    const u = (wx - t.x) / k, v = (wy - t.y) / k;
+    if (v < P.top + PF.HEAD || v > P.top + PF.HEAD + P.tabsH) continue;
+    for (let i = 0; i < P.tabX.length - 1; i++) if (u >= P.tabX[i] && u < P.tabX[i + 1]) { t._tab = i; TAB.set(t.id, i); t._lay = null; return true; }
+  }
+  return false;
 }
 // Блок «Объёмы» внизу таблицы (как TableDraw.drawVolumes).
 function drawVolumes(t, L, x0, top, w, k) {
@@ -1080,6 +1198,10 @@ cv.addEventListener("pointermove", (e) => {
   }
 });
 function pointerEnd(e) {
+  // Щелчок без сдвига — по вкладке плана таблицы.
+  if (pointers.size === 1 && dragging && !dragging.moved && pointers.has(e.pointerId)) {
+    if (planTabAt(e.offsetX / cam.z + cam.x, e.offsetY / cam.z + cam.y)) redraw(true);
+  }
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
   if (pointers.size === 1) { const p = [...pointers.values()][0]; dragging = { x: p.x, y: p.y, cx: cam.x, cy: cam.y, moved: true }; }

@@ -105,7 +105,7 @@ object IdExcel {
                     TableCol.VOL -> if (r.vol.isEmpty()) Cell(null, 3) else Cell(IdTables.volNum(r.vol), 4)
                     UNIT -> Cell(if (r.vol.isEmpty()) null else IdTables.unitFor(t, r.work).ifEmpty { null }, 3)
                     // Захватка привязана к заливке на плане — ячейка цветом заливки (0.22).
-                    TableCol.ZAH -> colors.getOrPut(t.id) { IdTables.zahColors(b, t) }[r.zkey()]
+                    TableCol.ZAH -> colors.getOrPut(t.id) { TablePlan.zahColorsAll(b, t) }[r.zkey()]
                         ?.let { Cell(r.zah.ifEmpty { null }, st.status(it)) } ?: Cell(r.zah.ifEmpty { null }, 3)
                     else -> Cell(r.get(k).ifEmpty { null }, 3)
                 }

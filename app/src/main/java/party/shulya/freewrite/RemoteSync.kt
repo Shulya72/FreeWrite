@@ -183,7 +183,7 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         val b = host.board()
         val s = b.sync
         if (!s.isShared) return
-        val all = b.images.map { it.file }.distinct()
+        val all = b.imageFiles()
         val toUpload = all.filter { it !in s.uploadedImages && File(imageDir, it).isFile }
         val toDownload = all.filter { !File(imageDir, it).isFile }
         if (toUpload.isEmpty() && toDownload.isEmpty()) return

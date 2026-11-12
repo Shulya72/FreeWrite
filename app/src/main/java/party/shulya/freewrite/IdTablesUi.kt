@@ -103,11 +103,21 @@ class TableUi(private val a: BoardActivity) {
             TableHit.VOL -> projectDialog(t, h.col)
             TableHit.VOL_ADD -> projectDialog(t, null)
             TableHit.VOL_NOTE -> showRows(v.tableDraw.layout(b, t).volMissing)
+            TableHit.PLAN_ADD -> a.planUi.addSheet(t)
+            TableHit.PLAN_COLOR -> a.planUi.colorMenu(t)
+            TableHit.PLAN_OUTLINE -> a.planUi.chooseZah(t)
+            TableHit.PLAN_TAB -> h.col?.toIntOrNull()?.let { a.planUi.setTab(t, it) }
+            TableHit.PLAN_SHEET -> a.planUi.onSheetTap(t, h.fx, h.fy)
             TableHit.CELL -> {
                 val r = h.rec ?: return
                 val col = h.col
                 val c = col?.let { k -> t.allCols().firstOrNull { it.k == k } }
                 if (col != null && c != null && c.isStatus) { cellAction(t, r, col); return }
+                // План под таблицей (0.23): номер обведённой захватки — её области; не обведённой (пальцем) — обвести.
+                if (col == TableCol.ZAH && t.sheets.isNotEmpty()) {
+                    if (TablePlan.zonesOf(b, t, r.uch, r.zah).isNotEmpty()) { a.planUi.showZah(t, r.uch, r.zah); return }
+                    if (!pen && IdTables.fillsOf(b, t, r.uch, r.zah).isEmpty()) { a.planUi.startOutline(t, r.uch, r.zah); return }
+                }
                 // Номер захватки, привязанной к заливке, — показать её на плане (ТЗ, раздел 8).
                 if (col == TableCol.ZAH && IdTables.fillsOf(b, t, r.uch, r.zah).isNotEmpty()) { showFills(t, r.uch, r.zah); return }
                 if (!pen || col == null) { rowCard(r); return }
@@ -497,6 +507,13 @@ class TableUi(private val a: BoardActivity) {
                 if (inV.isNotEmpty()) body.addView(Ui.text(a, "В ведомостях: " + inV.joinToString { (x, i) ->
                     x.num + if (!x.isDraft && Vedoms.hasAnswers(x.kind)) " — " + Vedoms.resName(x.kind, i.res).lowercase() else "" }, 14f, Ui.INK2)
                     .apply { setPadding(0, dp(10f), 0, 0); tag = "card_vedoms" })
+                if (t.sheets.isNotEmpty()) {
+                    val uu = cur.uch; val zz = cur.zah
+                    val has = TablePlan.zonesOf(b, t, uu, zz).isNotEmpty()
+                    body.addView(btn(if (has) "Захватка ${IdTables.zahLabel(uu, zz)} на плане" else "Обвести захватку ${IdTables.zahLabel(uu, zz)} на плане", "card_outline", true) {
+                        d.dismiss(); if (has) a.planUi.showZah(t, uu, zz) else a.planUi.startOutline(t, uu, zz)
+                    }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8f) })
+                }
                 if (IdTables.fillsOf(b, t, cur.uch, cur.zah).isNotEmpty()) {
                     val uu = cur.uch; val zz = cur.zah
                     body.addView(btn("Захватка ${IdTables.zahLabel(uu, zz)} на плане", "card_plan", true) { d.dismiss(); showFills(t, uu, zz) },
@@ -1006,6 +1023,7 @@ class TableUi(private val a: BoardActivity) {
             if (t.visibleCols().any { it.isVol }) out += pill("Проект", "sel_proj") { projectDialog(t, null) }
             out += pill("+ строка", "sel_add") { addForm(t, next = true) }
             out += pill("Столбцы", "sel_cols") { columnsDialog(t) }
+            out += pill(if (t.sheets.isEmpty()) "+ план" else "План", "sel_plan") { if (t.sheets.isEmpty()) a.planUi.addSheet(t) else a.planUi.sheetMenu(t) }
             out += if (t.filter == null) pill("Отбор", "sel_filter") { filterDialog(t) }
             else pill("Показать всё", "sel_filter") { t.filter = null; v.invalidate(); a.buildSelectionBar() }
             out += pill("Сводка", "sel_summary") { summaryDialog(only = t) }
@@ -1054,6 +1072,7 @@ class TableUi(private val a: BoardActivity) {
         val ids = tables.map { it.id }.toSet()
         b.tables.removeAll { t -> tables.any { it === t } }
         b.recs.removeAll { r -> r.t in ids || sel.any { it === r } }
+        b.zones.removeAll { it.t in ids }
     }
 
     // ---------------------------------------------------------------- старые строки ИД

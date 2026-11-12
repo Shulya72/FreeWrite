@@ -90,6 +90,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onTableTap(t: BoardTable, h: TableHit) {}
         /** Подержали строку таблицы ИД — меню строки. */
         fun onTableLongPress(t: BoardTable, h: TableHit) {}
+        /** Обводка захватки на плане таблицы (0.23): касание (tap) или протяжка от (x0, y0) до (x1, y1), координаты доски. */
+        fun onPlanGesture(x0: Float, y0: Float, x1: Float, y1: Float, tap: Boolean) {}
         /** Коснулись пустого места доски (снять активную ячейку таблицы). */
         fun onEmptyTap() {}
         /** Касание ведомости: строка (ответ, схема), «+ схемы», «Передать». */
@@ -117,7 +119,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     object RowPart { const val TITLE = 0; const val CHECK = 1; const val DWG = 2; const val STATUS = 3 }
     class Hit(val kind: Kind, val index: Int)
 
-    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP, FRAME_DRAG, POINT }
+    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP, FRAME_DRAG, POINT, PLAN }
 
     // ---- Точная точка (0.14.1): лупа и привязка, как в DWG FastView ----
     // Палец закрывает угол, в который целятся: пока палец на экране, в углу экрана — лупа с перекрестием,
@@ -171,6 +173,18 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     /** Заливки захватки, подсвеченные из таблицы (касание номера захватки, 0.22). */
     var markedFills: Set<BoardFill>? = null
+
+    /** Области захватки, подсвеченные на плане таблицы (0.23). */
+    var markedZones: Set<BoardZone>? = null
+
+    /** Обводка захватки на листе плана (0.23): касания по листу идут в неё. */
+    var planEdit: PlanEdit? = null
+
+    /** Картинки листов планов для рисования (место считается каждый кадр из таблицы). */
+    private val planImgs = HashMap<String, BoardImage>()
+    private val planRect = RectF()
+    private val planPt = FloatArray(2)
+    private val zonePath = android.graphics.Path()
 
     /** Активная ячейка таблицы: перо пишет где угодно — текст встаёт в неё (рамка цвета акцента). */
     var activeCell: Pair<BoardRec, String>? = null
@@ -990,6 +1004,11 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                     begin(ev, idx) // ладонь или пальцы лежали — работает перо
                 } else if (finger && !host.fingerWrites() && (penNear() || palmSized(ev, idx) || mode == Mode.PALM)) {
                     // второй палец при пере рядом — тоже ладонь
+                } else if (finger && !activeIsPen && mode == Mode.PLAN) {
+                    // Обводили пальцем, лёг второй — двигают или приближают доску.
+                    planEdit?.let { it.from = null; it.to = null }
+                    cancelTouchAction()
+                    startPinch(ev)
                 } else if (finger && !activeIsPen && mode == Mode.MOVE_SEL) {
                     startSelPinch(ev) // два пальца на выделенном — меняем его размер
                 } else if (finger && !activeIsPen && (mode == Mode.PAN || mode == Mode.LASSO)) {
@@ -1100,6 +1119,17 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 mode = Mode.PAN
             }
             return
+        }
+        // Обводка захватки: касания по листу плана — в обводку (пером и пальцем), вне листа — как обычно.
+        planEdit?.let { pe ->
+            val r = tableDraw.sheetRect(b, pe.t, planRect)
+            if (r != null && b.tables.any { it === pe.t } && r.contains(x, y)) {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                mode = Mode.PLAN
+                pe.from = PointF(x, y); pe.to = PointF(x, y)
+                invalidate()
+                return
+            }
         }
         // Конец указателя выделенной выноски — тянуть.
         val sc = selection.singleOrNull() as? BoardCallout
@@ -1284,6 +1314,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 frameNow.set(wx(sxp), wy(syp))
                 invalidate()
             }
+            Mode.PLAN -> {
+                planEdit?.to?.set(wx(sxp), wy(syp))
+                invalidate()
+            }
             Mode.POINT -> {
                 updateAim(sxp, syp)
                 invalidate()
@@ -1340,6 +1374,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
             Mode.PAN -> if (quick && !moved && cropping == null) tapAt(wx(sxp), wy(syp))
             Mode.CROP -> if (editStarted) host.onDragEnd()
+            Mode.PLAN -> planEdit?.let { pe ->
+                val f = pe.from
+                pe.from = null; pe.to = null
+                if (f != null) host.onPlanGesture(f.x, f.y, wx(sxp), wy(syp), !moved)
+                invalidate()
+            }
             Mode.POINT -> {
                 updateAim(sxp, syp)
                 host.onFillPoint(aim.x, aim.y)
@@ -1471,7 +1511,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         when {
             o == null -> {
                 clearSelection(); host.onEmptyTap()
-                if (markedRecs != null || markedItems != null || markedFills != null) { markedRecs = null; markedItems = null; markedFills = null; invalidate() }
+                if (markedRecs != null || markedItems != null || markedFills != null || markedZones != null) {
+                    markedRecs = null; markedItems = null; markedFills = null; markedZones = null; invalidate()
+                }
             }
             // Уже выделено (например, только что вставленная картинка): первое касание пальцем
             // разрешает тащить, второе — снимает выделение.
@@ -1747,7 +1789,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (r in b.rows) if (visible(r.x, r.y, r.x + rowW(r), r.y + r.h)) { drawRow(canvas, r, z); drawn++ }
         for (t in b.tables) {
             tableDraw.bounds(b, t, rect2)
-            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) { tableDraw.draw(canvas, b, t, z, vis, marked = markedRecs, selected = selection.takeIf { s -> s.any { it is BoardRec } }); drawn++ }
+            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) {
+                tableDraw.draw(canvas, b, t, z, vis, marked = markedRecs, selected = selection.takeIf { s -> s.any { it is BoardRec } }); drawn++
+                if (t.sheets.isNotEmpty()) drawPlanSheet(canvas, t, z)
+            }
         }
         for (v in b.vedoms) {
             vedomDraw.bounds(b, v, rect2)
@@ -1862,7 +1907,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private fun requestDetails() {
         val imgs = images ?: return
         val z = b.camZ
-        for (m in b.images) {
+        for (m in b.images + planImages()) {
             if (!visible(m.x, m.y, m.x + m.w, m.y + m.h)) continue
             val big = max(m.pxW, m.pxH)
             if (big <= BoardImages.LEVELS.last() || m.w <= 0f || m.pxW <= 0) continue
@@ -1899,7 +1944,110 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     private val srcRect = android.graphics.Rect()
 
-    private fun drawImage(canvas: Canvas, m: BoardImage, z: Float) {
+    /** Картинка листа плана таблицы на её нынешнем месте (null — листов нет). */
+    private fun planImage(t: BoardTable): BoardImage? {
+        val sh = TablePlan.current(t) ?: return null
+        val r = tableDraw.sheetRect(b, t, planRect) ?: return null
+        val m = planImgs[sh.id]?.takeIf { it.file == sh.file } ?: BoardImage(sh.file, 0f, 0f, 1f, 1f, sh.pxW, sh.pxH).also { it.id = sh.id; planImgs[sh.id] = it }
+        m.cl = sh.cl; m.ct = sh.ct; m.cr = sh.cr; m.cb = sh.cb
+        m.x = r.left; m.y = r.top; m.w = r.width(); m.h = r.height()
+        return m
+    }
+
+    private fun planImages(): List<BoardImage> = b.tables.filter { it.sheets.isNotEmpty() }.mapNotNull { t ->
+        planImage(t)?.takeIf { visible(it.x, it.y, it.x + it.w, it.y + it.h) }
+    }
+
+    /**
+     * Лист плана под таблицей (0.23): картинка (уровни и чёткий кусок — как у картинок доски), области захваток цветом
+     * (по ИГС или свой), подсвеченные — рамкой акцента; при обводке — черновик.
+     */
+    private fun drawPlanSheet(canvas: Canvas, t: BoardTable, z: Float) {
+        val m = planImage(t) ?: return
+        val sh = TablePlan.current(t) ?: return
+        val r = RectF(m.x, m.y, m.x + m.w, m.y + m.h)
+        if (!visible(r.left, r.top, r.right, r.bottom)) return
+        drawImage(canvas, m, z, frameAround = false) // лист — внутри таблицы, без своей рамки
+        canvas.save()
+        canvas.clipRect(r)
+        val pe = planEdit?.takeIf { it.t === t && it.sheet.id == sh.id }
+        for (zn in b.zones) {
+            if (zn.t != t.id || zn.s != sh.id) continue
+            zonePath(zn.pts, sh, r)
+            val c = TablePlan.zoneColor(b, t, zn)
+            val dim = pe != null && zn.zkey() != IdTables.zkey(pe.uch, pe.zah)
+            fillPaint.color = c; fillPaint.alpha = if (dim) 45 else 100
+            canvas.drawPath(zonePath, fillPaint)
+            fillPaint.alpha = 255
+            linePaint.color = c; linePaint.alpha = if (dim) 110 else 230
+            linePaint.strokeWidth = Ui.dpf(context, 1.5f) / z
+            canvas.drawPath(zonePath, linePaint)
+            linePaint.alpha = 255
+        }
+        markedZones?.let { mz ->
+            for (zn in mz) {
+                if (zn.t != t.id || zn.s != sh.id || b.zones.none { it === zn }) continue
+                zonePath(zn.pts, sh, r)
+                linePaint.color = Ui.ACCENT
+                linePaint.strokeWidth = Ui.dpf(context, 4f) / z
+                canvas.drawPath(zonePath, linePaint)
+            }
+        }
+        if (pe != null) drawPlanDraft(canvas, pe, sh, r, z)
+        canvas.restore()
+    }
+
+    private fun zonePath(pts: FloatArray, sh: PlanSheet, r: RectF) {
+        zonePath.rewind()
+        var i = 0
+        while (i + 1 < pts.size) {
+            tableDraw.fromSheet(sh, r, pts[i], pts[i + 1], planPt)
+            if (i == 0) zonePath.moveTo(planPt[0], planPt[1]) else zonePath.lineTo(planPt[0], planPt[1])
+            i += 2
+        }
+        zonePath.close()
+    }
+
+    /** Черновик обводки: готовые куски, протяжка прямоугольника/круга, точки. */
+    private fun drawPlanDraft(canvas: Canvas, pe: PlanEdit, sh: PlanSheet, r: RectF, z: Float) {
+        val acc = Ui.ACCENT
+        for (pc in pe.pieces) {
+            zonePath(pc, sh, r)
+            fillPaint.color = acc; fillPaint.alpha = 70
+            canvas.drawPath(zonePath, fillPaint)
+            fillPaint.alpha = 255
+            linePaint.color = acc; linePaint.strokeWidth = Ui.dpf(context, 2.5f) / z
+            canvas.drawPath(zonePath, linePaint)
+        }
+        val f = pe.from; val to = pe.to
+        if (f != null && to != null && (pe.tool == PlanEdit.RECT || pe.tool == PlanEdit.CIRCLE)) {
+            dashPaint.strokeWidth = Ui.dpf(context, 2f) / z
+            dashPaint.pathEffect = DashPathEffect(floatArrayOf(Ui.dpf(context, 6f) / z, Ui.dpf(context, 4f) / z), 0f)
+            val l = min(f.x, to.x); val tp = min(f.y, to.y); val rr = max(f.x, to.x); val bt = max(f.y, to.y)
+            if (pe.tool == PlanEdit.RECT) canvas.drawRect(l, tp, rr, bt, dashPaint) else canvas.drawOval(l, tp, rr, bt, dashPaint)
+        }
+        if (pe.points.size >= 2) {
+            val n = pe.points.size / 2
+            linePaint.color = acc; linePaint.strokeWidth = Ui.dpf(context, 2.5f) / z
+            for (i in 0 until n) {
+                tableDraw.fromSheet(sh, r, pe.points[2 * i], pe.points[2 * i + 1], planPt)
+                val x = planPt[0]; val y = planPt[1]
+                if (i > 0) {
+                    tableDraw.fromSheet(sh, r, pe.points[2 * i - 2], pe.points[2 * i - 1], planPt)
+                    canvas.drawLine(planPt[0], planPt[1], x, y, linePaint)
+                }
+            }
+            for (i in 0 until n) {
+                tableDraw.fromSheet(sh, r, pe.points[2 * i], pe.points[2 * i + 1], planPt)
+                val rad = Ui.dpf(context, if (i == 0) 9f else 6f) / z
+                fillPaint.color = Color.WHITE
+                canvas.drawCircle(planPt[0], planPt[1], rad, fillPaint)
+                canvas.drawCircle(planPt[0], planPt[1], rad, linePaint)
+            }
+        }
+    }
+
+    private fun drawImage(canvas: Canvas, m: BoardImage, z: Float, frameAround: Boolean = true) {
         val fullScreenW = m.fullW() * z
         val bmp = if (m.w * z < 3f) null else images?.get(m, fullScreenW)
         // Обрезают — картинка видна целиком, скрытое бледно.
@@ -1909,13 +2057,15 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawBitmap(bmp, null, rect2, bitmapPaint)
             bitmapPaint.alpha = 255
         }
-        val frame = Ui.dpf(context, 5f) / z
-        rect.set(m.x - frame, m.y - frame, m.x + m.w + frame, m.y + m.h + frame)
-        fillPaint.color = Color.WHITE
-        canvas.drawRect(rect, fillPaint)
-        linePaint.color = Ui.RULE
-        linePaint.strokeWidth = 0f
-        canvas.drawRect(rect, linePaint)
+        if (frameAround) {
+            val frame = Ui.dpf(context, 5f) / z
+            rect.set(m.x - frame, m.y - frame, m.x + m.w + frame, m.y + m.h + frame)
+            fillPaint.color = Color.WHITE
+            canvas.drawRect(rect, fillPaint)
+            linePaint.color = Ui.RULE
+            linePaint.strokeWidth = 0f
+            canvas.drawRect(rect, linePaint)
+        }
         rect.set(m.x, m.y, m.x + m.w, m.y + m.h)
         if (bmp != null) {
             if (m.cropped) {

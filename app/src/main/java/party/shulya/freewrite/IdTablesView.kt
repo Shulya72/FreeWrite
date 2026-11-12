@@ -14,7 +14,18 @@ class TableLayout(val key: Long, val cols: List<TableCol>, val colX: FloatArray,
                   /** Объёмы по видам работ (блок внизу; null — столбца объёма нет). */
                   val vol: List<IdTables.VolLine>? = null, val volTop: Float = 0f, val volH: Float = 0f, val volMissing: List<BoardRec> = emptyList(),
                   /** Цвет заливки захватки на плане (нормализованный номер → цвет) — значок у номера (0.22). */
-                  val swatch: Map<String, Int> = emptyMap())
+                  val swatch: Map<String, Int> = emptyMap(),
+                  /** План под таблицей (0.23); null — листов нет. */
+                  val plan: PlanLayout? = null,
+                  /** Без листов: где в нижней строке начинается «+ план». */
+                  val planSplit: Float = Float.MAX_VALUE)
+
+/**
+ * Раскладка плана под таблицей (0.23), в единицах таблицы: шапка с кнопками, вкладки листов, лист, легенда.
+ * chips — границы кнопок шапки по x: цвет, «+ лист», «Обвести захватку» (по два числа на кнопку).
+ */
+class PlanLayout(val top: Float, val h: Float, val tabsH: Float, val tabX: FloatArray, val sheetTop: Float, val sheetW: Float, val sheetH: Float,
+                 val chips: FloatArray, val chipText: Array<String>, val legend: List<Pair<BoardStatus?, Int>>, val title: String)
 
 /** Что под пальцем в таблице ИД: шапка, названия столбцов, ячейка (строка + столбец), «+ строка», «+ следующая захватка». */
 class TableHit(val part: Int, val rec: BoardRec?, val col: String?) {
@@ -30,7 +41,17 @@ class TableHit(val part: Int, val rec: BoardRec?, val col: String?) {
         const val VOL_ADD = 6
         /** «Объём не указан у …» — показать эти строки. */
         const val VOL_NOTE = 7
+        /** План под таблицей (0.23): «+ план» / «+ лист», переключатель цвета, «Обвести захватку», вкладка (col — номер), лист. */
+        const val PLAN_ADD = 8
+        const val PLAN_COLOR = 9
+        const val PLAN_OUTLINE = 10
+        const val PLAN_TAB = 11
+        const val PLAN_SHEET = 12
     }
+
+    /** PLAN_SHEET: точка в долях картинки листа целиком. */
+    var fx = 0f
+    var fy = 0f
 }
 
 /**
@@ -70,6 +91,13 @@ class TableDraw {
         private val LEFT_BG = Color.rgb(226, 234, 250)
         private val BAR_BG = Color.rgb(230, 234, 240)
         private val BAR = Color.rgb(31, 95, 209)
+        /** План под таблицей (0.23). */
+        const val PLAN_HEAD = 46f
+        const val PLAN_TABS = 34f
+        const val PLAN_PAD = 12f
+        const val PLAN_LEG = 36f
+        const val PLAN_MIN_W = 900f
+        private val PLAN_BG = Color.rgb(243, 246, 250)
     }
 
     fun rowsTop() = TITLE_H + HEAD_H
@@ -92,8 +120,16 @@ class TableDraw {
         val prefix = IdTables.sectionPrefix(b, t)
         val volOn = cols.any { it.isVol }
         val all = if (volOn) IdTables.allRows(b, t) else rows
-        val swatch = IdTables.zahColors(b, t)
+        // Значок у номера захватки: цвет заливки на доске или области на плане (0.23, главнее).
+        val swatch = TablePlan.zahColorsAll(b, t)
+        val hasPlan = t.sheets.isNotEmpty()
         var h = 1125899906842597L
+        if (hasPlan) {
+            h = 31 * h + t.tab + t.zoneColor.hashCode()
+            for (sh in t.sheets) { h = 31 * h + sh.id.hashCode() + sh.name.hashCode(); h = 31 * h + (sh.cl + 3 * sh.ct + 7 * sh.cr + 13 * sh.cb).toRawBits() }
+            for (z in b.zones) if (z.t == t.id) h = 31 * h + z.id.hashCode() + z.zkey().hashCode()
+            for (r in IdTables.allRows(b, t)) h = 31 * h + r.igs.hashCode()
+        }
         h = 31 * h + t.title.hashCode()
         h = 31 * h + prefix.hashCode()
         for ((zk, c) in swatch) { h = 31 * h + zk.hashCode(); h = 31 * h + c }
@@ -126,7 +162,7 @@ class TableDraw {
                 if (c.isDate) w = max(w, tw("00.00.00", FONT, false) + 2 * PAD)
                 else if (c.isVol) for (r in rows) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, false) + 2 * PAD + 4f)
                 else for (r in rows) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, c.k == TableCol.ZAH || c.k == TableCol.UCH) + 2 * PAD +
-                    if (c.k == TableCol.ZAH && swatch.containsKey(r.zkey())) SWATCH + 5f else 0f)
+                    if (c.k == TableCol.ZAH && (hasPlan || swatch.containsKey(r.zkey()))) SWATCH + 5f else 0f)
                 w = min(max(w, if (c.k == TableCol.ZAH || c.k == TableCol.UCH) 64f else 56f), if (c.k == TableCol.NOTE) 260f else 230f)
             }
             widths[ci] = w
@@ -137,7 +173,12 @@ class TableDraw {
         val addW = PAD + tw("+ строка", FONT, true) + PAD * 2
         val need2 = addW + tw("+ следующая захватка", FONT, true) + PAD * 2
         val vol = if (volOn && all.isNotEmpty()) IdTables.volumes(b, t, all) else null
-        val needAll = max(max(need, need2), if (vol != null) VOL_MIN_W else 0f)
+        val planAddW = tw("+ план", FONT, true) + PAD * 2
+        val chipText = arrayOf(if (t.zoneColor == TablePlan.OWN) "Цвет: свой ▾" else "Цвет: по ИГС ▾", "+ лист", "Обвести захватку")
+        val chipW = chipText.map { tw(it, 13f, true) + 24f }
+        val planHeadNeed = PAD * 2 + tw("План захваток", 16f, true) + 30f + chipW.sum() + 8f * chipW.size
+        var needAll = max(max(need, need2 + if (hasPlan) 0f else planAddW + PAD), if (vol != null) VOL_MIN_W else 0f)
+        if (hasPlan) needAll = max(needAll, max(PLAN_MIN_W, planHeadNeed))
         if (cols.isNotEmpty() && needAll > total) { widths[widths.size - 1] += needAll - total; total = needAll }
         if (cols.isEmpty()) total = needAll
         val colX = FloatArray(cols.size + 1)
@@ -145,8 +186,50 @@ class TableDraw {
         val volTop = rowsTop() + max(1, rows.size) * ROW_H
         val missing = vol?.flatMap { it.missing } ?: emptyList()
         val volH = if (vol == null) 0f else VOL_HEAD + max(1, vol.size) * VOL_ROW + (if (missing.isNotEmpty()) VOL_NOTE else 0f) + VOL_PAD
-        val height = volTop + volH + FOOT_H
-        return TableLayout(h, cols, colX, rows, total, height, info, addW, prefix, vol, volTop, volH, missing, swatch).also { t.lay = it }
+        var height = volTop + volH + FOOT_H
+        var plan: PlanLayout? = null
+        if (hasPlan) {
+            val top = height
+            val tabsH = if (t.sheets.size > 1) PLAN_TABS else 0f
+            val tabX = FloatArray(t.sheets.size + 1)
+            tabX[0] = PLAN_PAD
+            for ((i, sh) in t.sheets.withIndex()) tabX[i + 1] = tabX[i] + tw(sheetName(t, i), 12.5f, true) + 26f + 6f
+            val sheetW = total - 2 * PLAN_PAD
+            val cur = TablePlan.current(t)!!
+            val sheetH = sheetW * cur.aspect()
+            val sheetTop = top + PLAN_HEAD + tabsH
+            val legend = TablePlan.legend(b, t)
+            val chips = FloatArray(6)
+            var x = total - PAD
+            for (i in 2 downTo 0) { chips[i * 2 + 1] = x; x -= chipW[i]; chips[i * 2] = x; x -= 8f }
+            val ph = PLAN_HEAD + tabsH + sheetH + PLAN_PAD + PLAN_LEG
+            plan = PlanLayout(top, ph, tabsH, tabX, sheetTop, sheetW, sheetH, chips, chipText, legend, if (t.sheets.size > 1) "" else cur.name)
+            height += ph
+        }
+        val planSplit = if (hasPlan) Float.MAX_VALUE else total - planAddW
+        return TableLayout(h, cols, colX, rows, total, height, info, addW, prefix, vol, volTop, volH, missing, swatch, plan, planSplit).also { t.lay = it }
+    }
+
+    fun sheetName(t: BoardTable, i: Int): String = t.sheets.getOrNull(i)?.name?.ifEmpty { null } ?: "Лист ${i + 1}"
+
+    /** Лист плана (видимая часть) на доске; null — листов нет. */
+    fun sheetRect(b: Board, t: BoardTable, out: RectF): RectF? {
+        val p = layout(b, t).plan ?: return null
+        val k = t.scale
+        out.set(t.x + PLAN_PAD * k, t.y + p.sheetTop * k, t.x + (PLAN_PAD + p.sheetW) * k, t.y + (p.sheetTop + p.sheetH) * k)
+        return out
+    }
+
+    /** Точка доски → доли картинки листа целиком (с учётом обрезки). */
+    fun toSheet(t: BoardTable, sh: PlanSheet, r: RectF, x: Float, y: Float, out: FloatArray) {
+        out[0] = sh.cl + (x - r.left) / r.width() * (sh.cr - sh.cl)
+        out[1] = sh.ct + (y - r.top) / r.height() * (sh.cb - sh.ct)
+    }
+
+    /** Доли картинки → точка доски. */
+    fun fromSheet(sh: PlanSheet, r: RectF, fx: Float, fy: Float, out: FloatArray) {
+        out[0] = r.left + (fx - sh.cl) / (sh.cr - sh.cl) * r.width()
+        out[1] = r.top + (fy - sh.ct) / (sh.cb - sh.ct) * r.height()
     }
 
     fun bounds(b: Board, t: BoardTable, out: RectF): RectF {
@@ -176,6 +259,28 @@ class TableDraw {
             if (vol.isEmpty() && i == 0) return TableHit(TableHit.VOL_ADD, null, null)
             return TableHit(if (l.volMissing.isNotEmpty()) TableHit.VOL_NOTE else TableHit.VOL_ADD, null, null)
         }
+        val p = l.plan
+        if (p != null && v >= p.top) {
+            val dv = v - p.top
+            if (dv < PLAN_HEAD) {
+                for (i in 0 until 3) if (u >= p.chips[i * 2] - 4f && u <= p.chips[i * 2 + 1] + 4f)
+                    return TableHit(when (i) { 0 -> TableHit.PLAN_COLOR; 1 -> TableHit.PLAN_ADD; else -> TableHit.PLAN_OUTLINE }, null, null)
+                return TableHit(TableHit.TITLE, null, null)
+            }
+            if (dv < PLAN_HEAD + p.tabsH) {
+                for (i in 0 until p.tabX.size - 1) if (u >= p.tabX[i] && u < p.tabX[i + 1]) return TableHit(TableHit.PLAN_TAB, null, i.toString())
+                return TableHit(TableHit.TITLE, null, null)
+            }
+            val sh = TablePlan.current(t)
+            if (sh != null && v >= p.sheetTop && v <= p.sheetTop + p.sheetH && u >= PLAN_PAD && u <= PLAN_PAD + p.sheetW) {
+                return TableHit(TableHit.PLAN_SHEET, null, null).also {
+                    it.fx = sh.cl + (u - PLAN_PAD) / p.sheetW * (sh.cr - sh.cl)
+                    it.fy = sh.ct + (v - p.sheetTop) / p.sheetH * (sh.cb - sh.ct)
+                }
+            }
+            return TableHit(TableHit.TITLE, null, null)
+        }
+        if (u >= l.planSplit) return TableHit(TableHit.PLAN_ADD, null, null)
         return TableHit(if (u < l.addSplit) TableHit.ADD else TableHit.ADD_NEXT, null, col)
     }
 
@@ -305,8 +410,82 @@ class TableDraw {
         val fy = y0 + (l.volTop + l.volH) * k + FOOT_H / 2f * k + text.textSize * 0.36f
         canvas.drawText("+ строка", x0 + PAD * k, fy, text)
         canvas.drawText("+ следующая захватка", x0 + (l.addSplit + PAD) * k, fy, text)
+        if (l.planSplit < l.w) canvas.drawText("+ план", x0 + (l.planSplit + PAD) * k, fy, text)
         text.isFakeBoldText = false
+        l.plan?.let { drawPlan(canvas, t, l, it, x0, y0, w, k) }
         outline(canvas, x0, y0, w, h, k)
+    }
+
+    /** Шапка плана, вкладки, подложка листа (картинку и области рисует доска), легенда. */
+    private fun drawPlan(canvas: Canvas, t: BoardTable, l: TableLayout, p: PlanLayout, x0: Float, y0: Float, w: Float, k: Float) {
+        val top = y0 + p.top * k
+        fill.color = PLAN_BG
+        canvas.drawRect(x0, top, x0 + w, top + PLAN_HEAD * k, fill)
+        line.color = Ui.RULE; line.strokeWidth = 1f * k
+        canvas.drawLine(x0, top, x0 + w, top, line)
+        text.textSize = 16f * k; text.isFakeBoldText = true; text.color = Ui.INK
+        val ty = top + PLAN_HEAD / 2f * k + 16f * k * 0.36f
+        canvas.drawText("План захваток", x0 + PAD * 1.4f * k, ty, text)
+        val tw0 = text.measureText("План захваток")
+        text.isFakeBoldText = false; text.textSize = 12.5f * k; text.color = Ui.MUTED
+        if (p.title.isNotEmpty()) canvas.drawText(fit(p.title, p.chips[0] * k - tw0 - 40f * k), x0 + PAD * 1.4f * k + tw0 + 12f * k, ty, text)
+        for (i in 0 until 3) {
+            rect.set(x0 + p.chips[i * 2] * k, top + 8f * k, x0 + p.chips[i * 2 + 1] * k, top + (PLAN_HEAD - 8f) * k)
+            fill.color = if (i == 2) Ui.ACCENT else Color.rgb(226, 231, 239)
+            canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, fill)
+            text.textSize = 13f * k; text.isFakeBoldText = true; text.color = if (i == 2) Color.WHITE else Ui.INK
+            canvas.drawText(p.chipText[i], rect.left + 12f * k, rect.centerY() + 13f * k * 0.36f, text)
+        }
+        text.isFakeBoldText = false
+        // Вкладки листов.
+        if (p.tabsH > 0f) {
+            val ty0 = top + PLAN_HEAD * k
+            for (i in 0 until p.tabX.size - 1) {
+                val on = i == t.tab.coerceIn(0, t.sheets.size - 1)
+                rect.set(x0 + p.tabX[i] * k, ty0 + 5f * k, x0 + (p.tabX[i + 1] - 6f) * k, ty0 + p.tabsH * k)
+                fill.color = if (on) Color.WHITE else Color.rgb(234, 238, 244)
+                canvas.drawRoundRect(rect, 7f * k, 7f * k, fill)
+                if (on) { fill.color = Ui.ACCENT; canvas.drawRect(rect.left + 4f * k, rect.top, rect.right - 4f * k, rect.top + 2.5f * k, fill) }
+                text.textSize = 12.5f * k; text.isFakeBoldText = on; text.color = if (on) Ui.INK else Ui.INK2
+                canvas.drawText(sheetName(t, i), rect.left + 13f * k, rect.centerY() + 12.5f * k * 0.36f + 2f * k, text)
+            }
+            text.isFakeBoldText = false
+        }
+        // Подложка листа (пока картинка грузится).
+        val sy = y0 + p.sheetTop * k
+        fill.color = Ui.DESK
+        canvas.drawRect(x0 + PLAN_PAD * k, sy, x0 + (PLAN_PAD + p.sheetW) * k, sy + p.sheetH * k, fill)
+        // Легенда.
+        val ly = sy + (p.sheetH + PLAN_PAD + PLAN_LEG / 2f) * k
+        var lx = x0 + PAD * 1.4f * k
+        text.textSize = 12.5f * k
+        val cy = ly + 12.5f * k * 0.36f
+        if (t.zoneColor == TablePlan.OWN) {
+            text.color = Ui.MUTED
+            canvas.drawText("Цвет — свой у каждой захватки. Касание области — её строки в таблице", lx, cy, text)
+            return
+        }
+        if (p.legend.isEmpty()) {
+            text.color = Ui.MUTED
+            canvas.drawText("Обведите захватки на плане — «Обвести захватку» или касание номера захватки в таблице", lx, cy, text)
+            return
+        }
+        for ((st, n) in p.legend) {
+            val c = st?.color ?: TablePlan.NO_ROWS
+            rect.set(lx, ly - 7f * k, lx + 14f * k, ly + 7f * k)
+            fill.color = (c and 0x00FFFFFF) or (0x5A shl 24)
+            canvas.drawRoundRect(rect, 3f * k, 3f * k, fill)
+            line.color = c; line.strokeWidth = 1.5f * k
+            canvas.drawRoundRect(rect, 3f * k, 3f * k, line)
+            text.color = Ui.INK2
+            val s = "${st?.name ?: "строк нет"} — $n"
+            canvas.drawText(s, lx + 20f * k, cy, text)
+            lx += 20f * k + text.measureText(s) + 18f * k
+        }
+        text.color = Ui.MUTED
+        val note = "цвет — по самой отстающей схеме захватки"
+        val nw = text.measureText(note)
+        if (lx + nw < x0 + w - PAD * k) canvas.drawText(note, x0 + w - PAD * 1.4f * k - nw, cy, text)
     }
 
     private fun outline(canvas: Canvas, x0: Float, y0: Float, w: Float, h: Float, k: Float) {
@@ -359,12 +538,22 @@ class TableDraw {
         var tx = cx + PAD * k
         if (c.k == TableCol.ZAH) {
             // Захватка привязана к заливке на плане — значок её цвета перед номером.
-            t0(b, r)?.lay?.swatch?.get(r.zkey())?.let { col ->
+            val lay = t0(b, r)?.lay
+            val col = lay?.swatch?.get(r.zkey())
+            if (col != null) {
                 rect.set(tx, cy - SWATCH / 2f * k, tx + SWATCH * k, cy + SWATCH / 2f * k)
                 fill.color = col
                 canvas.drawRoundRect(rect, 3f * k, 3f * k, fill)
                 line.color = Board.statusFg(col); line.strokeWidth = 1f * k
                 canvas.drawRoundRect(rect, 3f * k, 3f * k, line)
+                tx += (SWATCH + 5f) * k
+            } else if (lay?.plan != null) {
+                // Есть план, а захватка на нём не обведена — пунктирный квадратик (касание — обвести).
+                rect.set(tx + 0.75f * k, cy - SWATCH / 2f * k + 0.75f * k, tx + SWATCH * k - 0.75f * k, cy + SWATCH / 2f * k - 0.75f * k)
+                line.color = Ui.ACCENT; line.strokeWidth = 1.3f * k
+                line.pathEffect = android.graphics.DashPathEffect(floatArrayOf(2.5f * k, 2f * k), 0f)
+                canvas.drawRoundRect(rect, 3f * k, 3f * k, line)
+                line.pathEffect = null
                 tx += (SWATCH + 5f) * k
             }
         }
