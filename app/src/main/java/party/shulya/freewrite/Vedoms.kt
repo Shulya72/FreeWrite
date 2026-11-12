@@ -26,8 +26,8 @@ class BoardVedom(var x: Float, var y: Float, var scale: Float, var kind: String,
 
 /**
  * Позиция ведомости: схема [r] (строка таблицы), порядок [o], результат [res] и его дата [rd].
- * lt/lz/lc/lw — шифр, захватка, конструкция, вид работ на момент добавления: ведомость в архиве читается, даже если
- * строку потом удалили.
+ * lt/lu/lz/lc/lw — шифр, участок, захватка, тип конструкции, вид работ на момент добавления: ведомость в архиве
+ * читается, даже если строку потом удалили.
  */
 class BoardVItem(var v: String, var r: String, var o: Double) {
     var id: String = Ids.next()
@@ -35,10 +35,14 @@ class BoardVItem(var v: String, var r: String, var o: Double) {
     var res = ""
     var rd = ""
     var lt = ""
+    var lu = ""
     var lz = ""
     var lc = ""
     var lw = ""
 }
+
+/** Подпись позиции ведомости: шифр (полное имя таблицы), участок, захватка, тип конструкции, вид работ. */
+class VLabel(val title: String, val uch: String, val zah: String, val con: String, val work: String)
 
 /**
  * Событие истории схемы (ТЗ, раздел 7): кто, когда, что было → стало ([k] — столбец: статус или дата), по какой ведомости
@@ -137,7 +141,7 @@ object Vedoms {
         sb.append("{\"id\":").append(q(i.id)).append(",\"v\":").append(q(i.v)).append(",\"r\":").append(q(i.r))
         sb.append(",\"o\":").append(JSONObject.numberToString(i.o))
         fun s(k: String, x: String) { if (x.isNotEmpty()) sb.append(",\"").append(k).append("\":").append(q(x)) }
-        s("res", i.res); s("rd", i.rd); s("lt", i.lt); s("lz", i.lz); s("lc", i.lc); s("lw", i.lw)
+        s("res", i.res); s("rd", i.rd); s("lt", i.lt); s("lu", i.lu); s("lz", i.lz); s("lc", i.lc); s("lw", i.lw)
         sb.append('}')
         return sb.toString()
     }
@@ -145,7 +149,7 @@ object Vedoms {
     fun parseItem(j: JSONObject) = BoardVItem(j.optString("v"), j.optString("r"), j.optDouble("o", 0.0).takeIf { it.isFinite() } ?: 0.0).also {
         it.id = j.optString("id", "")
         it.res = j.optString("res").takeIf { r -> r == OK || r == NO || r == FIX }.orEmpty()
-        it.rd = j.optString("rd"); it.lt = j.optString("lt"); it.lz = j.optString("lz"); it.lc = j.optString("lc"); it.lw = j.optString("lw")
+        it.rd = j.optString("rd"); it.lt = j.optString("lt"); it.lu = j.optString("lu"); it.lz = j.optString("lz"); it.lc = j.optString("lc"); it.lw = j.optString("lw")
     }
 
     fun eventJson(e: BoardEvent): String {
@@ -171,20 +175,20 @@ object Vedoms {
 
     fun endOrder(b: Board, v: BoardVedom): Double = (b.vitems.filter { it.v == v.id }.maxOfOrNull { it.o } ?: 0.0) + 1.0
 
-    /** Шифр, захватка, конструкция, вид работ позиции: по строке таблицы (если она есть) или как было при добавлении. */
-    fun label(b: Board, i: BoardVItem): Array<String> {
-        val r = rec(b, i) ?: return arrayOf(i.lt, i.lz, i.lc, i.lw)
-        return arrayOf(IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(), r.zah, r.con, r.work)
+    /** Шифр, участок, захватка, тип конструкции, вид работ позиции: по строке таблицы (если она есть) или как было при добавлении. */
+    fun label(b: Board, i: BoardVItem): VLabel {
+        val r = rec(b, i) ?: return VLabel(i.lt, i.lu, i.lz, i.lc, i.lw)
+        return VLabel(IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(), r.uch, r.zah, r.con, r.work)
     }
 
     fun labelText(b: Board, i: BoardVItem): String {
         val l = label(b, i)
-        return listOf(l[0], l[1].takeIf { it.isNotEmpty() }?.let { "захв. $it" }.orEmpty(), l[2], l[3]).filter { it.isNotBlank() }.joinToString(" · ")
+        return listOf(l.title, l.uch, l.zah.takeIf { it.isNotEmpty() }?.let { "захв. $it" }.orEmpty(), l.con, l.work).filter { it.isNotBlank() }.joinToString(" · ")
     }
 
     fun remember(b: Board, i: BoardVItem) {
         val r = rec(b, i) ?: return
-        i.lt = IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(); i.lz = r.zah; i.lc = r.con; i.lw = r.work
+        i.lt = IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(); i.lu = r.uch; i.lz = r.zah; i.lc = r.con; i.lw = r.work
     }
 
     /** Закрыта: ПТО — сразу после передачи; АН и заказчик — когда у всех позиций есть результат. Список не закрывается. */

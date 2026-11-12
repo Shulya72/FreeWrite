@@ -75,12 +75,13 @@ class TablesTest {
         val b = sample()
         val t = b.tables[0]
         t.cols.addAll(TableCol.defaults())
-        t.cols.first { it.k == TableCol.ZAH }.name = "Участок"
+        t.cols.first { it.k == TableCol.ZAH }.name = "Этаж"
         t.cols.first { it.k == TableCol.AOSR }.hidden = true; t.cols.first { it.k == TableCol.NSCH }.hidden = true
+        t.cols.first { it.k == TableCol.UCH }.hidden = true
         t.cols.first { it.k == TableCol.NOTE }.hidden = true
         t.cols.add(t.cols.indexOfFirst { it.k == TableCol.CON } + 1, TableCol("cabc12", "Секция"))
         b.recs[0].extra["cabc12"] = "1"
-        assertEquals(listOf("Участок", "Конструкция", "Секция"), t.visibleCols().take(3).map { it.title() })
+        assertEquals(listOf("Этаж", "Тип конструкции", "Секция"), t.visibleCols().take(3).map { it.title() })
         assertTrue(t.visibleCols().none { it.k == TableCol.NOTE })
 
         // JSON туда-обратно — те же строки.

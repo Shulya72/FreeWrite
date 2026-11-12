@@ -2176,14 +2176,19 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         val r = f.bounds()
         val minSide = min(r.width(), r.height())
         if (minSide * z < Ui.dpf(context, 22f)) return // на экране мелко — не подписываем
-        val size = (minSide * 0.32f).coerceIn(Ui.dpf(context, 14f) / z, Ui.dpf(context, 64f) / z).coerceAtMost(minSide * 0.6f)
+        var size = (minSide * 0.32f).coerceIn(Ui.dpf(context, 14f) / z, Ui.dpf(context, 64f) / z).coerceAtMost(minSide * 0.6f)
+        val text = f.label()
+        // С участком подпись длиннее («LM1 · 3») — не шире заливки.
+        labelPaint.textSize = size
+        val tw = labelPaint.measureText(text)
+        if (tw > r.width() * 0.9f) size = max(size * r.width() * 0.9f / tw, Ui.dpf(context, 10f) / z)
         val c = fillCenter(f, labelPt)
         labelPaint.textSize = size; haloPaint.textSize = size
         haloPaint.strokeWidth = size * 0.18f
         labelPaint.color = Board.statusFg(f.color)
         val y = c.y + size * 0.36f
-        canvas.drawText(f.lz, c.x, y, haloPaint)
-        canvas.drawText(f.lz, c.x, y, labelPaint)
+        canvas.drawText(text, c.x, y, haloPaint)
+        canvas.drawText(text, c.x, y, labelPaint)
     }
 
     /** Подсветка заливки захватки: толстый контур цвета акцента. */

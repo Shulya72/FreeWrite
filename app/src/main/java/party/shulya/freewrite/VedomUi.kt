@@ -335,7 +335,7 @@ class VedomUi(private val a: BoardActivity) {
             if (wSel.isNotEmpty() && r.who.trim() !in wSel) return false
             val q = text.text.toString().trim().lowercase(Locale.ROOT)
             if (q.isNotEmpty()) {
-                val hay = (IdTables.fullTitle(b, t) + " " + r.zah + " " + r.con + " " + r.work + " " + r.who + " " + r.note).lowercase(Locale.ROOT)
+                val hay = (IdTables.fullTitle(b, t) + " " + r.uch + " " + r.zah + " " + r.con + " " + r.work + " " + r.who + " " + r.note).lowercase(Locale.ROOT)
                 if (!q.split(' ').filter { it.isNotBlank() }.all { it in hay }) return false
             }
             return true
@@ -356,7 +356,7 @@ class VedomUi(private val a: BoardActivity) {
                     tag = "col_row_$n"
                     isEnabled = !inThis
                     isChecked = checked[r.id] == true && !inThis
-                    val line = listOf(IdTables.fullTitle(b, t), t.colName(TableCol.ZAH).lowercase().take(5) + ". " + r.zah, r.con, r.work).filter { it.isNotBlank() }.joinToString(" · ")
+                    val line = listOf(IdTables.fullTitle(b, t), r.uch, t.colName(TableCol.ZAH).lowercase().take(5) + ". " + r.zah, r.con, r.work).filter { it.isNotBlank() }.joinToString(" · ")
                     this.text = line + "  [" + st.name + "]" + when {
                         inThis -> "  — уже в этой ведомости"
                         elsewhere.isNotEmpty() -> "  ⚠ уже в ведомости " + elsewhere.joinToString { it.num }
@@ -425,7 +425,7 @@ class VedomUi(private val a: BoardActivity) {
     private fun warnWaiting(x: BoardVedom, recs: List<BoardRec>) {
         val lines = recs.mapNotNull { r ->
             val o = Vedoms.waitingElsewhere(b, r, x)
-            if (o.isEmpty()) null else "• " + listOf(IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(), r.zah, r.work).filter { it.isNotBlank() }.joinToString(" · ") +
+            if (o.isEmpty()) null else "• " + listOf(IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty(), r.uch, r.zah, r.work).filter { it.isNotBlank() }.joinToString(" · ") +
                 " — " + o.joinToString { it.num }
         }
         if (lines.isEmpty()) return
@@ -435,13 +435,14 @@ class VedomUi(private val a: BoardActivity) {
     }
 
     /**
-     * Вписать вручную: шифр + захватка + вид работ (+ конструкция). Схема есть — добавляется ссылкой; нет — предложим
+     * Вписать вручную: шифр + (участок) + захватка + вид работ (+ тип конструкции). Схема есть — добавляется ссылкой; нет — предложим
      * создать строку в таблице шифра; нет и таблицы — предложим создать таблицу. Без подтверждения ничего не создаётся.
      */
     fun manualDialog(x: BoardVedom, cipher0: String = "", zah0: String = "") {
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(4f), dp(20f), 0) }
         fun label(s: String) = Ui.text(a, s, 13f, Ui.MUTED, bold = true).apply { setPadding(0, dp(10f), 0, dp(2f)) }
         val cipher = EditText(a).apply { setText(cipher0); isSingleLine = true; hint = "например: КЖ 6.1.1"; tag = "man_cipher" }
+        val uch = EditText(a).apply { isSingleLine = true; hint = "например: LM1 — можно не заполнять"; tag = "man_uch" }
         val zah = EditText(a).apply { setText(zah0); isSingleLine = true; hint = "например: 5 или Лоток №2"; tag = "man_zah" }
         val con = EditText(a).apply { isSingleLine = true; hint = "можно не заполнять"; tag = "man_con" }
         box.addView(label("Шифр")); box.addView(cipher)
@@ -450,8 +451,9 @@ class VedomUi(private val a: BoardActivity) {
             for ((i, n) in b.tables.map { IdTables.fullTitle(b, it) }.sortedWith { p, q -> IdTables.naturalCompare(p, q) }.withIndex())
                 addView(Ui.chip(a, n.ifEmpty { "без шифра" }, Ui.INK, Ui.DESK).apply { tag = "man_t_$i"; setOnClickListener { cipher.setText(n) } })
         })
-        box.addView(label("Захватка / участок")); box.addView(zah)
-        box.addView(label("Конструкция")); box.addView(con)
+        box.addView(label("Участок")); box.addView(uch)
+        box.addView(label("Захватка")); box.addView(zah)
+        box.addView(label("Тип конструкции")); box.addView(con)
         box.addView(label("Вид работ — можно несколько; ничего — все схемы захватки"))
         val works = LinkedHashSet<String>()
         val flow = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(6f) }
@@ -469,7 +471,7 @@ class VedomUi(private val a: BoardActivity) {
             val c = cipher.text.toString().trim()
             val z = zah.text.toString().trim()
             if (c.isEmpty() || z.isEmpty()) { a.hint("Впишите шифр и захватку", 1800); return }
-            resolveManual(x, c, z, con.text.toString().trim(), works.toList(), then)
+            resolveManual(x, c, z, con.text.toString().trim(), works.toList(), uch.text.toString().trim(), then)
         }
         val d = AlertDialog.Builder(a).setTitle("Вписать схему · ${x.num}")
             .setView(ScrollView(a).apply { addView(box) })
@@ -486,21 +488,21 @@ class VedomUi(private val a: BoardActivity) {
         d.show()
     }
 
-    /** Найти схемы по шифру/захватке/конструкции/видам работ; недостающее — создать после подтверждения. */
-    internal fun resolveManual(x: BoardVedom, cipher: String, zah: String, con: String, works: List<String>, then: () -> Unit) {
+    /** Найти схемы по шифру/участку/захватке/конструкции/видам работ; недостающее — создать после подтверждения. Пустой участок — любой. */
+    internal fun resolveManual(x: BoardVedom, cipher: String, zah: String, con: String, works: List<String>, uch: String = "", then: () -> Unit) {
         // Шифр — раздел, «раздел · подраздел» или название таблицы: в разделе может быть несколько таблиц-подразделов.
         val key = IdTables.norm(cipher)
         val cands = b.tables.filter { IdTables.norm(IdTables.fullTitle(b, it)) == key || IdTables.norm(it.title) == key ||
             IdTables.norm(b.sectionOf(it)?.title.orEmpty()) == key }
         val t = cands.firstOrNull()
-        val label = listOf(cipher, "захв. $zah", con, works.joinToString(" + ")).filter { it.isNotBlank() }.joinToString(" · ")
+        val label = listOf(cipher, uch, "захв. $zah", con, works.joinToString(" + ")).filter { it.isNotBlank() }.joinToString(" · ")
         fun createRows(table: BoardTable, list: List<String>, newTable: Boolean) {
             a.pushUndo()
             if (newTable) b.tables += table
             var o = IdTables.endOrder(b, table)
             val made = ArrayList<BoardRec>()
             for (w in list.ifEmpty { listOf("") }) {
-                val r = BoardRec(table.id, o).apply { this.zah = zah; this.con = con; this.work = w }
+                val r = BoardRec(table.id, o).apply { this.uch = uch; this.zah = zah; this.con = con; this.work = w }
                 b.recs += r; made += r; o += 1.0
             }
             val n = Vedoms.add(b, x, made, who())
@@ -519,8 +521,8 @@ class VedomUi(private val a: BoardActivity) {
             return
         }
         val rows = cands.flatMap { IdTables.allRows(b, it) }
-        val nz = IdTables.norm(zah); val nc = IdTables.norm(con)
-        fun base(r: BoardRec) = IdTables.norm(r.zah) == nz && (nc.isEmpty() || IdTables.norm(r.con) == nc)
+        val nz = IdTables.norm(zah); val nc = IdTables.norm(con); val nu = IdTables.norm(uch)
+        fun base(r: BoardRec) = IdTables.norm(r.zah) == nz && (nc.isEmpty() || IdTables.norm(r.con) == nc) && (nu.isEmpty() || IdTables.norm(r.uch) == nu)
         val found = ArrayList<BoardRec>()
         val missing = ArrayList<String>()
         if (works.isEmpty()) {
@@ -541,14 +543,14 @@ class VedomUi(private val a: BoardActivity) {
         val ml = missing.joinToString(" + ") { it.ifEmpty { "без вида работ" } }
         if (cands.size > 1) {
             // Несколько таблиц-подразделов — спросить, в какую добавить строку.
-            AlertDialog.Builder(a).setTitle("Схемы «захватка $zah · $ml» нет — в какую таблицу добавить?")
+            AlertDialog.Builder(a).setTitle("Схемы «${IdTables.zahLabel(uch, "захватка $zah")} · $ml» нет — в какую таблицу добавить?")
                 .setItems(cands.map { IdTables.fullTitle(b, it) }.toTypedArray()) { _, i -> createRows(cands[i], missing.filter { it.isNotEmpty() }, newTable = false) }
                 .setNegativeButton("Не создавать") { _, _ -> then() }
                 .show()
             return
         }
         AlertDialog.Builder(a).setTitle("Нет схемы в таблице «${IdTables.fullTitle(b, t)}»")
-            .setMessage("В таблице «${IdTables.fullTitle(b, t)}» нет схемы: захватка $zah${if (con.isNotEmpty()) " · $con" else ""} · $ml. Создать строку (остальные поля — пустые) и добавить в ведомость?")
+            .setMessage("В таблице «${IdTables.fullTitle(b, t)}» нет схемы: ${IdTables.zahLabel(uch, "захватка $zah")}${if (con.isNotEmpty()) " · $con" else ""} · $ml. Создать строку (остальные поля — пустые) и добавить в ведомость?")
             .setPositiveButton("Создать") { _, _ -> createRows(t, missing.filter { it.isNotEmpty() }, newTable = false) }
             .setNegativeButton("Не создавать") { _, _ -> then() }
             .show()
@@ -851,7 +853,7 @@ class VedomUi(private val a: BoardActivity) {
             }
             box.addView(row)
         }
-        val title = listOf(t?.let { IdTables.fullTitle(b, it) }.orEmpty(), rec.zah.takeIf { it.isNotEmpty() }?.let { "захв. $it" }.orEmpty(), rec.work).filter { it.isNotBlank() }.joinToString(" · ")
+        val title = listOf(t?.let { IdTables.fullTitle(b, it) }.orEmpty(), rec.uch, rec.zah.takeIf { it.isNotEmpty() }?.let { "захв. $it" }.orEmpty(), rec.work).filter { it.isNotBlank() }.joinToString(" · ")
         AlertDialog.Builder(a).setTitle("История · $title").setView(ScrollView(a).apply { addView(box) })
             .setPositiveButton("Закрыть", null).show()
     }

@@ -125,9 +125,9 @@ class TableDraw {
             } else {
                 if (c.isDate) w = max(w, tw("00.00.00", FONT, false) + 2 * PAD)
                 else if (c.isVol) for (r in rows) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, false) + 2 * PAD + 4f)
-                else for (r in rows) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, c.k == TableCol.ZAH) + 2 * PAD +
-                    if (c.k == TableCol.ZAH && swatch.containsKey(IdTables.norm(r.zah))) SWATCH + 5f else 0f)
-                w = min(max(w, if (c.k == TableCol.ZAH) 64f else 56f), if (c.k == TableCol.NOTE) 260f else 230f)
+                else for (r in rows) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, c.k == TableCol.ZAH || c.k == TableCol.UCH) + 2 * PAD +
+                    if (c.k == TableCol.ZAH && swatch.containsKey(r.zkey())) SWATCH + 5f else 0f)
+                w = min(max(w, if (c.k == TableCol.ZAH || c.k == TableCol.UCH) 64f else 56f), if (c.k == TableCol.NOTE) 260f else 230f)
             }
             widths[ci] = w
         }
@@ -359,7 +359,7 @@ class TableDraw {
         var tx = cx + PAD * k
         if (c.k == TableCol.ZAH) {
             // Захватка привязана к заливке на плане — значок её цвета перед номером.
-            t0(b, r)?.lay?.swatch?.get(IdTables.norm(r.zah))?.let { col ->
+            t0(b, r)?.lay?.swatch?.get(r.zkey())?.let { col ->
                 rect.set(tx, cy - SWATCH / 2f * k, tx + SWATCH * k, cy + SWATCH / 2f * k)
                 fill.color = col
                 canvas.drawRoundRect(rect, 3f * k, 3f * k, fill)
@@ -369,8 +369,8 @@ class TableDraw {
             }
         }
         text.textSize = FONT * k
-        text.color = if (c.k == TableCol.ZAH) Ui.INK else Ui.INK2
-        text.isFakeBoldText = c.k == TableCol.ZAH
+        text.color = if (c.k == TableCol.ZAH || c.k == TableCol.UCH) Ui.INK else Ui.INK2
+        text.isFakeBoldText = c.k == TableCol.ZAH || c.k == TableCol.UCH
         canvas.drawText(fit(s, cx + cw - PAD * k - tx), tx, cy + text.textSize * 0.36f, text)
         text.isFakeBoldText = false
     }

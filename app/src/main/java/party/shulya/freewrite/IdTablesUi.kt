@@ -109,7 +109,7 @@ class TableUi(private val a: BoardActivity) {
                 val c = col?.let { k -> t.allCols().firstOrNull { it.k == k } }
                 if (col != null && c != null && c.isStatus) { cellAction(t, r, col); return }
                 // Номер захватки, привязанной к заливке, — показать её на плане (ТЗ, раздел 8).
-                if (col == TableCol.ZAH && IdTables.fillsOf(b, t, r.zah).isNotEmpty()) { showFills(t, r.zah); return }
+                if (col == TableCol.ZAH && IdTables.fillsOf(b, t, r.uch, r.zah).isNotEmpty()) { showFills(t, r.uch, r.zah); return }
                 if (!pen || col == null) { rowCard(r); return }
                 cellAction(t, r, col)
             }
@@ -229,7 +229,7 @@ class TableUi(private val a: BoardActivity) {
     }
 
     private fun rowTitle(t: BoardTable, r: BoardRec) =
-        listOf(t.colName(TableCol.ZAH) + " " + r.zah.ifEmpty { "—" }, r.work).filter { it.isNotBlank() }.joinToString(" · ")
+        listOf(r.uch, t.colName(TableCol.ZAH) + " " + r.zah.ifEmpty { "—" }, r.work).filter { it.isNotBlank() }.joinToString(" · ")
 
     private fun move(r: BoardRec, d: Int) {
         val t = IdTables.tableOf(b, r) ?: return
@@ -497,9 +497,9 @@ class TableUi(private val a: BoardActivity) {
                 if (inV.isNotEmpty()) body.addView(Ui.text(a, "В ведомостях: " + inV.joinToString { (x, i) ->
                     x.num + if (!x.isDraft && Vedoms.hasAnswers(x.kind)) " — " + Vedoms.resName(x.kind, i.res).lowercase() else "" }, 14f, Ui.INK2)
                     .apply { setPadding(0, dp(10f), 0, 0); tag = "card_vedoms" })
-                if (IdTables.fillsOf(b, t, cur.zah).isNotEmpty()) {
-                    val zz = cur.zah
-                    body.addView(btn("Захватка ${zz} на плане", "card_plan", true) { d.dismiss(); showFills(t, zz) },
+                if (IdTables.fillsOf(b, t, cur.uch, cur.zah).isNotEmpty()) {
+                    val uu = cur.uch; val zz = cur.zah
+                    body.addView(btn("Захватка ${IdTables.zahLabel(uu, zz)} на плане", "card_plan", true) { d.dismiss(); showFills(t, uu, zz) },
                         LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8f) })
                 }
                 val more2 = LinearLayout(a)
@@ -656,7 +656,7 @@ class TableUi(private val a: BoardActivity) {
     // ---------------------------------------------------------------- новая строка
 
     /**
-     * «+ строка» / «+ следующая захватка»: захватка (следующая по номеру), конструкция, виды работ — можно несколько
+     * «+ строка» / «+ следующая захватка»: участок (как у последней строки), захватка (следующая по номеру), тип конструкции, виды работ — можно несколько
      * (по строке на каждый), дата, исполнитель. Статусы новой строки — «Не выполнено».
      */
     fun addForm(t: BoardTable, next: Boolean, after: BoardRec? = null) {
@@ -664,17 +664,20 @@ class TableUi(private val a: BoardActivity) {
         val last = after ?: rows.lastOrNull()
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(4f), dp(20f), 0) }
         fun label(s: String) = Ui.text(a, s, 13f, Ui.MUTED, bold = true).apply { setPadding(0, dp(10f), 0, dp(2f)) }
+        val uchOn = t.visibleCols().any { it.k == TableCol.UCH } || rows.any { it.uch.isNotBlank() }
+        val uch = EditText(a).apply { setText(last?.uch.orEmpty()); setSelection(text.length); isSingleLine = true; hint = "например: LM1"; tag = "add_uch" }
         val zah = EditText(a).apply {
             setText(if (next && last != null) IdTables.nextZah(last.zah) else ""); setSelection(text.length); isSingleLine = true
             hint = "например: 7 или Лоток №2"; tag = "add_zah"
         }
-        val con = EditText(a).apply { setText(last?.con.orEmpty()); isSingleLine = true; hint = "например: Стены и колонны"; tag = "add_con" }
+        val con = EditText(a).apply { setText(last?.con.orEmpty()); isSingleLine = true; hint = "например: Стены, Марш, Площадка"; tag = "add_con" }
         val who = EditText(a).apply { setText(last?.who.orEmpty()); isSingleLine = true; hint = "подрядчик"; tag = "add_who" }
         val other = EditText(a).apply { isSingleLine = true; hint = "другой вид работ"; tag = "add_work_other" }
         val works = LinkedHashSet<String>()
-        if (last != null) rows.filter { it.zah == last.zah && it.work.isNotEmpty() }.forEach { works += it.work }
+        if (last != null) rows.filter { it.zkey() == last.zkey() && it.work.isNotEmpty() }.forEach { works += it.work }
         if (works.isEmpty()) { works += "Опалубка"; works += "Бетон" }
         var date = ""
+        if (uchOn) { box.addView(label(t.colName(TableCol.UCH))); box.addView(uch) }
         box.addView(label(t.colName(TableCol.ZAH))); box.addView(zah)
         box.addView(label(t.colName(TableCol.CON))); box.addView(con)
         box.addView(label(t.colName(TableCol.WORK) + " — можно несколько, по строке на каждый"))
@@ -705,7 +708,8 @@ class TableUi(private val a: BoardActivity) {
         })
         fun create(): Int {
             val z = zah.text.toString().trim()
-            if (z.isEmpty()) { a.hint("Впишите номер захватки или участка"); return -1 }
+            val u = if (uchOn) uch.text.toString().trim() else ""
+            if (z.isEmpty() && u.isEmpty()) { a.hint("Впишите захватку"); return -1 }
             val list = ArrayList<String>(works.filter { it in allWorks })
             other.text.toString().trim().takeIf { it.isNotEmpty() }?.let { if (it !in list) list += it }
             if (list.isEmpty()) list += ""
@@ -715,9 +719,9 @@ class TableUi(private val a: BoardActivity) {
             if (after != null && step != null) o = after.o + step
             var n = 0
             for (w in list) {
-                if (b.recs.any { it.t == t.id && it.key() == IdTables.key(z, con.text.toString(), w) }) continue
+                if (b.recs.any { it.t == t.id && it.key() == IdTables.key(u, z, con.text.toString(), w) }) continue
                 b.recs += BoardRec(t.id, o).apply {
-                    this.zah = z; this.con = con.text.toString().trim(); this.work = w; this.date = date; this.who = who.text.toString().trim()
+                    this.uch = u; this.zah = z; this.con = con.text.toString().trim(); this.work = w; this.date = date; this.who = who.text.toString().trim()
                 }
                 o += step ?: 1.0
                 n++
@@ -848,8 +852,8 @@ class TableUi(private val a: BoardActivity) {
             sel.isNotEmpty() && sel.all { it is BoardRec } -> "Строк: ${sel.size}"
             sel.size == 1 && sel[0] is BoardFill -> (sel[0] as BoardFill).let { f ->
                 IdTables.tableOfFill(b, f)?.let { t ->
-                    val rows = IdTables.zahRows(b, t, f.lz)
-                    "Захватка ${f.lz} · ${IdTables.fullTitle(b, t)}" + if (rows.isEmpty()) " · строк нет" else
+                    val rows = IdTables.zahRows(b, t, f.lu, f.lz)
+                    "Захватка ${f.label()} · ${IdTables.fullTitle(b, t)}" + if (rows.isEmpty()) " · строк нет" else
                         " · " + rows.joinToString { r -> r.work.ifBlank { "схема" }.lowercase() + " — " + IdTables.status(b, BoardStatus.ID, r.igs).name.lowercase() }
                 }
             }
@@ -867,7 +871,7 @@ class TableUi(private val a: BoardActivity) {
         val f = sel.singleOrNull() as? BoardFill
         val t = f?.let { IdTables.tableOfFill(b, it) }
         if (f != null && t != null) {
-            v.markedRecs = IdTables.zahRows(b, t, f.lz).toSet()
+            v.markedRecs = IdTables.zahRows(b, t, f.lu, f.lz).toSet()
             markedByFill = true
             v.invalidate()
         } else if (markedByFill) {
@@ -878,11 +882,12 @@ class TableUi(private val a: BoardActivity) {
     }
 
     /** Касание номера захватки (или «на плане»): подсветить её заливки и строки, показать заливки, если их не видно. */
-    fun showFills(t: BoardTable, zah: String) {
-        val fills = IdTables.fillsOf(b, t, zah)
-        if (fills.isEmpty()) { a.hint("Захватка $zah не привязана к заливке на плане", 1800); return }
+    fun showFills(t: BoardTable, uch: String, zah: String) {
+        val fills = IdTables.fillsOf(b, t, uch, zah)
+        val name = IdTables.zahLabel(uch, zah)
+        if (fills.isEmpty()) { a.hint("Захватка $name не привязана к заливке на плане", 1800); return }
         v.markedFills = fills.toSet()
-        v.markedRecs = IdTables.zahRows(b, t, zah).toSet()
+        v.markedRecs = IdTables.zahRows(b, t, uch, zah).toSet()
         val u = RectF(fills[0].bounds())
         for (f in fills) u.union(f.bounds())
         val screen = RectF(v.wx(0f), v.wy(0f), v.wx(v.width.toFloat()), v.wy(v.height.toFloat()))
@@ -891,11 +896,11 @@ class TableUi(private val a: BoardActivity) {
             v.fitRect(u.left - m, u.top - m, u.right + m, u.bottom + m)
         }
         v.invalidate()
-        a.showModeBar("Захватка $zah на плане · ${Ui.plural(fills.size, "заливка", "заливки", "заливок")}", listOf(
+        a.showModeBar("Захватка $name на плане · ${Ui.plural(fills.size, "заливка", "заливки", "заливок")}", listOf(
             Ui.pill(a, "← К таблице", Ui.INK, Ui.DESK).apply {
                 tag = "zah_back"
                 setOnClickListener {
-                    val rows = IdTables.zahRows(b, t, zah)
+                    val rows = IdTables.zahRows(b, t, uch, zah)
                     if (rows.isNotEmpty()) showRows(rows) else { val r = v.tableDraw.bounds(b, t, RectF()); v.fitRect(r.left, r.top, r.right, r.bottom) }
                 }
             },
@@ -909,8 +914,8 @@ class TableUi(private val a: BoardActivity) {
     /** Показать в таблице строки захватки привязанной заливки. */
     fun showFillRows(f: BoardFill) {
         val t = IdTables.tableOfFill(b, f) ?: return
-        val rows = IdTables.zahRows(b, t, f.lz)
-        if (rows.isEmpty()) { a.hint("В таблице «${IdTables.fullTitle(b, t)}» нет строк захватки ${f.lz}", 2000); return }
+        val rows = IdTables.zahRows(b, t, f.lu, f.lz)
+        if (rows.isEmpty()) { a.hint("В таблице «${IdTables.fullTitle(b, t)}» нет строк захватки ${f.label()}", 2000); return }
         v.markedFills = setOf(f)
         showRows(rows)
         markedByFill = true
@@ -940,17 +945,22 @@ class TableUi(private val a: BoardActivity) {
         box.addView(Ui.text(a, "Заливка — для ориентира, её цвет не меняется. Касание заливки покажет строки захватки в таблице, " +
             "касание номера в таблице — заливку на плане.", 13f, Ui.MUTED))
         val zahs = IdTables.zahList(b, t)
-        val linked = b.fills.filter { it.lt == t.id }.map { IdTables.norm(it.lz) }.toSet()
+        val linked = b.fills.filter { it.lt == t.id }.map { it.zkey() }.toSet()
+        // Участок — если в таблице есть участки (LM1, LM2…) или заливка уже привязана с участком.
+        val withUch = IdTables.uchList(b, t).isNotEmpty() || (f0.lt == t.id && f0.lu.isNotEmpty())
+        val uchEdit = EditText(a).apply { setText(f0.lu.takeIf { f0.lt == t.id }.orEmpty()); isSingleLine = true; hint = t.colName(TableCol.UCH).lowercase(); tag = "zah_uch" }
         val edit = EditText(a).apply { setText(f0.lz.takeIf { f0.lt == t.id }.orEmpty()); isSingleLine = true; hint = "номер захватки"; tag = "zah_value" }
         val flow = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(6f); setPadding(0, dp(10f), 0, dp(4f)) }
-        for ((i, z) in zahs.withIndex()) {
-            val has = IdTables.norm(z) in linked
-            flow.addView(Ui.pill(a, z + if (has) " ✓" else "", Ui.INK, if (has) Ui.OK_SOFT else Ui.DESK).apply {
-                tag = "zah_pick_$i"; setOnClickListener { edit.setText(z); edit.setSelection(z.length) }
+        for ((i, uz) in zahs.withIndex()) {
+            val (u, z) = uz
+            val has = IdTables.zkey(u, z) in linked
+            flow.addView(Ui.pill(a, IdTables.zahLabel(u, z) + if (has) " ✓" else "", Ui.INK, if (has) Ui.OK_SOFT else Ui.DESK).apply {
+                tag = "zah_pick_$i"; setOnClickListener { uchEdit.setText(u); edit.setText(z); edit.setSelection(z.length) }
             })
         }
         if (zahs.isEmpty()) box.addView(Ui.text(a, "В таблице пока нет строк — номер можно вписать заранее.", 13f, Ui.INK2).apply { setPadding(0, dp(8f), 0, 0) })
         box.addView(flow)
+        if (withUch) box.addView(uchEdit)
         box.addView(edit)
         val show = CheckBox(a).apply { text = "Номер на заливке"; isChecked = fills.all { it.ln }; tag = "zah_label" }
         box.addView(show)
@@ -960,18 +970,19 @@ class TableUi(private val a: BoardActivity) {
             .setView(ScrollView(a).apply { addView(box) })
             .setPositiveButton("Привязать") { _, _ ->
                 val z = edit.text.toString().trim()
+                val u = if (withUch) uchEdit.text.toString().trim() else ""
                 if (z.isEmpty()) { a.hint("Выберите или впишите номер захватки", 1800); return@setPositiveButton }
                 a.pushUndo()
-                for (f in fills) { f.lt = t.id; f.lz = z; f.ln = show.isChecked }
+                for (f in fills) { f.lt = t.id; f.lu = u; f.lz = z; f.ln = show.isChecked }
                 a.changed()
                 a.buildSelectionBar()
                 markFromFill(v.selection)
-                a.hint("Заливка — захватка $z · ${IdTables.fullTitle(b, t)}", 1800)
+                a.hint("Заливка — захватка ${IdTables.zahLabel(u, z)} · ${IdTables.fullTitle(b, t)}", 1800)
             }
             .also { bld ->
                 if (fills.any { it.lt.isNotEmpty() }) bld.setNeutralButton("Отвязать") { _, _ ->
                     a.pushUndo()
-                    for (f in fills) { f.lt = ""; f.lz = ""; f.ln = true }
+                    for (f in fills) { f.lt = ""; f.lu = ""; f.lz = ""; f.ln = true }
                     a.changed(); a.buildSelectionBar(); markFromFill(v.selection)
                 }
                 else if (b.tables.size > 1) bld.setNeutralButton("Другая таблица") { _, _ ->

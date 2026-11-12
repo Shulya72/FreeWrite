@@ -80,9 +80,10 @@ class VedomDraw {
         val tables = HashMap<String, BoardTable>()
         for (t in b.tables) tables[t.id] = t
         val cols = arrayListOf(N, CIPHER)
-        // № АОСР и № схемы — если вписаны хоть у одной схемы ведомости; как в таблицах — перед захваткой.
+        // № АОСР, № схемы и участок — если вписаны хоть у одной схемы ведомости; как в таблицах — перед захваткой.
         if (items.any { recs[it.r]?.aosr?.isNotBlank() == true }) cols += TableCol.AOSR
         if (items.any { recs[it.r]?.nsch?.isNotBlank() == true }) cols += TableCol.NSCH
+        if (items.any { (recs[it.r]?.takeIf { r -> tables[r.t] != null }?.uch ?: it.lu).isNotBlank() }) cols += TableCol.UCH
         cols += TableCol.ZAH; cols += TableCol.CON; cols += TableCol.WORK; cols += TableCol.IGS
         if (answers) { cols += RES; cols += RD }
         val title = Vedoms.title(v)
@@ -96,6 +97,7 @@ class VedomDraw {
                 when (cols[ci]) {
                     N -> (idx + 1).toString()
                     CIPHER -> if (t != null) IdTables.fullTitle(b, t) else i.lt
+                    TableCol.UCH -> if (t != null) r.uch else i.lu
                     TableCol.ZAH -> if (t != null) r.zah else i.lz
                     TableCol.CON -> if (t != null) r.con else i.lc
                     TableCol.WORK -> if (t != null) r.work else i.lw
@@ -123,7 +125,7 @@ class VedomDraw {
         for ((ci, c) in cols.withIndex()) {
             var w = tw(colName(c), HEAD_FONT, true) + 2 * PAD
             val pill = c == TableCol.IGS || c == RES
-            for (row in texts) w = max(w, tw(row[ci], FONT, pill || c == TableCol.ZAH || c == N) + 2 * PAD + if (pill) 22f else 0f)
+            for (row in texts) w = max(w, tw(row[ci], FONT, pill || c == TableCol.ZAH || c == TableCol.UCH || c == N) + 2 * PAD + if (pill) 22f else 0f)
             w = when (c) {
                 N -> max(w, 34f)
                 RD -> max(w, tw("00.00.00", FONT, false) + 2 * PAD)
@@ -326,8 +328,8 @@ class VedomDraw {
         }
         if (s.isEmpty()) return
         text.textSize = FONT * k
-        text.color = when (c) { TableCol.ZAH -> Ui.INK; N, TableCol.IGS -> Ui.MUTED; else -> Ui.INK2 }
-        text.isFakeBoldText = c == TableCol.ZAH
+        text.color = when (c) { TableCol.ZAH, TableCol.UCH -> Ui.INK; N, TableCol.IGS -> Ui.MUTED; else -> Ui.INK2 }
+        text.isFakeBoldText = c == TableCol.ZAH || c == TableCol.UCH
         canvas.drawText(fit(s, cw - 2 * PAD * k), cx + PAD * k, ry + ROW_H / 2f * k + text.textSize * 0.36f, text)
         text.isFakeBoldText = false
     }

@@ -53,6 +53,8 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
     fun copy() = TableCol(k, name, hidden)
 
     companion object {
+        /** Участок (0.22.1, Владимир: «шифр КЖ8, участок LM1, LM2…, захватка — этаж»): перед захваткой. */
+        const val UCH = "uch"
         const val ZAH = "zah"
         const val CON = "con"
         const val WORK = "work"
@@ -69,11 +71,11 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
         const val DPTO = "dpto"
         const val WHO = "who"
         const val NOTE = "note"
-        /** Порядок (ТЗ, раздел 3.2; 0.21 — Владимир): № АОСР, № схемы, захватка, конструкция, вид работ, объём, дата… */
-        val ORDER = listOf(AOSR, NSCH, ZAH, CON, WORK, VOL, DATE, CK, DWG, IGS, DCUST, DPTO, WHO, NOTE)
+        /** Порядок (ТЗ, раздел 3.2; Владимир): № АОСР, № схемы, участок, захватка, тип конструкции, вид работ, объём, дата… */
+        val ORDER = listOf(AOSR, NSCH, UCH, ZAH, CON, WORK, VOL, DATE, CK, DWG, IGS, DCUST, DPTO, WHO, NOTE)
 
         fun defaultName(k: String): String = when (k) {
-            ZAH -> "Захватка"; CON -> "Конструкция"; WORK -> "Вид работ"; NSCH -> "№ схемы"; AOSR -> "№ АОСР"; VOL -> "Объём по схеме"; DATE -> "Дата работ"
+            UCH -> "Участок"; ZAH -> "Захватка"; CON -> "Тип конструкции"; WORK -> "Вид работ"; NSCH -> "№ схемы"; AOSR -> "№ АОСР"; VOL -> "Объём по схеме"; DATE -> "Дата работ"
             CK -> "Чек-лист"; DWG -> "DWG"; IGS -> "ИГС"; DCUST -> "Отдал заказчику"; DPTO -> "Сдано в ПТО"
             WHO -> "Исполнитель"; NOTE -> "Примечание"; else -> "Столбец"
         }
@@ -91,7 +93,7 @@ class RowFilter(val igs: Set<String> = emptySet(), val who: Set<String> = emptyS
         if (igs.isNotEmpty() && r.igs !in igs) return false
         if (who.isNotEmpty() && r.who.trim() !in who) return false
         if (text.isNotBlank()) {
-            val hay = (r.zah + " " + r.con + " " + r.work + " " + r.nsch + " " + r.aosr + " " + r.who + " " + r.note + " " + r.extra.values.joinToString(" ")).lowercase(Locale.ROOT)
+            val hay = (r.uch + " " + r.zah + " " + r.con + " " + r.work + " " + r.nsch + " " + r.aosr + " " + r.who + " " + r.note + " " + r.extra.values.joinToString(" ")).lowercase(Locale.ROOT)
             if (!text.lowercase(Locale.ROOT).split(' ').filter { it.isNotBlank() }.all { it in hay }) return false
         }
         return true
@@ -99,12 +101,14 @@ class RowFilter(val igs: Set<String> = emptySet(), val who: Set<String> = emptyS
 }
 
 /**
- * Строка таблицы ИД — одна исполнительная схема (ТЗ, раздел 2): захватка/участок, конструкция, вид работ, дата работ,
+ * Строка таблицы ИД — одна исполнительная схема (ТЗ, раздел 2): участок, захватка, тип конструкции, вид работ, дата работ,
  * Чек-лист, DWG, ИГС (номера статусов из своих списков доски), даты «Отдал заказчику» и «Сдано в ПТО», исполнитель,
  * примечание, свои столбцы ([extra]). [t] — таблица; [o] — порядок в ней.
  */
 class BoardRec(var t: String, var o: Double) {
     var id: String = Ids.next()
+    /** Участок («LM1») — внутри шифра; захватка («3 этаж») — внутри участка (0.22.1). */
+    var uch = ""
     var zah = ""
     var con = ""
     var work = ""
@@ -125,27 +129,30 @@ class BoardRec(var t: String, var o: Double) {
     val extra = LinkedHashMap<String, String>()
 
     fun copy(): BoardRec = BoardRec(t, o).also { c ->
-        c.zah = zah; c.con = con; c.work = work; c.nsch = nsch; c.aosr = aosr; c.vol = vol; c.date = date; c.ck = ck; c.dwg = dwg; c.igs = igs
+        c.uch = uch; c.zah = zah; c.con = con; c.work = work; c.nsch = nsch; c.aosr = aosr; c.vol = vol; c.date = date; c.ck = ck; c.dwg = dwg; c.igs = igs
         c.dcust = dcust; c.dpto = dpto; c.who = who; c.note = note; c.extra.putAll(extra)
     }
 
     /** Значение столбца как текст (статусы — номер статуса, даты — «2026-08-26»). */
     fun get(k: String): String = when (k) {
-        TableCol.ZAH -> zah; TableCol.CON -> con; TableCol.WORK -> work; TableCol.NSCH -> nsch; TableCol.AOSR -> aosr; TableCol.VOL -> vol; TableCol.DATE -> date
+        TableCol.UCH -> uch; TableCol.ZAH -> zah; TableCol.CON -> con; TableCol.WORK -> work; TableCol.NSCH -> nsch; TableCol.AOSR -> aosr; TableCol.VOL -> vol; TableCol.DATE -> date
         TableCol.CK -> ck; TableCol.DWG -> dwg; TableCol.IGS -> igs; TableCol.DCUST -> dcust; TableCol.DPTO -> dpto
         TableCol.WHO -> who; TableCol.NOTE -> note; else -> extra[k] ?: ""
     }
 
     fun set(k: String, v: String) {
         when (k) {
-            TableCol.ZAH -> zah = v; TableCol.CON -> con = v; TableCol.WORK -> work = v; TableCol.NSCH -> nsch = v; TableCol.AOSR -> aosr = v; TableCol.VOL -> vol = v; TableCol.DATE -> date = v
+            TableCol.UCH -> uch = v; TableCol.ZAH -> zah = v; TableCol.CON -> con = v; TableCol.WORK -> work = v; TableCol.NSCH -> nsch = v; TableCol.AOSR -> aosr = v; TableCol.VOL -> vol = v; TableCol.DATE -> date = v
             TableCol.CK -> ck = v; TableCol.DWG -> dwg = v; TableCol.IGS -> igs = v; TableCol.DCUST -> dcust = v; TableCol.DPTO -> dpto = v
             TableCol.WHO -> who = v; TableCol.NOTE -> note = v
             else -> if (v.isEmpty()) extra.remove(k) else extra[k] = v
         }
     }
 
-    fun key(): String = IdTables.key(zah, con, work)
+    fun key(): String = IdTables.key(uch, zah, con, work)
+
+    /** Участок и захватка вместе: «этаж 3» участка LM1 и «этаж 3» участка LM2 — разные захватки. */
+    fun zkey(): String = IdTables.zkey(uch, zah)
 }
 
 object IdTables {
@@ -313,7 +320,7 @@ object IdTables {
         sb.append("{\"id\":").append(JSONObject.quote(r.id)).append(",\"t\":").append(JSONObject.quote(r.t))
         sb.append(",\"o\":").append(JSONObject.numberToString(r.o))
         fun s(k: String, v: String) { if (v.isNotEmpty()) sb.append(",\"").append(k).append("\":").append(JSONObject.quote(v)) }
-        s("z", r.zah); s("c", r.con); s("w", r.work); s("ns", r.nsch); s("na", r.aosr); s("v", r.vol); s("d", r.date)
+        s("u", r.uch); s("z", r.zah); s("c", r.con); s("w", r.work); s("ns", r.nsch); s("na", r.aosr); s("v", r.vol); s("d", r.date)
         s("ck", r.ck); s("dwg", r.dwg); s("sid", r.igs); s("dc", r.dcust); s("dp", r.dpto); s("who", r.who); s("n", r.note)
         if (r.extra.isNotEmpty()) sb.append(",\"x\":").append(JSONObject(r.extra as Map<*, *>).toString())
         sb.append('}')
@@ -322,7 +329,7 @@ object IdTables {
 
     fun parseRec(j: JSONObject): BoardRec = BoardRec(j.optString("t"), j.optDouble("o", 0.0).takeIf { it.isFinite() } ?: 0.0).also { r ->
         r.id = j.optString("id", "")
-        r.zah = j.optString("z"); r.con = j.optString("c"); r.work = j.optString("w"); r.nsch = j.optString("ns"); r.aosr = j.optString("na"); r.vol = parseVol(j.optString("v")); r.date = j.optString("d")
+        r.uch = j.optString("u"); r.zah = j.optString("z"); r.con = j.optString("c"); r.work = j.optString("w"); r.nsch = j.optString("ns"); r.aosr = j.optString("na"); r.vol = parseVol(j.optString("v")); r.date = j.optString("d")
         r.ck = j.optString("ck", CK_NONE).ifEmpty { CK_NONE }
         r.dwg = j.optString("dwg", DWG_NONE).ifEmpty { DWG_NONE }
         r.igs = j.optString("sid", IGS_NONE).ifEmpty { IGS_NONE }
@@ -343,7 +350,13 @@ object IdTables {
         return sb.toString().trimEnd('.', ',', ';', ':')
     }
 
-    fun key(zah: String, con: String, work: String) = norm(zah) + "|" + norm(con) + "|" + norm(work)
+    fun key(uch: String, zah: String, con: String, work: String) = norm(uch) + "|" + norm(zah) + "|" + norm(con) + "|" + norm(work)
+
+    /** Участок + захватка для сравнения (без участка — как раньше, только захватка). */
+    fun zkey(uch: String, zah: String): String = norm(uch).let { u -> if (u.isEmpty()) norm(zah) else u + "|" + norm(zah) }
+
+    /** «LM1 · 3» — участок и захватка для подписи (без участка — только захватка). */
+    fun zahLabel(uch: String, zah: String): String = listOf(uch.trim(), zah.trim()).filter { it.isNotEmpty() }.joinToString(" · ")
 
     fun table(b: Board, id: String): BoardTable? = b.tables.firstOrNull { it.id == id }
 
@@ -487,31 +500,37 @@ object IdTables {
 
     // ---------------------------------------------------------------- захватки на плане (0.22)
 
-    /** Заливки, привязанные к захватке таблицы. */
-    fun fillsOf(b: Board, t: BoardTable, zah: String): List<BoardFill> {
-        val z = norm(zah)
-        return b.fills.filter { it.lt == t.id && norm(it.lz) == z }
+    /** Заливки, привязанные к захватке таблицы (участок + захватка). */
+    fun fillsOf(b: Board, t: BoardTable, uch: String, zah: String): List<BoardFill> {
+        val z = zkey(uch, zah)
+        return b.fills.filter { it.lt == t.id && it.zkey() == z }
     }
 
     /** Строки (схемы) захватки в таблице: опалубка, бетон… */
-    fun zahRows(b: Board, t: BoardTable, zah: String): List<BoardRec> {
-        val z = norm(zah)
-        return allRows(b, t).filter { norm(it.zah) == z }
+    fun zahRows(b: Board, t: BoardTable, uch: String, zah: String): List<BoardRec> {
+        val z = zkey(uch, zah)
+        return allRows(b, t).filter { it.zkey() == z }
     }
 
     /** Таблица привязанной заливки (null — не привязана или таблицы уже нет). */
     fun tableOfFill(b: Board, f: BoardFill): BoardTable? = if (f.lt.isEmpty()) null else table(b, f.lt)
 
-    /** Захватки таблицы по порядку строк (без повторов). */
-    fun zahList(b: Board, t: BoardTable): List<String> {
+    /** Захватки таблицы по порядку строк (без повторов): участок и захватка. */
+    fun zahList(b: Board, t: BoardTable): List<Pair<String, String>> {
         val seen = HashSet<String>()
-        return allRows(b, t).map { it.zah.trim() }.filter { it.isNotEmpty() && seen.add(norm(it)) }
+        return allRows(b, t).filter { it.zah.isNotBlank() && seen.add(it.zkey()) }.map { it.uch.trim() to it.zah.trim() }
     }
 
-    /** Цвет заливки захватки (для значка у номера в таблице): нормализованный номер → цвет первой заливки. */
+    /** Участки таблицы по порядку строк (без повторов). */
+    fun uchList(b: Board, t: BoardTable): List<String> {
+        val seen = HashSet<String>()
+        return allRows(b, t).map { it.uch.trim() }.filter { it.isNotEmpty() && seen.add(norm(it)) }
+    }
+
+    /** Цвет заливки захватки (для значка у номера в таблице): [zkey] участка и захватки → цвет первой заливки. */
     fun zahColors(b: Board, t: BoardTable): Map<String, Int> {
         val m = HashMap<String, Int>()
-        for (f in b.fills) if (f.lt == t.id) m.getOrPut(norm(f.lz)) { f.color }
+        for (f in b.fills) if (f.lt == t.id) m.getOrPut(f.zkey()) { f.color }
         return m
     }
 

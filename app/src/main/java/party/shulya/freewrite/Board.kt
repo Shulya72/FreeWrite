@@ -139,12 +139,20 @@ class BoardFill(val pts: FloatArray, var color: Int, var alpha: Float = DEFAULT_
     /**
      * Захватка на плане (0.22, ТЗ «Учёт ИГС», раздел 8): таблица ИД [lt] и номер захватки [lz]; пусто — не привязана.
      * [ln] — писать номер на заливке. Цвет заливки статусом не меняется — его выбирает Владимир.
+     * [lu] — участок захватки (0.22.1; пусто — таблица без участков).
      */
     var lt = ""
+    var lu = ""
     var lz = ""
     var ln = true
 
-    fun copy() = BoardFill(pts.copyOf(), color, alpha).also { it.lt = lt; it.lz = lz; it.ln = ln }
+    fun copy() = BoardFill(pts.copyOf(), color, alpha).also { it.lt = lt; it.lu = lu; it.lz = lz; it.ln = ln }
+
+    /** Участок и захватка для сравнения со строками таблицы ([IdTables.zkey]). */
+    fun zkey(): String = IdTables.zkey(lu, lz)
+
+    /** Подпись на заливке: «3» или «LM1 · 3». */
+    fun label(): String = IdTables.zahLabel(lu, lz)
 
     /** Номер изменения точек: кто двигает точки — вызывает [changed]. */
     var version = 0
@@ -184,7 +192,7 @@ class BoardFill(val pts: FloatArray, var color: Int, var alpha: Float = DEFAULT_
         h = 31 * h + color
         h = 31 * h + alpha.toRawBits()
         h = 31 * h + id.hashCode()
-        h = 31 * h + lt.hashCode(); h = 31 * h + lz.hashCode(); h = 31 * h + (if (ln) 1 else 0)
+        h = 31 * h + lt.hashCode(); h = 31 * h + lu.hashCode(); h = 31 * h + lz.hashCode(); h = 31 * h + (if (ln) 1 else 0)
         for (v in pts) h = 31 * h + v.toRawBits()
         jsonCache?.let { if (h == jsonSum) return it }
         val sb = StringBuilder(pts.size * 6 + 64)
@@ -192,7 +200,9 @@ class BoardFill(val pts: FloatArray, var color: Int, var alpha: Float = DEFAULT_
         JsonNum.array(sb, pts)
         // Привязка к захватке — только если есть: строка непривязанной заливки та же, что до 0.22.
         if (lt.isNotEmpty()) {
-            sb.append(",\"lt\":").append(JSONObject.quote(lt)).append(",\"lz\":").append(JSONObject.quote(lz))
+            sb.append(",\"lt\":").append(JSONObject.quote(lt))
+            if (lu.isNotEmpty()) sb.append(",\"lu\":").append(JSONObject.quote(lu))
+            sb.append(",\"lz\":").append(JSONObject.quote(lz))
             if (!ln) sb.append(",\"ln\":0")
         }
         sb.append('}')
@@ -717,7 +727,7 @@ class Board(
             val p = floats(j.optJSONArray("pts"))
             if (p.size < 6) return null
             return BoardFill(p, j.optInt("color", Ui.INK), j.optDouble("alpha", BoardFill.DEFAULT_ALPHA.toDouble()).toFloat())
-                .also { it.id = jid(j); it.lt = j.optString("lt"); it.lz = j.optString("lz"); it.ln = j.optInt("ln", 1) != 0 }
+                .also { it.id = jid(j); it.lt = j.optString("lt"); it.lu = j.optString("lu"); it.lz = j.optString("lz"); it.ln = j.optInt("ln", 1) != 0 }
         }
 
         fun parseCallout(j: JSONObject, defaultSid: String): BoardCallout {
