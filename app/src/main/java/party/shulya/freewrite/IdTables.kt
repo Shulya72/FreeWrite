@@ -27,6 +27,15 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
     /** Отбор строк на этом планшете (не сохраняется и не уходит коллегам). */
     @Transient var filter: RowFilter? = null
 
+    /** Листы плана под таблицей (0.23): вкладки; области захваток на них — [BoardZone]. */
+    val sheets = ArrayList<PlanSheet>()
+
+    /** Цвет областей захваток: "" — по ИГС, [TablePlan.OWN] — свой. */
+    var zoneColor = ""
+
+    /** Открытая вкладка плана на этом планшете (не сохраняется). */
+    @Transient var tab = 0
+
     /** Раскладка (считает [TableDraw]): пересчитывается, когда меняются строки, столбцы, статусы. */
     internal var lay: TableLayout? = null
 
@@ -282,6 +291,7 @@ object IdTables {
             }
             sb.append(']')
         }
+        TablePlan.sheetsJson(sb, t)
         sb.append('}')
         return sb.toString()
     }
@@ -312,6 +322,7 @@ object IdTables {
                 if (v.isNotEmpty()) t.plan[norm(w)] = VolPlan(w, v, p.optString("u"))
             }
         }
+        TablePlan.parseSheets(j, t)
         return t
     }
 

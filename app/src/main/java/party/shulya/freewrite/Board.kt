@@ -265,6 +265,8 @@ class Board(
     val vedoms = ArrayList<BoardVedom>()
     val vitems = ArrayList<BoardVItem>()
     val events = ArrayList<BoardEvent>()
+    /** Области захваток на листах плана таблиц (0.23). */
+    val zones = ArrayList<BoardZone>()
     val statuses = ArrayList<BoardStatus>()
     var camX = 0f
     var camY = 0f
@@ -352,6 +354,9 @@ class Board(
         statuses.addAll(conStatuses())
     }
 
+    /** Файлы всех картинок доски: картинки на поле и листы планов в таблицах (0.23). */
+    fun imageFiles(): List<String> = (images.map { it.file } + TablePlan.files(this)).distinct()
+
     val isEmpty: Boolean
         get() = strokes.isEmpty() && texts.isEmpty() && images.isEmpty() && stickers.isEmpty() &&
             fills.isEmpty() && callouts.isEmpty() && frames.isEmpty() && rows.isEmpty() && tables.isEmpty() && vedoms.isEmpty()
@@ -415,6 +420,7 @@ class Board(
         if (vedoms.isNotEmpty()) list("vedoms", vedoms, { it.id }) { Vedoms.vedomJson(it) }
         if (vitems.isNotEmpty()) list("vitems", vitems, { it.id }) { Vedoms.itemJson(it) }
         if (events.isNotEmpty()) list("events", events, { it.id }) { it.json() }
+        if (zones.isNotEmpty()) list("zones", zones, { it.id }) { TablePlan.zoneJson(it) }
         st?.finish()
         val tail = StringBuilder(sync.objs.size * 48 + 64)
         tail.append(",\"sync\":")
@@ -445,6 +451,7 @@ class Board(
         for (v in vedoms) f(v.id, fingerprint(Vedoms.vedomJson(v)))
         for (i in vitems) f(i.id, fingerprint(Vedoms.itemJson(i)))
         for (e in events) f(e.id, fingerprint(e.json()))
+        for (z in zones) f(z.id, fingerprint(TablePlan.zoneJson(z)))
     }
 
     fun entryHashes(): HashMap<String, Long> {
@@ -454,7 +461,7 @@ class Board(
     }
 
     fun objectCount() = strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + frames.size + rows.size + tables.size + recs.size +
-        vedoms.size + vitems.size + events.size + statuses.size
+        vedoms.size + vitems.size + events.size + zones.size + statuses.size
 
     /**
      * Отметить правки перед сохранением: у изменённых и новых предметов — новая отметка времени,
@@ -523,6 +530,7 @@ class Board(
         for (v in vedoms) fix(v.id) { Vedoms.vedomJson(v) }?.let { v.id = it }
         for (i in vitems) fix(i.id) { Vedoms.itemJson(i) }?.let { i.id = it }
         for (e in events) fix(e.id) { e.json() }?.let { e.id = it }
+        for (z in zones) fix(z.id) { TablePlan.zoneJson(z) }?.let { z.id = it }
     }
 
     fun toJson(withCamera: Boolean = true): JSONObject = JSONObject(toJsonString(withCamera))
@@ -561,6 +569,7 @@ class Board(
         Array(vedoms.size) { Vedoms.vedomJson(vedoms[it]) },
         Array(vitems.size) { Vedoms.itemJson(vitems[it]) },
         Array(events.size) { events[it].json() },
+        Array(zones.size) { TablePlan.zoneJson(zones[it]) },
     )
 
     /** Вернуть доску к снимку. Неизменённые рисунки и заливки берутся как есть, без разбора JSON. */
@@ -591,6 +600,7 @@ class Board(
         val es = java.util.IdentityHashMap<String, BoardEvent>()
         for (e in events) es[e.json()] = e
         for (j in snap.events) b.events += es[j] ?: Vedoms.parseEvent(JSONObject(j))
+        for (j in snap.zones) TablePlan.parseZone(JSONObject(j))?.let { b.zones += it }
         return b
     }
 
@@ -758,6 +768,7 @@ class Board(
             o.optJSONArray("vedoms")?.let { a -> for (i in 0 until a.length()) b.vedoms += Vedoms.parseVedom(a.getJSONObject(i)) }
             o.optJSONArray("vitems")?.let { a -> for (i in 0 until a.length()) b.vitems += Vedoms.parseItem(a.getJSONObject(i)) }
             o.optJSONArray("events")?.let { a -> for (i in 0 until a.length()) b.events += Vedoms.parseEvent(a.getJSONObject(i)) }
+            o.optJSONArray("zones")?.let { a -> for (i in 0 until a.length()) TablePlan.parseZone(a.getJSONObject(i))?.let { b.zones += it } }
             b.upgradeStatuses()
             IdTables.upgrade(b)
             b.sync = BoardSync.parse(o.optJSONObject("sync"))
@@ -796,6 +807,7 @@ class BoardSnapshot(
     val vedoms: Array<String> = emptyArray(),
     val vitems: Array<String> = emptyArray(),
     val events: Array<String> = emptyArray(),
+    val zones: Array<String> = emptyArray(),
 )
 
 /** Сводка доски для Ежедневника: название, даты, сколько предметов, счётчики статусов. */
@@ -890,7 +902,7 @@ class BoardStore(context: Context) {
     }
 
     fun delete(id: String) {
-        load(id)?.let { b -> for (m in b.images) BoardImages.deleteFiles(imageDir, m.file) }
+        load(id)?.let { b -> for (f in b.imageFiles()) BoardImages.deleteFiles(imageDir, f) }
         File(dir, "$id.json").delete()
         File(dir, "$id.meta").delete()
     }

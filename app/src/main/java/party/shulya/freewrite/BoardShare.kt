@@ -93,7 +93,7 @@ object BoardShare {
         val dir = imageDir(context)
         var all = 0L
         var fresh = 0L
-        for (f in board.images.map { it.file }.distinct()) {
+        for (f in board.imageFiles()) {
             val len = File(dir, f).length()
             all += len
             if (f !in board.sync.peerImages) fresh += len
@@ -103,7 +103,7 @@ object BoardShare {
 
     /** Подготовить посылку (быстро, в главном потоке). Доска должна быть отмечена ([Board.stamp]). */
     fun prepare(board: Board, onlyNew: Boolean): Package {
-        val files = board.images.map { it.file }.distinct().filter { !onlyNew || it !in board.sync.peerImages }
+        val files = board.imageFiles().filter { !onlyNew || it !in board.sync.peerImages }
         return Package(board.id, board.title, board.toJsonString(withCamera = true), files)
     }
 
@@ -261,14 +261,14 @@ object BoardShare {
         if (local == null) {
             adopt(inc)
             store.saveImported(inc)
-            val missing = inc.images.map { it.file }.distinct().count { !File(imgDir, it).exists() }
+            val missing = inc.imageFiles().count { !File(imgDir, it).exists() }
             val items = inc.objectCount() - inc.statuses.size
             return Result(inc.id, inc.title, true, Stats(), items, copied, missing)
         }
         local.stamp(store.device) // свои несохранённые отметки — до слияния
         val st = merge(local, inc)
         store.saveImported(local)
-        val missing = local.images.map { it.file }.distinct().count { !File(imgDir, it).exists() }
+        val missing = local.imageFiles().count { !File(imgDir, it).exists() }
         return Result(local.id, local.title, false, st, local.objectCount() - local.statuses.size, copied, missing)
     }
 
@@ -283,7 +283,7 @@ object BoardShare {
         for ((id, r) in old.tomb) if (id !in s.objs) s.tomb[id] = r
         for (e in old.objs.values) s.observe(e.rev)
         for (r in old.tomb.values) s.observe(r)
-        s.peerImages += b.images.map { it.file }
+        s.peerImages += b.imageFiles()
         b.sync = s
     }
 
@@ -333,6 +333,7 @@ object BoardShare {
         mergeList(local.vedoms, inc.vedoms, { it.id }, take, drop, all)
         mergeList(local.vitems, inc.vitems, { it.id }, take, drop, all)
         mergeList(local.events, inc.events, { it.id }, take, drop, all)
+        mergeList(local.zones, inc.zones, { it.id }, take, drop, all)
 
         val after = local.entryHashes()
         for (id in take) {
@@ -350,7 +351,7 @@ object BoardShare {
         }
         for (e in ins.objs.values) ls.observe(e.rev)
         for (r in ins.tomb.values) ls.observe(r)
-        ls.peerImages += inc.images.map { it.file }
+        ls.peerImages += inc.imageFiles()
         return st
     }
 
