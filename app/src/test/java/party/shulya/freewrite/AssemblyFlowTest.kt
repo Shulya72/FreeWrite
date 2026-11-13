@@ -92,7 +92,7 @@ class AssemblyFlowTest {
         assertEquals("В работе", IdTables.cellText(b, rows[3], TableCol.IGS))
         // На АН — день перевода по истории.
         Vedoms.set(b, rows[3], TableCol.IGS, IdTables.IGS_AN, "Владимир Шульмин")
-        assertTrue(IdTables.cellText(b, rows[3], TableCol.IGS).startsWith("На подписи АН от "))
+        assertTrue(IdTables.cellText(b, rows[3], TableCol.IGS).startsWith("На согласовании АН от "))
     }
 
     /**
@@ -146,6 +146,19 @@ class AssemblyFlowTest {
         assertEquals("Не согласовано", Vedoms.resName(Vedoms.kindOf(v, i3), i3.res))
         val sum = Vedoms.summary(b, v, "2026-11-16")
         assertTrue(sum, sum.contains("подписано 1") && sum.contains("не согласовано 1") && sum.contains("ждём 2"))
+    }
+
+    @Test
+    fun anStatusRenamedOnOldBoards() {
+        // Доска до 0.25: статус i6 назывался «На подписи АН» — при открытии становится «На согласовании АН».
+        val b = sample()
+        b.statuses.first { it.id == IdTables.IGS_AN }.name = "На подписи АН"
+        val back = Board.fromJson(JSONObject(b.toJsonString()))
+        assertEquals("На согласовании АН", back.statuses.first { it.id == IdTables.IGS_AN }.name)
+        assertEquals("На согласовании АН", Vedoms.giveLabel(Vedoms.AN))
+        // Своё название — как было.
+        b.statuses.first { it.id == IdTables.IGS_AN }.name = "У Петрова"
+        assertEquals("У Петрова", Board.fromJson(JSONObject(b.toJsonString())).statuses.first { it.id == IdTables.IGS_AN }.name)
     }
 
     // ------------------------------------------------------------ на экране
@@ -272,7 +285,7 @@ class AssemblyFlowTest {
         setIgs(s, 2, IdTables.IGS_WORK)
         v = s.b.vedoms.single()
         assertEquals(listOf(s.rec(0).id, s.rec(1).id), Vedoms.items(s.b, v).map { it.r })
-        // В ведомости «ИГС сейчас» второй схемы → «На подписи АН» (касание, список у ячейки).
+        // В ведомости «ИГС сейчас» второй схемы → «На согласовании АН» (касание, список у ячейки).
         val vi = Vedoms.items(s.b, v)[1]
         val vc = s.view.vedomDraw.cellRect(s.b, v, vi, TableCol.IGS, RectF())!!
         tap(s.view, s.sx(vc.centerX()), s.sy(vc.centerY()))

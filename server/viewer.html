@@ -810,7 +810,7 @@ function vClosed(v) {
   if (v.kind === "an" || v.kind === "cust") { const it = vItems(v); return it.length > 0 && it.every((i) => !!i.res); }
   return false;
 }
-const VGIVE = { an: "На подписи АН", cust: "На подписи у заказчика", pto: "Сдано в ПТО" };
+const VGIVE = { an: "На согласовании АН", cust: "На подписи у заказчика", pto: "Сдано в ПТО" };
 function vState(v) { return !v.given ? (v.kind === "list" ? "список" : "сборка" + (v.made ? " от " + dShort(v.made) : "")) : vClosed(v) ? "закрыта" : (VGIVE[v.kind] || "передана") + " от " + dShort(v.given); }
 function vSummary(v) {
   const it = vItems(v); const head = plural(it.length, "схема", "схемы", "схем");

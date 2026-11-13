@@ -46,7 +46,7 @@ class TableUi(private val a: BoardActivity) {
         val old = r.get(col)
         if (!Vedoms.set(b, r, col, value, who())) return false
         if (col == TableCol.IGS) {
-            // В ведомости на столе: «Сборка» — заказчику, «На подписи АН» — через АН; другой статус — схема уходит из ведомости.
+            // В ведомости на столе: «Сборка» — заказчику, «На согласовании АН» — через АН; другой статус — схема уходит из ведомости.
             val gone = Vedoms.followTable(b, r)
             if (gone.isNotEmpty()) a.hint("Схема убрана из ведомости ${gone.joinToString()} — она больше не в сборке", 2200)
             if (value == IdTables.IGS_ASSEMBLY) queueAssembly(r)

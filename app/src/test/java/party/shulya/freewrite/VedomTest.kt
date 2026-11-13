@@ -167,7 +167,7 @@ class VedomTest {
         // Согласованные — одной кнопкой заказчику; схема, что ждёт АН, — предупреждение при сборе в другую.
         assertEquals(listOf(ia[0].r), Vedoms.approvedForCustomer(pa, va).map { it.id })
         assertEquals(listOf(va), Vedoms.waitingElsewhere(pa, Vedoms.rec(pa, ia[2])!!, null))
-        // На подписи АН дольше срока — по дате передачи АН (и у заказчика — с 11.11, после согласования АН).
+        // На согласовании АН дольше срока — по дате передачи АН (и у заказчика — с 11.11, после согласования АН).
         val sa = IgsSummary(pa, longDays = 7, today = "2026-11-30")
         assertEquals(setOf(ia[0].r, ia[2].r, ia[3].r), sa.ctrlLong.map { it.id }.toSet())
         assertEquals(setOf(ia[0].r), IgsSummary(pa, longDays = 7, today = "2026-11-19").ctrlLong.map { it.id }.toSet().minus(setOf(ia[2].r, ia[3].r)))
@@ -500,7 +500,7 @@ class VedomTest {
         assertEquals("Лоток №1", s.b.recs.last().zah)
         assertEquals(4, Vedoms.items(s.b, v).size)
         // Передать АН → согласовано → «Согласованные → заказчику».
-        // Кнопка состояния в шапке: касание → «Сборка» / «На подписи АН» → сразу, дата — сегодня (0.25).
+        // Кнопка состояния в шапке: касание → «Сборка» / «На согласовании АН» → сразу, дата — сегодня (0.25).
         val hb = s.view.vedomDraw.bounds(s.b, v, RectF())
         s.view.fitRect(hb.left, hb.top, hb.right, hb.bottom); idle()
         assertTrue(s.view.vedomDraw.layout(s.b, v).state.startsWith("Сборка"))

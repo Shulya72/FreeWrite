@@ -53,7 +53,7 @@ class StatusRowsTest {
     @Test
     fun twoStatusListsAndOldBoards() {
         val b = Board.create("Новая")
-        assertEquals(listOf("Конструкция не выполнена", "Не предоставлена", "В работе", "Сборка", "На подписи АН", "Не согласована", "На подписи у заказчика",
+        assertEquals(listOf("Конструкция не выполнена", "Не предоставлена", "В работе", "Сборка", "На согласовании АН", "Не согласована", "На подписи у заказчика",
             "Возврат на корректировку", "Сдано в ПТО"), b.statuses(BoardStatus.ID).map { it.name })
         assertEquals("сдано — «Сдано в ПТО»", listOf("Сдано в ПТО"), b.statuses(BoardStatus.ID).filter { it.done }.map { it.name })
         assertEquals(4, b.statuses(BoardStatus.CK).size)

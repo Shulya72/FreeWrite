@@ -103,7 +103,7 @@ class VedomDraw {
                     TableCol.WORK -> if (t != null) r.work else i.lw
                     TableCol.NSCH -> if (t != null) r.nsch else ""
                     TableCol.AOSR -> if (t != null) r.aosr else ""
-                    // В сборке ведомости заказчику «ИГС сейчас» — кнопка: «Сборка» или «На подписи АН» (0.25).
+                    // В сборке ведомости заказчику «ИГС сейчас» — кнопка: «Сборка» или «На согласовании АН» (0.25).
                     TableCol.IGS -> if (t != null) IdTables.status(b, BoardStatus.ID, r.igs).name + (if (v.isDraft && v.kind == Vedoms.CUST) " ▾" else "") else "строка удалена"
                     RES -> Vedoms.resName(Vedoms.kindOf(v, i), i.res)
                     RD -> IdTables.dateShort(i.rd)
