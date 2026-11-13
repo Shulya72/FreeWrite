@@ -13,7 +13,9 @@ import android.widget.EditText
 import android.widget.TextView
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -272,11 +274,16 @@ class TablesTest {
         idle()
         shot(s.view, "table-new.png")
 
-        // Палец по строке — карточка снизу: статусы крупно, 2 касания на смену, «Ниже» — следующая строка.
+        // Палец по ячейке — сразу ввод (0.25.1); карточка строки — из меню «подержать строку»: статусы крупно, «Ниже» — следующая.
         pause(1000)
         val r0 = IdTables.allRows(s.b, t)[0]
         val (wx, wy) = s.cell(r0, TableCol.WORK)
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, wx, wy)
+        assertNull("карточки нет — сразу ввод", s.a.tableUi.card)
+        val wd = latest()
+        assertEquals("Опалубка", wd.window!!.decorView.findViewWithTag<EditText>("cell_text").text.toString())
+        wd.dismiss(); idle()
+        s.a.tableUi.rowCard(r0); idle()
         val card = s.a.tableUi.card
         assertNotNull("карточка открылась", card)
         val cv = card!!.window!!.decorView
@@ -436,11 +443,21 @@ class TablesTest {
         s.a.tableUi.popup!!.contentView.findViewWithTag<View>("pop_status_2").performClick() // «В работе»
         idle()
         assertEquals(IdTables.IGS_WORK, rows[4].igs)
-        // Палец по тексту строки — карточка, как раньше.
+        // Палец по тексту строки — сразу поле ввода (0.25.1); «Далее» на клавиатуре — следующая ячейка строки.
         val (wx, wy) = s.cell(rows[4], TableCol.WORK)
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, wx, wy)
-        assertNotNull(s.a.tableUi.card)
-        s.a.tableUi.card!!.dismiss()
+        assertNull(s.a.tableUi.card)
+        val wd = latest()
+        val we = wd.window!!.decorView.findViewWithTag<EditText>("cell_text")
+        assertEquals(android.view.inputmethod.EditorInfo.IME_ACTION_NEXT, we.imeOptions)
+        we.setText("Бетон")
+        we.onEditorAction(android.view.inputmethod.EditorInfo.IME_ACTION_NEXT)
+        idle()
+        assertEquals("Бетон", rows[4].work)
+        assertFalse(wd.isShowing)
+        val nd = latest()
+        assertTrue("следующая ячейка открылась", nd !== wd && nd.isShowing)
+        nd.dismiss()
         idle()
 
         // «В текст»: касание пером ячейки «Захватка» — активная ячейка и панель «→ ↓ Готово».

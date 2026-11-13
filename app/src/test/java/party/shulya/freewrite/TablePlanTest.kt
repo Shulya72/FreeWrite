@@ -174,6 +174,12 @@ class TablePlanTest {
             val c = view.tableDraw.cellRect(b, t, r, col, RectF())!!
             return sx(c.centerX()) to sy(c.centerY())
         }
+        /** Цветной квадратик у номера захватки (0.25.1: квадратик — план/заливка, сам номер — ввод). */
+        fun swatch(r: BoardRec): Pair<Float, Float> {
+            val t = IdTables.tableOf(b, r)!!
+            val c = view.tableDraw.cellRect(b, t, r, TableCol.ZAH, RectF())!!
+            return sx(c.left + (TableDraw.PAD + TableDraw.SWATCH / 2f) * t.scale) to sy(c.centerY())
+        }
         /** Точка листа (доли картинки целиком) на экране. */
         fun onSheet(t: BoardTable, fx: Float, fy: Float): Pair<Float, Float> {
             val r = view.tableDraw.sheetRect(b, t, RectF())!!
@@ -237,9 +243,9 @@ class TablePlanTest {
         assertNotNull(l1.plan)
         fitTable(s)
 
-        // Касание номера захватки «1» пальцем — обвести; волшебная заливка в помещении 1.
+        // Касание квадратика у номера захватки «1» пальцем — обвести; волшебная заливка в помещении 1.
         val r1 = IdTables.zahRows(s.b, t, "", "1")[0]
-        val (zx, zy) = s.cell(r1, TableCol.ZAH)
+        val (zx, zy) = s.swatch(r1)
         tap(s.view, zx, zy)
         val pe = s.view.planEdit!!
         assertEquals("1", pe.zah)
