@@ -230,6 +230,31 @@ class PlanMarkTest {
         assertTrue(TablePlan.files(back).any { it.endsWith(".pdf") })
     }
 
+    /** Ручная обводка по точкам (0.26.1): касание рядом с углом пилона — точка ровно в угол чертежа. */
+    @Test
+    fun pointsSnapToDrawingCorners() {
+        val s = open(sample())
+        val t = s.b.tables[0]
+        s.a.planUi.startOutline(t, "", "1")
+        val pe = s.view.planEdit!!
+        pe.tool = PlanEdit.POINTS
+        waitFor("привязка по PDF") { pe.snap != null }
+        zoomSheet(s)
+        // Угол пилона 1 — 100 / 600, 250 / 400; касаемся чуть мимо.
+        val near = s.onSheet(t, 0.169f, 0.628f)
+        val d = SystemClock.uptimeMillis()
+        s.view.dispatchTouchEvent(event(d, d, MotionEvent.ACTION_DOWN, near.first, near.second, MotionEvent.TOOL_TYPE_FINGER))
+        s.view.dispatchTouchEvent(event(d, d + 40, MotionEvent.ACTION_MOVE, near.first + 1f, near.second, MotionEvent.TOOL_TYPE_FINGER))
+        idle()
+        shot(s.view, "plan-snap-loupe.png")
+        s.view.dispatchTouchEvent(event(d, d + 80, MotionEvent.ACTION_UP, near.first + 1f, near.second, MotionEvent.TOOL_TYPE_FINGER))
+        idle()
+        assertEquals(2, pe.points.size)
+        assertEquals(100f / 600f, pe.points[0], 0.0015f)
+        assertEquals(250f / 400f, pe.points[1], 0.0015f)
+        s.a.planUi.endOutline(save = false)
+    }
+
     @Test
     fun oldZonesStaySameAndPercentNeedsElements() {
         // Область 0.23 (без «e») — строка JSON та же, процента нет.
