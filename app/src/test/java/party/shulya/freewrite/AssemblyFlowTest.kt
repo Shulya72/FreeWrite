@@ -80,8 +80,10 @@ class AssemblyFlowTest {
         for (r in rows.take(3)) r.igs = IdTables.IGS_ASSEMBLY
         Vedoms.add(b, v, listOf(rows[0]))
         assertEquals(listOf(rows[1], rows[2]), Vedoms.looseAssembly(b))
-        assertEquals(listOf("З-1"), Vedoms.dropFromAssembly(b, rows[0]))
+        rows[0].igs = IdTables.IGS_WORK
+        assertEquals(listOf("З-1"), Vedoms.followTable(b, rows[0]))
         assertEquals(0, Vedoms.items(b, v).size)
+        rows[0].igs = IdTables.IGS_ASSEMBLY
         // Передали: «На подписи у заказчика от 13.11.26» — у схемы и в кнопке ведомости.
         Vedoms.add(b, v, rows.take(2))
         Vedoms.give(b, v, "2026-11-13", "Владимир Шульмин")
@@ -91,6 +93,59 @@ class AssemblyFlowTest {
         // На АН — день перевода по истории.
         Vedoms.set(b, rows[3], TableCol.IGS, IdTables.IGS_AN, "Владимир Шульмин")
         assertTrue(IdTables.cellText(b, rows[3], TableCol.IGS).startsWith("На подписи АН от "))
+    }
+
+    /**
+     * Владимир: «в ведомости сборки «ИГС сейчас» — 2 варианта, Сборка и на согласовании АН; что на АН — прокликаю вручную;
+     * на подпись — выбираю состояние ведомости, и статусы обновляются».
+     */
+    @Test
+    fun anRouteInsideAssemblyVedom() {
+        val b = sample()
+        val rows = IdTables.allRows(b, b.tables[0])
+        val v = BoardVedom(2000f, 100f, 1.5f, Vedoms.CUST, "З-1").apply { made = "2026-11-13" }
+        b.vedoms += v
+        Vedoms.add(b, v, rows.take(3), "Владимир Шульмин")
+        assertTrue(rows.take(3).all { it.igs == IdTables.IGS_ASSEMBLY })
+        val items = Vedoms.items(b, v)
+        // Вторая схема — на АН (в сборке «ИГС сейчас» → АН): статус в таблице тоже, отметка в позиции.
+        Vedoms.route(b, v, items[1], an = true, who = "Владимир Шульмин")
+        assertEquals(IdTables.IGS_AN, rows[1].igs); assertEquals(Vedoms.AN, items[1].via)
+        assertEquals(Vedoms.AN, Vedoms.kindOf(v, items[1])); assertEquals(Vedoms.CUST, Vedoms.kindOf(v, items[0]))
+        assertTrue(Vedoms.itemJson(items[1]).contains("\"via\":\"an\""))
+        assertEquals(Vedoms.AN, Vedoms.parseItem(JSONObject(Vedoms.itemJson(items[1]))).via)
+        assertFalse(Vedoms.itemJson(items[0]).contains("via"))
+        // В таблице «Сборка» → АН у третьей — остаётся в ведомости, тоже через АН; назад в «Сборку» — снова заказчику.
+        rows[2].igs = IdTables.IGS_AN
+        assertTrue(Vedoms.followTable(b, rows[2]).isEmpty())
+        assertEquals(Vedoms.AN, items[2].via)
+        rows[2].igs = IdTables.IGS_ASSEMBLY
+        Vedoms.followTable(b, rows[2])
+        assertEquals("", items[2].via)
+        // Добавили в сборку схему, что уже на АН, — сразу «через АН».
+        rows[3].igs = IdTables.IGS_AN
+        Vedoms.add(b, v, listOf(rows[3]))
+        assertEquals(Vedoms.AN, Vedoms.items(b, v).last().via)
+        // На подпись: «Сборка» → «На подписи у заказчика от …»; схемы на АН — как были.
+        Vedoms.give(b, v, "2026-11-13", "Владимир Шульмин")
+        assertEquals(IdTables.IGS_CUST, rows[0].igs); assertEquals("2026-11-13", rows[0].dcust)
+        assertEquals(IdTables.IGS_CUST, rows[2].igs)
+        assertEquals(IdTables.IGS_AN, rows[1].igs); assertEquals("", rows[1].dcust)
+        assertEquals(IdTables.IGS_AN, rows[3].igs)
+        // Ответ по схеме «через АН» — как у АН: «Согласовано» → «На подписи у заказчика» и ждём подписи в этой же ведомости.
+        Vedoms.answer(b, v, items[1], Vedoms.OK, "2026-11-15", "Владимир Шульмин")
+        assertEquals(IdTables.IGS_CUST, rows[1].igs); assertEquals("2026-11-15", rows[1].dcust)
+        assertEquals("", items[1].via); assertEquals("", items[1].res)
+        assertEquals("На подписи у заказчика от 15.11.26", IdTables.cellText(b, rows[1], TableCol.IGS))
+        // Заказчик подписал первую; АН не согласовал четвёртую.
+        Vedoms.answer(b, v, items[0], Vedoms.OK, "2026-11-16", "Владимир Шульмин")
+        assertEquals(IdTables.IGS_PTO, rows[0].igs)
+        val i3 = Vedoms.items(b, v).last()
+        Vedoms.answer(b, v, i3, Vedoms.NO, "2026-11-16", "Владимир Шульмин")
+        assertEquals(IdTables.IGS_AN_NO, rows[3].igs)
+        assertEquals("Не согласовано", Vedoms.resName(Vedoms.kindOf(v, i3), i3.res))
+        val sum = Vedoms.summary(b, v, "2026-11-16")
+        assertTrue(sum, sum.contains("подписано 1") && sum.contains("не согласовано 1") && sum.contains("ждём 2"))
     }
 
     // ------------------------------------------------------------ на экране
@@ -217,6 +272,16 @@ class AssemblyFlowTest {
         setIgs(s, 2, IdTables.IGS_WORK)
         v = s.b.vedoms.single()
         assertEquals(listOf(s.rec(0).id, s.rec(1).id), Vedoms.items(s.b, v).map { it.r })
+        // В ведомости «ИГС сейчас» второй схемы → «На подписи АН» (касание, список у ячейки).
+        val vi = Vedoms.items(s.b, v)[1]
+        val vc = s.view.vedomDraw.cellRect(s.b, v, vi, TableCol.IGS, RectF())!!
+        tap(s.view, s.sx(vc.centerX()), s.sy(vc.centerY()))
+        s.a.vedomUi.popup!!.contentView.findViewWithTag<View>("route_an").performClick(); idle()
+        v = s.b.vedoms.single()
+        assertEquals(IdTables.IGS_AN, s.rec(1).igs)
+        assertEquals(Vedoms.AN, Vedoms.items(s.b, v)[1].via)
+        s.view.invalidate(); idle()
+        shot(s.view, "assembly-an-route.png")
 
         // Состояние ведомости → «На подписи у заказчика»: дата — сегодня, у всех её схем статус «… от сегодня».
         s.a.vedomUi.stateDialog(v); idle()
@@ -225,11 +290,16 @@ class AssemblyFlowTest {
         v = s.b.vedoms.single()
         assertEquals(today, v.given)
         val d = IdTables.dateShort(today)
-        for (i in 0..1) {
-            assertEquals(IdTables.IGS_CUST, s.rec(i).igs)
-            assertEquals(today, s.rec(i).dcust)
-            assertEquals("На подписи у заказчика от $d", IdTables.cellText(s.b, s.rec(i), TableCol.IGS))
-        }
+        assertEquals(IdTables.IGS_CUST, s.rec(0).igs)
+        assertEquals(today, s.rec(0).dcust)
+        assertEquals("На подписи у заказчика от $d", IdTables.cellText(s.b, s.rec(0), TableCol.IGS))
+        // Схема на АН — статус не тронут.
+        assertEquals(IdTables.IGS_AN, s.rec(1).igs)
+        assertEquals("", s.rec(1).dcust)
+        // Ответ по ней — варианты АН («Не согласовано» есть только у АН).
+        s.a.vedomUi.resultPopup(v, listOf(Vedoms.items(s.b, v)[1])); idle()
+        assertNotNull(s.a.vedomUi.popup!!.contentView.findViewWithTag<View>("res_no"))
+        s.a.vedomUi.popup!!.dismiss()
         assertEquals(IdTables.IGS_WORK, s.rec(2).igs)
         assertEquals("На подписи у заказчика от $d ▾", Vedoms.stateChip(s.b, v))
         assertFalse("и после передачи (статусы длиннее) таблица не наезжает на ведомость",

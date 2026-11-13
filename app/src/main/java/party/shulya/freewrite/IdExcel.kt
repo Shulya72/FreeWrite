@@ -229,7 +229,7 @@ object IdExcel {
                 Cell(l.uch.ifEmpty { null }, 3), Cell(l.zah.ifEmpty { null }, 3), Cell(l.con.ifEmpty { null }, 3), Cell(l.work.ifEmpty { null }, 3), r?.date?.let { IdTables.excelDay(it) }?.let { Cell(it, 2) } ?: Cell(null, 3), Cell(r?.who?.ifEmpty { null }, 3))
             row += if (r != null) IdTables.status(b, BoardStatus.ID, r.igs).let { Cell(it.name, st.status(it.color)) } else Cell("строка удалена", 3)
             if (answers) {
-                row += if (i.res.isEmpty()) Cell("Ждём", 3) else Cell(Vedoms.resName(v.kind, i.res), st.status(Vedoms.resColor(i.res)))
+                row += if (i.res.isEmpty()) Cell("Ждём", 3) else Cell(Vedoms.resName(Vedoms.kindOf(v, i), i.res), st.status(Vedoms.resColor(i.res)))
                 row += IdTables.excelDay(i.rd)?.let { Cell(it, 2) } ?: Cell(null, 3)
             }
             s.rows.add(row)

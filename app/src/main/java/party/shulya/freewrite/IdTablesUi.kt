@@ -46,11 +46,10 @@ class TableUi(private val a: BoardActivity) {
         val old = r.get(col)
         if (!Vedoms.set(b, r, col, value, who())) return false
         if (col == TableCol.IGS) {
+            // В ведомости на столе: «Сборка» — заказчику, «На подписи АН» — через АН; другой статус — схема уходит из ведомости.
+            val gone = Vedoms.followTable(b, r)
+            if (gone.isNotEmpty()) a.hint("Схема убрана из ведомости ${gone.joinToString()} — она больше не в сборке", 2200)
             if (value == IdTables.IGS_ASSEMBLY) queueAssembly(r)
-            else if (old == IdTables.IGS_ASSEMBLY) {
-                val gone = Vedoms.dropFromAssembly(b, r)
-                if (gone.isNotEmpty()) a.hint("Схема убрана из ведомости ${gone.joinToString()} — она больше не в сборке", 2200)
-            }
         }
         return true
     }
@@ -737,7 +736,7 @@ class TableUi(private val a: BoardActivity) {
                 // История и ведомости схемы (шаг 2).
                 val inV = Vedoms.itemsOf(b, cur)
                 if (inV.isNotEmpty()) body.addView(Ui.text(a, "В ведомостях: " + inV.joinToString { (x, i) ->
-                    x.num + if (!x.isDraft && Vedoms.hasAnswers(x.kind)) " — " + Vedoms.resName(x.kind, i.res).lowercase() else "" }, 14f, Ui.INK2)
+                    x.num + if (!x.isDraft && Vedoms.hasAnswers(x.kind)) " — " + Vedoms.resName(Vedoms.kindOf(x, i), i.res).lowercase() else "" }, 14f, Ui.INK2)
                     .apply { setPadding(0, dp(10f), 0, 0); tag = "card_vedoms" })
                 if (t.sheets.isNotEmpty()) {
                     val uu = cur.uch; val zz = cur.zah
