@@ -14,6 +14,7 @@ import android.widget.EditText
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -188,6 +189,12 @@ class UchastokTest {
             val c = view.tableDraw.cellRect(b, t, r, col, RectF())!!
             return sx(c.centerX()) to sy(c.centerY())
         }
+        /** Цветной квадратик у номера захватки (0.25.1: квадратик — план/заливка, сам номер — ввод). */
+        fun swatch(r: BoardRec): Pair<Float, Float> {
+            val t = IdTables.tableOf(b, r)!!
+            val c = view.tableDraw.cellRect(b, t, r, TableCol.ZAH, RectF())!!
+            return sx(c.left + (TableDraw.PAD + TableDraw.SWATCH / 2f) * t.scale) to sy(c.centerY())
+        }
     }
 
     private fun open(b: Board): Screen {
@@ -255,7 +262,7 @@ class UchastokTest {
 
         // Касание этажа LM2 в таблице — его заливка; этаж LM1 (без заливки) — карточка строки.
         val rLm2 = IdTables.zahRows(s.b, t, "LM2", "3 этаж")[0]
-        val (zx, zy) = s.cell(rLm2, TableCol.ZAH)
+        val (zx, zy) = s.swatch(rLm2)
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, zx, zy)
         assertEquals(setOf(f), s.view.markedFills)
         root.findViewWithTag<View>("zah_done").performClick()
@@ -265,8 +272,8 @@ class UchastokTest {
         val rLm1 = IdTables.zahRows(s.b, t, "LM1", "3 этаж")[0]
         val (z1x, z1y) = s.cell(rLm1, TableCol.ZAH)
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, z1x, z1y)
-        assertNotNull(s.a.tableUi.card)
-        s.a.tableUi.card!!.dismiss(); idle()
+        assertNull("сразу ввод номера, без карточки", s.a.tableUi.card)
+        org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().dismiss(); idle()
         s.view.invalidate()
         shot(s.view, "table-uchastok.png")
         s.a.finish()

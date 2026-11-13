@@ -342,16 +342,16 @@ class TableUi(private val a: BoardActivity) {
                 val col = h.col
                 val c = col?.let { k -> t.allCols().firstOrNull { it.k == k } }
                 if (col != null && c != null && c.isStatus) { cellAction(t, r, col); return }
-                // План под таблицей (0.23): номер обведённой захватки — её области; не обведённой (пальцем) — обвести.
-                if (col == TableCol.ZAH && t.sheets.isNotEmpty()) {
-                    if (TablePlan.zonesOf(b, t, r.uch, r.zah).isNotEmpty()) { a.planUi.showZah(t, r.uch, r.zah); return }
-                    if (!pen && IdTables.fillsOf(b, t, r.uch, r.zah).isEmpty()) { a.planUi.startOutline(t, r.uch, r.zah); return }
+                // Цветной квадратик у номера захватки (0.25.1): план под таблицей (0.23) — её области или обвести; заливка на
+                // доске — показать её (ТЗ, раздел 8). Сам номер — ввод, как у всех ячеек.
+                val hasFills = col == TableCol.ZAH && IdTables.fillsOf(b, t, r.uch, r.zah).isNotEmpty()
+                if (col == TableCol.ZAH && (t.sheets.isNotEmpty() || hasFills) && h.cx < TableDraw.PAD + TableDraw.SWATCH + 10f) {
+                    if (t.sheets.isNotEmpty() && TablePlan.zonesOf(b, t, r.uch, r.zah).isNotEmpty()) { a.planUi.showZah(t, r.uch, r.zah); return }
+                    if (hasFills) { showFills(t, r.uch, r.zah); return }
+                    a.planUi.startOutline(t, r.uch, r.zah); return
                 }
-                // Номер захватки, привязанной к заливке, — показать её на плане (ТЗ, раздел 8).
-                if (col == TableCol.ZAH && IdTables.fillsOf(b, t, r.uch, r.zah).isNotEmpty()) { showFills(t, r.uch, r.zah); return }
-                // Объём (0.23.1, Владимир): касание ячейки и пальцем — сразу ввод числа, без карточки строки.
-                if (c != null && c.isVol) { volDialog(t, r, col); return }
-                if (!pen || col == null) { rowCard(r); return }
+                // Все ячейки — сразу ввод, без карточки строки (Владимир, 13.11: «чтоб быстрее»). Карточка — подержать строку.
+                if (col == null) { rowCard(r); return }
                 cellAction(t, r, col)
             }
             else -> v.select(listOf(t))
@@ -368,6 +368,31 @@ class TableUi(private val a: BoardActivity) {
             }
             c.isDate -> datePicker(r, col)
             else -> textDialog(t, r, col)
+        }
+    }
+
+    /** Следующая ячейка строки для ввода (правее, не статус) — кнопка «Далее» на клавиатуре; null — дальше нет. */
+    private fun nextCell(t: BoardTable, col: String): String? {
+        val cols = t.visibleCols()
+        val i = cols.indexOfFirst { it.k == col }
+        if (i < 0) return null
+        return cols.drop(i + 1).firstOrNull { !it.isStatus }?.k
+    }
+
+    /** «Далее» на клавиатуре: сохранили — сразу следующая ячейка этой строки. */
+    private fun goNext(t: BoardTable, r: BoardRec, col: String) {
+        val n = nextCell(t, col) ?: return
+        v.post { if (b.recs.any { it === r }) cellAction(t, r, n) }
+    }
+
+    /** Поле ячейки: «Далее» на клавиатуре — сохранить и перейти к следующей ячейке строки. */
+    private fun nextOnEnter(edit: EditText, t: BoardTable, col: String, save: () -> Boolean, close: () -> Unit) {
+        val hasNext = nextCell(t, col) != null
+        edit.imeOptions = if (hasNext) android.view.inputmethod.EditorInfo.IME_ACTION_NEXT else android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        edit.setOnEditorActionListener { _, id, _ ->
+            if (id != android.view.inputmethod.EditorInfo.IME_ACTION_NEXT && id != android.view.inputmethod.EditorInfo.IME_ACTION_DONE) return@setOnEditorActionListener false
+            if (save()) close()
+            true
         }
     }
 
@@ -798,6 +823,7 @@ class TableUi(private val a: BoardActivity) {
             .setPositiveButton("Готово") { _, _ -> setCell(r, col, edit.text.toString().trim()); done() }
             .setNegativeButton("Отмена", null)
             .create()
+        nextOnEnter(edit, t, col, save = { setCell(r, col, edit.text.toString().trim()); done(); true }) { d.dismiss(); goNext(t, r, col) }
         d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
         d.show()
         edit.requestFocus()
@@ -839,6 +865,11 @@ class TableUi(private val a: BoardActivity) {
             .setNeutralButton("Без объёма") { _, _ -> setCell(r, col, ""); done() }
             .setNegativeButton("Отмена", null)
             .create()
+        nextOnEnter(edit, t, col, save = {
+            val txt = edit.text.toString().trim()
+            val vv = IdTables.parseVol(txt)
+            if (txt.isNotEmpty() && vv.isEmpty()) { a.hint("Объём — числом, например 42,3", 1800); false } else { setCell(r, col, vv); done(); true }
+        }) { d.dismiss(); goNext(t, r, col) }
         d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
         d.show()
         edit.requestFocus()

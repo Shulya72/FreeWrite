@@ -33,6 +33,8 @@ class PlanLayout(val top: Float, val h: Float, val tabsH: Float, val tabX: Float
 
 /** Что под пальцем в таблице ИД: шапка, названия столбцов, ячейка (строка + столбец), «+ строка», «+ следующая захватка». */
 class TableHit(val part: Int, val rec: BoardRec?, val col: String?) {
+    /** Ячейка: где коснулись от её левого края (в единицах таблицы) — квадратик захватки или сам номер. */
+    var cx = 0f
     companion object {
         const val TITLE = 0
         const val HEAD = 1
@@ -285,10 +287,11 @@ class TableDraw {
         if (u < 0f || u > l.w || v < 0f || v > l.h) return null
         if (v < TITLE_H) return TableHit(TableHit.TITLE, null, null)
         var col: String? = l.cols.lastOrNull()?.k
-        for (i in l.cols.indices) if (u < l.colX[i + 1]) { col = l.cols[i].k; break }
+        var colI = l.cols.size - 1
+        for (i in l.cols.indices) if (u < l.colX[i + 1]) { col = l.cols[i].k; colI = i; break }
         if (v < rowsTop(l)) return TableHit(TableHit.HEAD, null, col)
         val ri = ((v - rowsTop(l)) / ROW_H).toInt()
-        if (ri < l.rows.size) return TableHit(TableHit.CELL, l.rows[ri], col)
+        if (ri < l.rows.size) return TableHit(TableHit.CELL, l.rows[ri], col).also { if (colI >= 0) it.cx = u - l.colX[colI] }
         if (v < rowsTop(l) + max(1, l.rows.size) * ROW_H) return TableHit(TableHit.ADD, null, col) // пустая таблица — «+ строка»
         val vol = l.vol
         if (vol != null && v < l.volTop + l.volH && l.volParts.isNotEmpty()) {

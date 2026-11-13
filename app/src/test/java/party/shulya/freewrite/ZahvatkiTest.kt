@@ -140,6 +140,12 @@ class ZahvatkiTest {
             val c = view.tableDraw.cellRect(b, t, r, col, RectF())!!
             return sx(c.centerX()) to sy(c.centerY())
         }
+        /** Цветной квадратик у номера захватки (0.25.1: квадратик — план/заливка, сам номер — ввод). */
+        fun swatch(r: BoardRec): Pair<Float, Float> {
+            val t = IdTables.tableOf(b, r)!!
+            val c = view.tableDraw.cellRect(b, t, r, TableCol.ZAH, RectF())!!
+            return sx(c.left + (TableDraw.PAD + TableDraw.SWATCH / 2f) * t.scale) to sy(c.centerY())
+        }
     }
 
     private fun open(b: Board): Screen {
@@ -210,7 +216,7 @@ class ZahvatkiTest {
 
         // Касание номера захватки «2» в таблице (палец) — её заливка подсвечена и на экране; «← К таблице», «Готово».
         val row2 = IdTables.zahRows(s.b, t, "", "2")[0]
-        val (zx, zy) = s.cell(row2, TableCol.ZAH)
+        val (zx, zy) = s.swatch(row2)
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, zx, zy)
         assertEquals(setOf(f1), s.view.markedFills)
         assertNull("карточка не открылась", s.a.tableUi.card)
@@ -221,13 +227,15 @@ class ZahvatkiTest {
         root.findViewWithTag<View>("zah_done").performClick()
         idle()
         assertNull(s.view.markedFills)
-        // Номер захватки без заливки («3») — как раньше: карточка строки.
+        // Номер захватки без заливки («3») — сразу ввод номера (0.25.1), без карточки строки.
         val row3 = IdTables.zahRows(s.b, t, "", "3")[0]
         s.view.fitRect(0f, 0f, 4200f, 2400f); idle()
         val (z3x, z3y) = s.cell(row3, TableCol.ZAH)
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, z3x, z3y)
-        assertNotNull(s.a.tableUi.card)
-        s.a.tableUi.card!!.dismiss(); idle()
+        assertNull(s.a.tableUi.card)
+        val zd = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+        assertEquals("3", zd.window!!.decorView.findViewWithTag<android.widget.EditText>("cell_text").text.toString())
+        zd.dismiss(); idle()
 
         // Отвязать.
         tap(s.view, MotionEvent.TOOL_TYPE_FINGER, s.sx(550f), s.sy(450f))
