@@ -580,8 +580,32 @@ object IdTables {
 
     // ---------------------------------------------------------------- значение ячейки
 
+    /**
+     * С какого дня схема в нынешнем статусе ИГС — для «На подписи у заказчика от 13.11.26» (0.25, Владимир): у заказчика —
+     * дата «Отдал заказчику», на АН — день перевода по истории. Для остальных статусов — пусто.
+     */
+    fun igsSince(b: Board, r: BoardRec): String = when (r.igs) {
+        IGS_CUST -> r.dcust.ifEmpty { eventDay(b, r, IGS_CUST) }
+        IGS_AN -> eventDay(b, r, IGS_AN)
+        else -> ""
+    }
+
+    private fun eventDay(b: Board, r: BoardRec, to: String): String {
+        val e = b.events.lastOrNull { it.r == r.id && it.k == TableCol.IGS && it.to == to } ?: return ""
+        val c = java.util.Calendar.getInstance().apply { timeInMillis = e.at }
+        return iso(c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH) + 1, c.get(java.util.Calendar.DAY_OF_MONTH))
+    }
+
+    /** Статус ИГС в таблице: «На подписи у заказчика от 13.11.26» (с какого дня — [igsSince]). */
+    fun igsText(b: Board, r: BoardRec): String {
+        val n = status(b, BoardStatus.ID, r.igs).name
+        val d = igsSince(b, r)
+        return if (d.isEmpty()) n else "$n от ${dateShort(d)}"
+    }
+
     fun cellText(b: Board, r: BoardRec, k: String): String = when (k) {
-        TableCol.CK, TableCol.DWG, TableCol.IGS -> status(b, groupOf(k), r.get(k)).name
+        TableCol.IGS -> igsText(b, r)
+        TableCol.CK, TableCol.DWG -> status(b, groupOf(k), r.get(k)).name
         TableCol.DATE, TableCol.DCUST, TableCol.DPTO -> dateShort(r.get(k))
         TableCol.VOL -> if (r.vol.isEmpty() || tableOf(b, r)?.parts()?.isNotEmpty() == true) "" else volText(r.vol) + tableOf(b, r)?.let { t -> unitFor(t, r.work).let { u -> if (u.isEmpty()) "" else " $u" } }.orEmpty()
         else -> if (TableKinds.partOf(k) != null) r.get(k).let { v -> if (v.isEmpty()) "" else volText(v) + tableOf(b, r)?.let { t -> unitFor(t, r.work).let { u -> if (u.isEmpty()) "" else " $u" } }.orEmpty() }

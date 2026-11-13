@@ -211,10 +211,10 @@ object IdExcel {
     fun writeVedom(b: Board, v: BoardVedom, out: OutputStream, today: String = IdTables.today()) {
         val st = Styles()
         val s = Sheet(("Ведомость " + v.num).replace(Regex("[\\[\\]:*?/\\\\]"), " ").take(31))
-        s.rows.add(listOf(Cell("Ведомость ${v.num} — ${Vedoms.kindName(v.kind)}", 5)))
+        s.rows.add(listOf(Cell("Ведомость ${v.num}" + (if (v.made.isNotEmpty()) " от ${IdTables.dateLong(v.made)}" else "") + " — ${Vedoms.kindName(v.kind)}", 5)))
         s.rows.add(listOf(Cell("Объект: " + b.title)))
         if (v.to.isNotBlank()) s.rows.add(listOf(Cell("Кому: " + v.to)))
-        s.rows.add(listOf(Cell(if (v.isDraft) (if (v.kind == Vedoms.LIST) "Список" else "Сборка (схемы на столе)") else Vedoms.giveLabel(v.kind) + " с " + IdTables.dateLong(v.given))))
+        s.rows.add(listOf(Cell(if (v.isDraft) (if (v.kind == Vedoms.LIST) "Список" else "Сборка (схемы на столе)") else Vedoms.giveLabel(v.kind) + " от " + IdTables.dateLong(v.given))))
         s.rows.add(listOf(Cell(Vedoms.summary(b, v, today))))
         s.rows.add(emptyList())
         val answers = Vedoms.hasAnswers(v.kind) && !v.isDraft

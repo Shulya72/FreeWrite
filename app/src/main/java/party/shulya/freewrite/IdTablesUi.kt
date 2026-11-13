@@ -38,8 +38,38 @@ class TableUi(private val a: BoardActivity) {
     /** Кто правит (для истории схемы). */
     private fun who() = Profile.name(a)
 
-    /** Поставить значение ячейки; статусы и даты — с записью в историю схемы (ТЗ, раздел 7). */
-    private fun put(r: BoardRec, col: String, value: String) = Vedoms.set(b, r, col, value, who())
+    /**
+     * Поставить значение ячейки; статусы и даты — с записью в историю схемы (ТЗ, раздел 7). ИГС «Сборка» (0.25) — схема
+     * ложится в ведомость дня (первая за день — предложение завести ведомость); вывели из «Сборки» — уходит из ведомости на столе.
+     */
+    private fun put(r: BoardRec, col: String, value: String): Boolean {
+        val old = r.get(col)
+        if (!Vedoms.set(b, r, col, value, who())) return false
+        if (col == TableCol.IGS) {
+            if (value == IdTables.IGS_ASSEMBLY) queueAssembly(r)
+            else if (old == IdTables.IGS_ASSEMBLY) {
+                val gone = Vedoms.dropFromAssembly(b, r)
+                if (gone.isNotEmpty()) a.hint("Схема убрана из ведомости ${gone.joinToString()} — она больше не в сборке", 2200)
+            }
+        }
+        return true
+    }
+
+    // Схемы, которым только что поставили «Сборку» (несколько сразу — лассо): одним заходом после правки.
+    private val asmQueue = LinkedHashSet<BoardRec>()
+    private var asmPosted = false
+
+    private fun queueAssembly(r: BoardRec) {
+        asmQueue += r
+        if (asmPosted) return
+        asmPosted = true
+        v.post {
+            asmPosted = false
+            val list = asmQueue.toList()
+            asmQueue.clear()
+            a.vedomUi.onAssembly(list)
+        }
+    }
 
     /** Срок «долго на подписи» в днях (настраивается в сводке; хранится на планшете). */
     var longDays: Int

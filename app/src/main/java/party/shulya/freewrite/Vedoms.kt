@@ -17,6 +17,8 @@ class BoardVedom(var x: Float, var y: Float, var scale: Float, var kind: String,
     var to = ""
     /** Дата передачи «2026-11-11»; пусто — черновик. */
     var given = ""
+    /** «Ведомость от …» (0.25): день, когда завели (первая «Сборка» дня); пусто — не записан (до 0.25). */
+    var made = ""
 
     /** Раскладка (считает [VedomDraw]). */
     internal var lay: VedomLayout? = null
@@ -123,6 +125,7 @@ object Vedoms {
         sb.append(",\"scale\":").append(v.scale.toDouble()).append(",\"kind\":").append(q(v.kind)).append(",\"num\":").append(q(v.num))
         if (v.to.isNotEmpty()) sb.append(",\"to\":").append(q(v.to))
         if (v.given.isNotEmpty()) sb.append(",\"given\":").append(q(v.given))
+        if (v.made.isNotEmpty()) sb.append(",\"made\":").append(q(v.made))
         sb.append('}')
         return sb.toString()
     }
@@ -132,7 +135,7 @@ object Vedoms {
         return BoardVedom(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(),
             j.optDouble("scale", 1.0).toFloat().takeIf { it > 0f && it.isFinite() } ?: 1f, kind, j.optString("num")).also {
             it.id = j.optString("id", "")
-            it.to = j.optString("to"); it.given = j.optString("given")
+            it.to = j.optString("to"); it.given = j.optString("given"); it.made = j.optString("made")
         }
     }
 
@@ -207,9 +210,9 @@ object Vedoms {
     /** Кнопка состояния в шапке ведомости: «Сборка ▾», «На подписи у заказчика · 12.11.26 ▾», «Закрыта ✓», «Список». */
     fun stateChip(b: Board, v: BoardVedom): String = when {
         v.kind == LIST -> "Список"
-        v.isDraft -> "Сборка ▾"
+        v.isDraft -> if (v.made.isNotEmpty()) "Сборка от " + IdTables.dateShort(v.made) + " ▾" else "Сборка ▾"
         isClosed(b, v) -> "Закрыта ✓"
-        else -> giveLabel(v.kind) + " · " + IdTables.dateShort(v.given) + " ▾"
+        else -> giveLabel(v.kind) + " от " + IdTables.dateShort(v.given) + " ▾"
     }
 
     fun state(b: Board, v: BoardVedom): String = when {
@@ -254,6 +257,32 @@ object Vedoms {
             if (i.r != rec.id || i.res.isNotEmpty() || i.v == except?.id) continue
             val v = vedom(b, i.v) ?: continue
             if (v.kind != LIST && (v.isDraft || hasAnswers(v.kind)) && out.none { it === v }) out += v
+        }
+        return out
+    }
+
+    /**
+     * Ведомость сегодняшней сборки (0.25, Владимир): заведена сегодня, ещё на столе (не передана), не список. Новые
+     * «Сборки» дня ложатся в неё сами.
+     */
+    fun assemblyOf(b: Board, day: String): BoardVedom? =
+        b.vedoms.lastOrNull { it.isDraft && it.kind != LIST && it.made == day }
+
+    /** Схемы в «Сборке», которых нет ни в одной ведомости на столе или в ожидании ответа. */
+    fun looseAssembly(b: Board): List<BoardRec> =
+        b.tables.flatMap { IdTables.allRows(b, it) }.filter { it.igs == IdTables.IGS_ASSEMBLY && waitingElsewhere(b, it, null).isEmpty() }
+
+    /** Схему вывели из «Сборки» в таблице: убрать из ведомостей на столе (передать её с пачкой уже нельзя). Номера ведомостей. */
+    fun dropFromAssembly(b: Board, r: BoardRec): List<String> {
+        val out = ArrayList<String>()
+        val it = b.vitems.iterator()
+        while (it.hasNext()) {
+            val i = it.next()
+            if (i.r != r.id) continue
+            val v = vedom(b, i.v) ?: continue
+            if (!v.isDraft || v.kind == LIST) continue
+            it.remove()
+            out += v.num
         }
         return out
     }

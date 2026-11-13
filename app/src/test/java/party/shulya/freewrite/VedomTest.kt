@@ -196,7 +196,7 @@ class VedomTest {
         // Унесли заказчику — «На подписи у заказчика», дата; кнопка состояния.
         Vedoms.give(b, v, "2026-11-12", "Владимир Шульмин")
         assertTrue(recs.take(3).all { it.igs == IdTables.IGS_CUST && it.dcust == "2026-11-12" })
-        assertEquals("На подписи у заказчика · 12.11.26 ▾", Vedoms.stateChip(b, v))
+        assertEquals("На подписи у заказчика от 12.11.26 ▾", Vedoms.stateChip(b, v))
         // Ошиблись — назад в сборку (ответов ещё нет): снова «Сборка», дата убрана.
         assertTrue(Vedoms.canUngive(b, v))
         Vedoms.ungive(b, v, "Владимир Шульмин")
@@ -482,20 +482,18 @@ class VedomTest {
         assertEquals("Лоток №1", s.b.recs.last().zah)
         assertEquals(4, Vedoms.items(s.b, v).size)
         // Передать АН → согласовано → «Согласованные → заказчику».
-        // Кнопка состояния в шапке: касание → «Сборка» / «На подписи АН» → окно с датой → «Унесли на АН».
+        // Кнопка состояния в шапке: касание → «Сборка» / «На подписи АН» → сразу, дата — сегодня (0.25).
         val hb = s.view.vedomDraw.bounds(s.b, v, RectF())
         s.view.fitRect(hb.left, hb.top, hb.right, hb.bottom); idle()
-        assertEquals("Сборка ▾", s.view.vedomDraw.layout(s.b, v).state)
+        assertTrue(s.view.vedomDraw.layout(s.b, v).state.startsWith("Сборка"))
         val hh = s.view.vedomDraw.hit(s.b, v, hb.right - 30f * v.scale, v.y + 22f * v.scale)!!
         assertEquals(VedomHit.STATE, hh.part)
         s.a.vedomUi.onTap(v, hh, pen = false)
         idle()
         latest().window!!.decorView.findViewWithTag<View>("vstate_give").performClick()
         idle()
-        assertEquals("Унесли на АН", latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).text.toString())
-        latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
-        idle()
         assertTrue(!v.isDraft)
+        assertEquals(IdTables.today(), v.given)
         assertTrue(Vedoms.items(s.b, v).mapNotNull { Vedoms.rec(s.b, it) }.all { it.igs == IdTables.IGS_AN })
         s.view.invalidate()
         shot(s.view, "vedom-an-given.png")

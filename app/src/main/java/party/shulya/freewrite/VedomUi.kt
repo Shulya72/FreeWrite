@@ -4,6 +4,7 @@ import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.app.Dialog
 import android.content.ClipData
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.RectF
@@ -151,6 +152,7 @@ class VedomUi(private val a: BoardActivity) {
                 a.pushUndo()
                 val (x, y, s) = place(recs)
                 val nv = BoardVedom(x, y, s, kind, num.text.toString().trim().ifEmpty { Vedoms.nextNum(b, kind) })
+                nv.made = IdTables.today()
                 nv.to = to.text.toString().trim()
                 b.vedoms += nv
                 val n = if (recs.isNullOrEmpty()) 0 else Vedoms.add(b, nv, recs, who())
@@ -165,6 +167,72 @@ class VedomUi(private val a: BoardActivity) {
             }
             .setNegativeButton("Отмена", null)
             .show()
+    }
+
+    // ---------------------------------------------------------------- сборка из таблицы (0.25)
+
+    /** Открытое окно «Сборка — ведомость от …?» (для проверок). */
+    internal var asmAsk: AlertDialog? = null
+
+    private fun declinedKey() = "asmNo_" + b.id
+
+    /** «Не сегодня» сказано сегодня на этой доске — больше не спрашиваем до завтра. */
+    private fun declinedToday(day: String) = a.getSharedPreferences("igs", Context.MODE_PRIVATE).getString(declinedKey(), "") == day
+
+    /**
+     * В таблице поставили «Сборку» (Владимир, 13.11.2026): есть ведомость сегодняшней сборки — схемы ложатся в неё сами;
+     * нет — первая «Сборка» дня: предложить завести ведомость от сегодня и положить в неё все схемы в «Сборке», которых нет
+     * в ведомостях.
+     */
+    fun onAssembly(recs: List<BoardRec>) {
+        val list = recs.filter { r -> b.recs.any { it === r } && r.igs == IdTables.IGS_ASSEMBLY && Vedoms.waitingElsewhere(b, r, null).isEmpty() }
+        if (list.isEmpty()) return
+        val today = IdTables.today()
+        Vedoms.assemblyOf(b, today)?.let { x ->
+            // Та же правка, что и статус (снимок отмены уже сделан) — «Отменить» уберёт и статус, и позицию.
+            val n = Vedoms.add(b, x, list, who())
+            a.changed()
+            if (n > 0) a.hint("В ведомость ${x.num} от ${IdTables.dateShort(x.made)}: +${Ui.plural(n, "схема", "схемы", "схем")} · всего ${Vedoms.items(b, x).size}", 2200)
+            return
+        }
+        if (declinedToday(today) || asmAsk?.isShowing == true) return
+        val loose = Vedoms.looseAssembly(b)
+        val more = loose.size - list.size
+        val d = AlertDialog.Builder(a)
+            .setTitle("Сборка — ведомость от ${IdTables.dateLong(today)}?")
+            .setMessage("Первая «Сборка» сегодня. Завести ведомость от сегодняшнего дня и положить в неё " +
+                (if (more > 0) "все схемы в «Сборке» без ведомости — ${loose.size}" else Ui.plural(loose.size, "схему", "схемы", "схем")) +
+                "? Дальше сегодня «Сборка» в таблице — схема сама ляжет в эту ведомость. Унесли — смените состояние ведомости, у всех её схем поменяется статус.")
+            .setPositiveButton("Заказчику") { _, _ -> createAssembly(Vedoms.CUST, today, list.firstOrNull()) }
+            .setNeutralButton("На АН") { _, _ -> createAssembly(Vedoms.AN, today, list.firstOrNull()) }
+            .setNegativeButton("Не сегодня") { _, _ ->
+                a.getSharedPreferences("igs", Context.MODE_PRIVATE).edit().putString(declinedKey(), today).apply()
+                a.hint("Сегодня не спрашиваю. Ведомость можно собрать кнопкой «Ведомости»", 2200)
+            }
+            .create()
+        asmAsk = d
+        d.show()
+    }
+
+    /** Ведомость сегодняшней сборки: рядом с таблицей, где поставили «Сборку»; в неё — все схемы в «Сборке» без ведомости. */
+    private fun createAssembly(kind: String, today: String, near: BoardRec?) {
+        val loose = Vedoms.looseAssembly(b)
+        if (loose.isEmpty()) return
+        a.pushUndo()
+        val sizes = (b.tables.map { it.scale } + b.vedoms.map { it.scale }).sorted()
+        val s = if (sizes.isNotEmpty()) sizes[sizes.size / 2] else a.resources.displayMetrics.density / b.camZ
+        val tb = near?.let { IdTables.tableOf(b, it) }?.let { v.tableDraw.bounds(b, it, RectF()) }
+        // Справа от таблицы с запасом: после передачи статусы длиннее («… от 13.11.26») — таблица станет шире.
+        val (x, y) = if (tb != null) freeSpot(tb.right + 240f * s, tb.top, s)
+        else freeSpot(v.wx(v.width / 2f) - 300f * s, v.wy(v.height / 2f) - 120f * s, s)
+        val nv = BoardVedom(x, y, s, kind, Vedoms.nextNum(b, kind))
+        nv.made = today
+        nv.to = b.vedoms.lastOrNull { it.kind == kind && it.to.isNotBlank() }?.to.orEmpty()
+        b.vedoms += nv
+        val n = Vedoms.add(b, nv, loose, who())
+        a.changed()
+        a.hint("Ведомость ${nv.num} от ${IdTables.dateShort(today)}: ${Ui.plural(n, "схема", "схемы", "схем")}. Сегодняшние «Сборки» лягут в неё сами; " +
+            "унесли — нажмите «Сборка от …» в шапке ведомости → «${Vedoms.giveLabel(kind)}»", 5000)
     }
 
     /** Где поставить новую ведомость: справа от выделенного или посреди экрана; размер — как у таблиц и ведомостей доски. */
@@ -300,7 +368,11 @@ class VedomUi(private val a: BoardActivity) {
             Vedoms.CUST -> "унесли заказчику — у схем «${gv.name}» и дата «Отдал заказчику»"
             Vedoms.AN -> "унесли на АН — у схем «${gv.name}»"
             else -> "отдали в ПТО — у схем «${gv.name}» и дата «Сдано в ПТО»"
-        } + if (!x.isDraft) " · ${IdTables.dateLong(x.given)}" else "", gv.color, !x.isDraft, "vstate_give") { giveDialog(x) }
+        } + if (!x.isDraft) " · ${IdTables.dateLong(x.given)}" else " · дата — сегодня, ${IdTables.dateLong(IdTables.today())}", gv.color, !x.isDraft, "vstate_give") { giveNow(x, IdTables.today()) }
+        if (x.isDraft) box.addView(Ui.text(a, "Унесли в другой день — выбрать дату", 14f, Ui.ACCENT, bold = true).apply {
+            tag = "vstate_date"; isClickable = true; setPadding(dp(6f), dp(14f), dp(6f), dp(4f))
+            setOnClickListener { dlg?.dismiss(); giveDialog(x) }
+        })
         dlg = AlertDialog.Builder(a).setTitle("${Vedoms.title(x)} — состояние").setView(ScrollView(a).apply { addView(box) })
             .setNegativeButton("Закрыть", null).show()
     }
@@ -590,6 +662,23 @@ class VedomUi(private val a: BoardActivity) {
             .show()
     }
 
+    /**
+     * Состояние «Сборка» → «На подписи у заказчика» (0.25, Владимир): дата — день перевода, без лишних вопросов; всем схемам
+     * ведомости — статус передачи «от даты» и дата «Отдал заказчику».
+     */
+    fun giveNow(x: BoardVedom, date: String) {
+        if (x.kind == Vedoms.LIST || !x.isDraft) return
+        val items = Vedoms.items(b, x)
+        if (items.isEmpty()) { a.hint("В ведомости ${x.num} пока нет схем — «+ схемы»", 1800); return }
+        a.pushUndo()
+        Vedoms.give(b, x, date, who())
+        a.changed()
+        a.buildSelectionBar()
+        val st = IdTables.status(b, BoardStatus.ID, Vedoms.giveStatus(x.kind)).name
+        a.hint("${x.num} — «${Vedoms.giveLabel(x.kind)}» от ${IdTables.dateShort(date)}: ${Ui.plural(items.size, "схема", "схемы", "схем")} — «$st от ${IdTables.dateShort(date)}»" +
+            if (Vedoms.hasAnswers(x.kind)) ". Ответы — касание «Ждём» у строки" else "", 3500)
+    }
+
     private fun pickDate(cur0: String, done: (String) -> Unit) {
         val cur = cur0.ifEmpty { IdTables.today() }.split('-').mapNotNull { it.toIntOrNull() }
         DatePickerDialog(a, { _, yy, mm, dd -> done(IdTables.iso(yy, mm + 1, dd)) }, cur.getOrElse(0) { 2026 }, cur.getOrElse(1) { 1 } - 1, cur.getOrElse(2) { 1 }).show()
@@ -628,6 +717,7 @@ class VedomUi(private val a: BoardActivity) {
         val r = v.vedomDraw.bounds(b, x, RectF())
         val (nx, ny) = freeSpot(r.left, r.bottom + 40f * x.scale, x.scale)
         val nv = BoardVedom(nx, ny, x.scale, Vedoms.CUST, Vedoms.nextNum(b, Vedoms.CUST))
+        nv.made = IdTables.today()
         nv.to = b.vedoms.lastOrNull { it.kind == Vedoms.CUST && it.to.isNotBlank() }?.to.orEmpty()
         b.vedoms += nv
         val n = Vedoms.add(b, nv, ok, who())
