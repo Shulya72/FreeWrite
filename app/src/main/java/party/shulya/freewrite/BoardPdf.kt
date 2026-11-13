@@ -187,9 +187,15 @@ object BoardPdf {
 class PdfInsert(
     private val activity: Activity,
     private val hint: (String) -> Unit,
-    /** Готовые листы (имя файла, ширина, высота) и сколько просили. */
-    private val onReady: (List<Triple<String, Int, Int>>, Int) -> Unit,
+    /** Готовые листы (имя файла, ширина, высота), сколько просили и сохранённый PDF (для плана таблицы). */
+    private val onReady: (List<Triple<String, Int, Int>>, Int, Kept?) -> Unit,
 ) {
+    /** PDF, сохранённый вместе с листами плана (0.26): файл в папке картинок и номера листов по порядку готовых. */
+    class Kept(val file: String, val pages: List<Int>)
+
+    /** Листы — под таблицу (0.26): сохранить сам PDF рядом, чтобы искать элементы по его линиям. */
+    var keepPdf = false
+
     private val exec = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var closed = false
@@ -372,11 +378,13 @@ class PdfInsert(
         val ctx = activity.applicationContext
         exec.execute {
             val out = ArrayList<Triple<String, Int, Int>>()
+            val outPages = ArrayList<Int>()
             var failed = 0
             for (p in pick) {
                 if (cancelled.get() || closed) break
                 try {
                     out += BoardPdf.renderToImage(ctx, pages, p, side)
+                    outPages += p
                 } catch (t: Throwable) {
                     android.util.Log.w("FreeWrite", "pdf page $p", t)
                     failed++
@@ -386,6 +394,14 @@ class PdfInsert(
                 main.post { if (!closed) progress(done) }
             }
             pages.close()
+            var kept: Kept? = null
+            if (keepPdf && out.isNotEmpty()) runCatching {
+                val dir = java.io.File(ctx.filesDir, "note_images").apply { mkdirs() }
+                val name = java.util.UUID.randomUUID().toString() + ".pdf"
+                file.copyTo(java.io.File(dir, name))
+                kept = Kept(name, outPages.toList())
+            }
+            keepPdf = false
             file.delete()
             main.post {
                 busy = false
@@ -397,7 +413,7 @@ class PdfInsert(
                         .setMessage("Не получилось нарисовать ни одного листа.").setPositiveButton("Понятно", null).show()
                     return@post
                 }
-                onReady(out, if (cancelled.get()) out.size else pick.size)
+                onReady(out, if (cancelled.get()) out.size else pick.size, kept)
             }
         }
     }

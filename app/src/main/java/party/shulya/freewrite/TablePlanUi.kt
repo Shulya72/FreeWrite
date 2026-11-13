@@ -48,6 +48,8 @@ class PlanEdit(val t: BoardTable, val sheet: PlanSheet, val uch: String, val zah
     var busy = false
     /** Выбранный цвет захватки (0.23.1; null — как у её областей или следующий по порядку). */
     var color: Int? = null
+    /** Разметка элементов (0.26): куски становятся элементами без захватки; ножницы, «убрать». */
+    var elements = false
 
     companion object {
         const val MAGIC = 0
@@ -58,8 +60,20 @@ class PlanEdit(val t: BoardTable, val sheet: PlanSheet, val uch: String, val zah
         const val BRUSH = 4
         /** Полуширина кисти на экране, dp. */
         const val BRUSH_DP = 14f
+        /** Отмечать элементы захватки (0.26): касание — элемент, провести — все под пальцем. */
+        const val ASSIGN = 5
+        /** Шов / ножницы (0.26): провести поперёк элемента — разрезать. */
+        const val SCISSORS = 6
+        /** Убрать элемент из разметки (0.26). */
+        const val ERASE = 7
         /** Зазор по ступеням — пикселей на картинке анализа (большая сторона до 2048); закрывается щель до 2× зазора. */
         val GAPS = intArrayOf(0, 3, 6, 10, 15, 22)
+
+        /** Инструменты, которым нужен след пальца/пера. */
+        fun pathTool(t: Int) = t == BRUSH || t == ASSIGN || t == ERASE
+
+        /** Где точка притягивается к углам (лупа с привязкой). */
+        fun snapTool(t: Int) = t == POINTS || t == RECT || t == CIRCLE
     }
 }
 
@@ -82,12 +96,30 @@ class PlanUi(private val a: BoardActivity) {
 
     fun clearTarget() { target = null }
 
-    /** «Отменить» во время обводки — последний кусок или точку. */
-    fun undoPiece() {
-        val pe = v.planEdit ?: return
+    /** «Отменить» во время обводки — последний кусок или точку; false — нечего (тогда — отмена доски). */
+    fun undoPiece(): Boolean {
+        val pe = v.planEdit ?: return false
         if (pe.points.isNotEmpty()) { pe.points.removeAt(pe.points.size - 1); pe.points.removeAt(pe.points.size - 1) }
         else if (pe.pieces.isNotEmpty()) pe.pieces.removeAt(pe.pieces.size - 1)
+        else return pe.tool != PlanEdit.ASSIGN && pe.tool != PlanEdit.SCISSORS && pe.tool != PlanEdit.ERASE && !pe.elements
         v.invalidate()
+        return true
+    }
+
+    /** Режим, который «Отменить» доски не закрывает (отметка, ножницы, «убрать» — каждое касание сразу на доске). */
+    fun keepOnUndo(pe: PlanEdit) = pe.pieces.isEmpty() && pe.points.isEmpty() &&
+        (pe.tool == PlanEdit.ASSIGN || pe.tool == PlanEdit.SCISSORS || pe.tool == PlanEdit.ERASE || pe.elements)
+
+    /** После отмены доски — тот же режим на восстановленной таблице и листе. */
+    fun rebind(old: PlanEdit) {
+        val t = b.tables.firstOrNull { it.id == old.t.id }
+        val sh = t?.sheets?.firstOrNull { it.id == old.sheet.id }
+        if (t == null || sh == null) { v.planEdit = null; a.hideModeBar(); return }
+        val pe = PlanEdit(t, sh, old.uch, old.zah).also { it.tool = old.tool; it.elements = old.elements; it.color = old.color; it.gap = old.gap }
+        v.planEdit = pe
+        v.planHover = null
+        if (pe.tool == PlanEdit.ASSIGN) v.markedRecs = IdTables.zahRows(b, t, pe.uch, pe.zah).toSet()
+        bar(pe)
     }
 
     /** Окно обрезки (для проверок). */
@@ -107,14 +139,16 @@ class PlanUi(private val a: BoardActivity) {
     }
 
     /** Картинки или отрисованные листы PDF для таблицы [target]: по одному — обрезка, потом лист. */
-    fun onSheets(blocks: List<Triple<String, Int, Int>>) {
-        val t = target?.takeIf { tt -> b.tables.any { it === tt } } ?: run { target = null; return }
+    fun onSheets(blocks: List<Triple<String, Int, Int>>, kept: PdfInsert.Kept? = null) {
+        val t = target?.takeIf { tt -> b.tables.any { it === tt } } ?: run { target = null; kept?.let { File(imageDir, it.file).delete() }; return }
         target = null
         if (blocks.isEmpty()) { a.hint("Не удалось открыть картинку"); return }
-        val queue = ArrayDeque(blocks)
+        val queue = ArrayDeque(blocks.withIndex().toList())
         fun next() {
-            val bl = queue.removeFirstOrNull() ?: return
+            val (bi, bl) = queue.removeFirstOrNull() ?: return
             val sh = PlanSheet(bl.first, bl.second, bl.third)
+            // PDF листа (0.26) — для поиска элементов по линиям.
+            if (kept != null && bi < kept.pages.size) { sh.pdf = kept.file; sh.page = kept.pages[bi] }
             cropSheet(sh, isNew = true) { ok ->
                 if (ok) {
                     a.pushUndo()
@@ -123,7 +157,8 @@ class PlanUi(private val a: BoardActivity) {
                     a.changed()
                     if (queue.isEmpty()) {
                         showSheet(t)
-                        a.hint("План под таблицей. Обведите захватки: «Обвести захватку» или касание номера захватки в таблице", 5000)
+                        if (sh.pdf.isNotEmpty()) offerFind(t)
+                        else a.hint("План под таблицей. Обведите захватки: «Обвести захватку» или касание номера захватки в таблице", 5000)
                     }
                 }
                 next()
@@ -249,6 +284,7 @@ class PlanUi(private val a: BoardActivity) {
         val sh = TablePlan.current(t) ?: return
         val z = b.zones.lastOrNull { it.t == t.id && it.s == sh.id && it.contains(fx, fy) }
         if (z == null) { clearMarks(); a.hideModeBar(); return }
+        if (z.free) { a.hint("Элемент ещё не в захватке. Коснитесь квадратика захватки в таблице — и отмечайте элементы", 3500); return }
         showZah(t, z.uch, z.zah, moveCamera = false)
     }
 
@@ -424,9 +460,18 @@ class PlanUi(private val a: BoardActivity) {
     private fun outlineBar(pe: PlanEdit) {
         fun toolPill(name: String, tool: Int, tag: String) = Ui.pill(a, name, if (pe.tool == tool) Color.WHITE else Ui.INK, if (pe.tool == tool) Ui.INK else Ui.DESK).apply {
             this.tag = tag
-            setOnClickListener { pe.tool = tool; pe.points.clear(); outlineBar(pe); v.invalidate(); a.hint(toolHint(tool), 2500) }
+            setOnClickListener {
+                pe.tool = tool; pe.points.clear(); bar(pe); v.invalidate(); a.hint(toolHint(tool), 2500)
+                if ((tool == PlanEdit.MAGIC || tool == PlanEdit.BRUSH) && analysis?.matches(pe.sheet) != true) prepare(pe.sheet)
+            }
         }
         val buttons = ArrayList<TextView>()
+        if (!pe.elements && TablePlan.elements(b, pe.t).isNotEmpty())
+            buttons += Ui.pill(a, "← Отмечать элементы", Ui.INK, Ui.DESK).apply { tag = "pt_assign"; setOnClickListener { pe.tool = PlanEdit.ASSIGN; pe.points.clear(); bar(pe); v.invalidate() } }
+        if (pe.elements) {
+            buttons += toolPill("Ножницы / шов", PlanEdit.SCISSORS, "pt_scissors")
+            buttons += toolPill("Убрать", PlanEdit.ERASE, "pt_erase")
+        }
         buttons += toolPill("Волшебная", PlanEdit.MAGIC, "pt_magic")
         buttons += toolPill("▭", PlanEdit.RECT, "pt_rect")
         buttons += toolPill("◯", PlanEdit.CIRCLE, "pt_circle")
@@ -437,15 +482,19 @@ class PlanUi(private val a: BoardActivity) {
             buttons += Ui.pill(a, "+ (${pe.gap})", Ui.INK, Ui.DESK).apply { tag = "pt_gap_plus"; setOnClickListener { if (pe.gap < PlanEdit.GAPS.size - 1) { pe.gap++; outlineBar(pe) } } }
         }
         // Цвет захватки: палитра, последние, пипетка (0.23.1).
-        buttons += Ui.pill(a, "● Цвет", colorOf(pe), Ui.DESK).apply { tag = "pt_color"; setOnClickListener { chooseColor(pe.t, colorOf(pe)) { c -> pe.color = c; outlineBar(pe); v.invalidate() } } }
+        if (!pe.elements) buttons += Ui.pill(a, "● Цвет", colorOf(pe), Ui.DESK).apply { tag = "pt_color"; setOnClickListener { chooseColor(pe.t, colorOf(pe)) { c -> pe.color = c; outlineBar(pe); v.invalidate() } } }
+        if (pe.elements) buttons += Ui.pill(a, "Найти…", Ui.INK, Ui.DESK).apply { tag = "pt_find"; setOnClickListener { val t = pe.t; endOutline(save = true); findDialog(t) } }
         buttons += Ui.pill(a, "Отменить", Ui.INK, Ui.DESK).apply {
             tag = "pt_undo"
             setOnClickListener { undoPiece() }
         }
         buttons += Ui.pill(a, "Отмена", Ui.INK, Ui.DESK).apply { tag = "pt_cancel"; setOnClickListener { endOutline(save = false) } }
         buttons += Ui.pill(a, "Готово", Color.WHITE, Ui.ACCENT).apply { tag = "pt_done"; setOnClickListener { endOutline(save = true) } }
-        a.showModeBar("Захватка ${IdTables.zahLabel(pe.uch, pe.zah)}", buttons)
+        a.showModeBar(if (pe.elements) "Разметка элементов · ${elementsInfo(pe.t, pe.sheet)}" else "Захватка ${IdTables.zahLabel(pe.uch, pe.zah)}", buttons)
     }
+
+    /** Панель режима: отметка элементов, разметка или обводка. */
+    private fun bar(pe: PlanEdit) = if (pe.tool == PlanEdit.ASSIGN) assignBar(pe) else outlineBar(pe)
 
     /** Цвет захватки в обводке: выбранный, иначе как у её областей / следующий по порядку. */
     fun colorOf(pe: PlanEdit): Int = pe.color ?: TablePlan.ownColorFor(b, pe.t, pe.uch, pe.zah)
@@ -485,6 +534,8 @@ class PlanUi(private val a: BoardActivity) {
         val p0 = FloatArray(2); val p1 = FloatArray(2)
         v.tableDraw.toSheet(pe.t, pe.sheet, r, x0, y0, p0)
         v.tableDraw.toSheet(pe.t, pe.sheet, r, x1, y1, p1)
+        if (pe.tool == PlanEdit.ASSIGN || pe.tool == PlanEdit.ERASE) { pickElements(pe, r, x1, y1, tap); return }
+        if (pe.tool == PlanEdit.SCISSORS) { scissors(pe, p0, p1, tap); return }
         if (pe.tool == PlanEdit.BRUSH) {
             val trail = ArrayList(pe.path)
             pe.path.clear()
@@ -598,13 +649,22 @@ class PlanUi(private val a: BoardActivity) {
         val pe = v.planEdit ?: return
         if (save && pe.points.size >= 6) closePoints(pe)
         v.planEdit = null
+        v.planHover = null
         a.hideModeBar()
         if (save && pe.pieces.isNotEmpty() && b.tables.any { it === pe.t }) {
             a.pushUndo()
+            if (pe.elements) {
+                // Разметка (0.26): куски — элементы без захватки.
+                b.zones += pe.pieces.map { BoardZone(pe.t.id, pe.sheet.id, "", "", it, TablePlan.FREE).also { z -> z.e = true } }
+                a.changed()
+                a.hint("Добавлено элементов: ${pe.pieces.size}", 2000)
+                return
+            }
             val color = colorOf(pe)
             // Выбрали цвет — у всей захватки он один (и у прежних её областей).
             if (pe.color != null) for (z in TablePlan.zonesOf(b, pe.t, pe.uch, pe.zah)) z.color = color
-            val made = pe.pieces.map { BoardZone(pe.t.id, pe.sheet.id, pe.uch, pe.zah, it, color) }
+            val asElements = TablePlan.elements(b, pe.t).isNotEmpty()
+            val made = pe.pieces.map { BoardZone(pe.t.id, pe.sheet.id, pe.uch, pe.zah, it, color).also { z -> z.e = asElements } }
             b.zones += made
             a.changed()
             showZah(pe.t, pe.uch, pe.zah, moveCamera = false)
@@ -612,6 +672,414 @@ class PlanUi(private val a: BoardActivity) {
             v.markedRecs = null
             v.invalidate()
         }
+    }
+
+    // ---------------------------------------------------------------- элементы разметки (0.26)
+
+    /** Прочитанный лист PDF (линии со слоями) — последний. */
+    private var vecKey = ""
+    private var vec: PdfVector.Page? = null
+
+    private fun loadVector(sh: PlanSheet): PdfVector.Page {
+        val key = sh.pdf + "#" + sh.page
+        synchronized(this) { if (key == vecKey) vec?.let { return it } }
+        val p = PdfVector.read(File(imageDir, sh.pdf), sh.page)
+        synchronized(this) { vecKey = key; vec = p }
+        return p
+    }
+
+    private val prefs get() = a.getSharedPreferences("plan", Context.MODE_PRIVATE)
+
+    /** Свои галочки слоёв на этой доске (имя слоя → участвует), остальные — по названию. */
+    private fun layerUse(): Map<String, Boolean> {
+        val s = prefs.getString("layers_" + b.id, null) ?: return emptyMap()
+        return runCatching { val o = org.json.JSONObject(s); o.keys().asSequence().associateWith { o.optBoolean(it) } }.getOrDefault(emptyMap())
+    }
+
+    private fun elementsInfo(t: BoardTable, sh: PlanSheet): String {
+        val n = TablePlan.elements(b, t, sh.id).size
+        return if (n == 0) "элементов нет" else Ui.plural(n, "элемент", "элемента", "элементов")
+    }
+
+    /** Лист с PDF вставлен — предложить найти элементы. */
+    private fun offerFind(t: BoardTable) {
+        AlertDialog.Builder(a).setTitle("План под таблицей")
+            .setMessage("Найти на листе стены, пилоны или плиту по линиям чертежа? Потом касание квадратика захватки в таблице — и отмечайте, что залили.")
+            .setPositiveButton("Найти элементы") { _, _ -> findDialog(t) }
+            .setNegativeButton("Позже", null).show()
+    }
+
+    /** «Элементы ▾» в шапке плана. */
+    fun elementsMenu(t: BoardTable) {
+        val sh = TablePlan.current(t) ?: run { addSheet(t); return }
+        val n = TablePlan.elements(b, t, sh.id).size
+        val items = arrayListOf("Найти элементы на листе…", "Ножницы / шов — разрезать элемент", "Добавить элемент вручную", "Убрать элементы касанием")
+        if (n > 0) items += "Убрать всю разметку листа ($n)"
+        AlertDialog.Builder(a).setTitle("Элементы · ${v.tableDraw.sheetName(t, t.sheets.indexOf(sh))}")
+            .setItems(items.toTypedArray()) { _, w ->
+                when (w) {
+                    0 -> findDialog(t)
+                    1 -> startElements(t, PlanEdit.SCISSORS)
+                    2 -> startElements(t, PlanEdit.MAGIC)
+                    3 -> startElements(t, PlanEdit.ERASE)
+                    4 -> clearElements(t, sh)
+                }
+            }
+            .setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun clearElements(t: BoardTable, sh: PlanSheet) {
+        AlertDialog.Builder(a).setMessage("Убрать всю разметку листа и швы? Захватки, отмеченные на этом листе, тоже уйдут с плана. «Отменить» вернёт.")
+            .setPositiveButton("Убрать") { _, _ ->
+                endOutline(save = false)
+                a.pushUndo()
+                b.zones.removeAll { it.t == t.id && it.s == sh.id && it.e }
+                sh.seams.clear()
+                t.lay = null
+                a.changed()
+            }
+            .setNegativeButton("Отмена", null).show()
+    }
+
+    /** Окно «Найти элементы» (для проверок). */
+    internal var findDlg: AlertDialog? = null
+
+    /** «Найти элементы»: что искать — несущие, ненесущие, плита; слои. */
+    fun findDialog(t: BoardTable) {
+        val sh = TablePlan.current(t) ?: return
+        if (sh.pdf.isEmpty() || !File(imageDir, sh.pdf).isFile) { askPdf(t, sh); return }
+        val guess = when {
+            t.kindDef()?.id == TableKinds.KJ_SLAB.id -> PlanElements.SLAB
+            t.title.contains("ненесущ", ignoreCase = true) -> PlanElements.NONBEARING
+            else -> PlanElements.BEARING
+        }
+        var mode = guess
+        val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(6f), dp(20f), 0) }
+        box.addView(Ui.text(a, "Найду по линиям чертежа. Текст, размеры, оси и выноски не трогаются. Что искать на этом листе:", 13.5f, Ui.INK2))
+        val group = android.widget.RadioGroup(a).apply { setPadding(0, dp(8f), 0, dp(4f)) }
+        for ((m, label) in listOf(
+            PlanElements.BEARING to "Несущие стены и пилоны — жирный контур",
+            PlanElements.NONBEARING to "Ненесущие стены — тонкий контур со штриховкой",
+            PlanElements.SLAB to "Плита перекрытия — по краю, с отверстиями и швами-зигзагами",
+        )) {
+            group.addView(android.widget.RadioButton(a).apply {
+                id = View.generateViewId(); text = label; textSize = 15f; tag = "find_$m"
+                isChecked = m == guess
+                setOnClickListener { mode = m }
+            })
+        }
+        box.addView(group)
+        box.addView(Ui.text(a, "Слои чертежа…", 14f, Ui.ACCENT, bold = true).apply {
+            tag = "find_layers"; setPadding(0, dp(6f), 0, dp(10f))
+            setOnClickListener { layersDialog(sh) }
+        })
+        val old = TablePlan.elements(b, t, sh.id)
+        if (old.isNotEmpty()) box.addView(Ui.text(a, "На листе уже есть разметка (${old.size}). Элементы без захватки заменятся, отмеченные в захватках — останутся.", 12.5f, Ui.MUTED))
+        findDlg = AlertDialog.Builder(a).setTitle("Найти элементы")
+            .setView(ScrollView(a).apply { addView(box) })
+            .setPositiveButton("Найти") { _, _ -> runFind(t, sh, mode) }
+            .setNegativeButton("Отмена", null).show()
+    }
+
+    /** Слои чертежа: какие участвуют в поиске (по умолчанию — по названию; запоминается для доски). */
+    private fun layersDialog(sh: PlanSheet) {
+        exec.execute {
+            val page = runCatching { loadVector(sh) }.getOrNull()
+            main.post {
+                if (page == null) { a.hint("Не удалось прочитать PDF", 2000); return@post }
+                val layers = PlanElements.layers(page)
+                if (layers.isEmpty()) { a.hint("В PDF нет слоёв — поиск идёт по толщине линий", 2500); return@post }
+                val use = layerUse()
+                val checked = BooleanArray(layers.size) { use[layers[it].name] ?: layers[it].auto }
+                val names = layers.map { l ->
+                    val what = when (l.role) {
+                        PlanElements.Role.CUT -> "контуры"; PlanElements.Role.HATCH -> "штриховка"; PlanElements.Role.SLAB -> "плита"
+                        PlanElements.Role.ANNOT -> "размеры, текст, оси"; PlanElements.Role.HIDDEN -> "невидимые линии"
+                        PlanElements.Role.OPENING -> "проёмы"; PlanElements.Role.OTHER -> "прочее"
+                    }
+                    "${l.name.ifEmpty { "без слоя" }} — $what, ${l.count}"
+                }.toTypedArray()
+                AlertDialog.Builder(a).setTitle("Слои для поиска")
+                    .setMultiChoiceItems(names, checked) { _, i, on -> checked[i] = on }
+                    .setPositiveButton("Готово") { _, _ ->
+                        val o = org.json.JSONObject()
+                        for ((i, l) in layers.withIndex()) if (checked[i] != l.auto) o.put(l.name, checked[i])
+                        prefs.edit().putString("layers_" + b.id, o.toString()).apply()
+                    }
+                    .setNeutralButton("Как было") { _, _ -> prefs.edit().remove("layers_" + b.id).apply() }
+                    .setNegativeButton("Отмена", null).show()
+            }
+        }
+    }
+
+    /** Идёт поиск (для проверок). */
+    @Volatile internal var finding = false
+
+    private fun runFind(t: BoardTable, sh: PlanSheet, mode: Int) {
+        val msg = Ui.text(a, "Ищу элементы по линиям чертежа…", 16f, Ui.INK2).apply { setPadding(dp(24f), dp(14f), dp(24f), dp(6f)) }
+        val wait = AlertDialog.Builder(a).setView(msg).setCancelable(false).show()
+        finding = true
+        val crop = floatArrayOf(sh.cl, sh.ct, sh.cr, sh.cb)
+        val use = layerUse()
+        exec.execute {
+            val r = runCatching { PlanElements.find(loadVector(sh), mode, crop, use) }
+            main.post {
+                finding = false
+                runCatching { wait.dismiss() }
+                r.onFailure { e ->
+                    android.util.Log.w("FreeWrite", "find", e)
+                    AlertDialog.Builder(a).setTitle("Не получилось").setMessage("Не удалось прочитать линии PDF (${e.javaClass.simpleName}). Можно разметить вручную: «Элементы» → «Добавить элемент вручную».")
+                        .setPositiveButton("Понятно", null).show()
+                }
+                r.onSuccess { f -> applyFound(t, sh, f) }
+            }
+        }
+    }
+
+    private fun applyFound(t: BoardTable, sh: PlanSheet, f: PlanElements.Found) {
+        if (b.tables.none { it === t } || t.sheets.none { it === sh }) return
+        if (f.elements.isEmpty()) {
+            AlertDialog.Builder(a).setTitle("Ничего не нашлось").setMessage(f.message).setPositiveButton("Понятно", null).show()
+            return
+        }
+        endOutline(save = false)
+        a.pushUndo()
+        val kept = b.zones.filter { it.t == t.id && it.s == sh.id && it.e && !it.free }
+        b.zones.removeAll { it.t == t.id && it.s == sh.id && it.free }
+        var added = 0
+        for (e in f.elements) {
+            // Уже отмеченное в захватке не дублируем.
+            val c = centroid(e.outer)
+            if (kept.any { it.contains(c[0], c[1]) }) continue
+            b.zones += BoardZone(t.id, sh.id, "", "", e.outer, TablePlan.FREE).also { z -> z.e = true; z.holes = e.holes }
+            added++
+        }
+        for (s in f.seams) if (sh.seams.none { o -> (0..3).all { kotlin.math.abs(o[it] - s[it]) < 0.002f } }) sh.seams += s
+        // Каждой захватке — свой цвет (Владимир: «20–30 захваток — все разного цвета»).
+        if (t.zoneColor != TablePlan.OWN) t.zoneColor = TablePlan.OWN
+        t.lay = null
+        a.changed()
+        showSheet(t)
+        AlertDialog.Builder(a).setTitle("Разметка готова")
+            .setMessage("${f.message}.\n\nСерым — ещё не залито. Теперь коснитесь цветного квадратика у номера захватки в таблице и отмечайте элементы, которые залили. Лишнее — «Элементы» → «Убрать», длинную стену разделить — «Ножницы / шов».")
+            .setPositiveButton("Понятно", null).show()
+        if (added == 0) a.hint("Новых элементов нет — всё уже отмечено", 2500)
+    }
+
+    private fun centroid(p: FloatArray): FloatArray {
+        var x = 0f; var y = 0f
+        val n = p.size / 2
+        for (i in 0 until n) { x += p[2 * i]; y += p[2 * i + 1] }
+        return floatArrayOf(x / n, y / n)
+    }
+
+    /** Лист вставлен без PDF (до 0.26 или картинкой) — выбрать тот же PDF. */
+    private var pdfFor: Pair<String, String>? = null
+
+    private fun askPdf(t: BoardTable, sh: PlanSheet) {
+        AlertDialog.Builder(a).setTitle("Нужен PDF этого листа")
+            .setMessage("Лист вставлен картинкой — линий чертежа при нём нет. Выберите тот же PDF ещё раз: элементы найдутся по его линиям, картинка листа не изменится.")
+            .setPositiveButton("Выбрать PDF") { _, _ -> pdfFor = t.id to sh.id; a.pickSheetPdf() }
+            .setNegativeButton("Отмена", null).show()
+    }
+
+    /** Ответ на «Выбрать PDF»: копия к себе, лист (если в PDF их несколько — выбрать), потом «Найти элементы». */
+    fun onSheetPdf(uri: android.net.Uri) {
+        val (tid, sid) = pdfFor ?: return
+        pdfFor = null
+        a.hint("Читаю PDF…", 2000)
+        exec.execute {
+            val r = runCatching {
+                val name = java.util.UUID.randomUUID().toString() + ".pdf"
+                val f = File(imageDir.apply { mkdirs() }, name)
+                (a.contentResolver.openInputStream(uri) ?: throw IllegalArgumentException("файл не открылся")).use { input -> f.outputStream().use { input.copyTo(it) } }
+                val n = PdfVector.pageCount(f.readBytes())
+                if (n <= 0) { f.delete(); throw IllegalArgumentException("это не PDF") }
+                name to n
+            }
+            main.post {
+                r.onFailure { a.hint("Не удалось открыть PDF: ${it.message ?: it.javaClass.simpleName}", 3000) }
+                r.onSuccess { (name, n) -> attachPdf(tid, sid, name, n) }
+            }
+        }
+    }
+
+    private fun attachPdf(tid: String, sid: String, name: String, pages: Int) {
+        fun done(page: Int) {
+            val t = b.tables.firstOrNull { it.id == tid } ?: return
+            val sh = t.sheets.firstOrNull { it.id == sid } ?: return
+            a.pushUndo()
+            sh.pdf = name; sh.page = page
+            a.changed()
+            findDialog(t)
+        }
+        if (pages <= 1) { done(0); return }
+        AlertDialog.Builder(a).setTitle("Какой лист PDF?")
+            .setItems(Array(pages) { "Лист ${it + 1}" }) { _, i -> done(i) }
+            .setNegativeButton("Отмена") { _, _ -> File(imageDir, name).delete() }.show()
+    }
+
+    /** Разметка элементов вручную: ножницы, убрать, волшебная, прямоугольник, точки, кисть. */
+    fun startElements(t: BoardTable, tool: Int) {
+        val sh = TablePlan.current(t) ?: run { a.hint("Сначала «+ план» внизу таблицы", 2000); return }
+        endOutline(save = false)
+        clearMarks()
+        val pe = PlanEdit(t, sh, "", "").also { it.elements = true; it.tool = tool }
+        v.planEdit = pe
+        showSheet(t)
+        outlineBar(pe)
+        if ((tool == PlanEdit.MAGIC || tool == PlanEdit.BRUSH) && analysis?.matches(sh) != true) prepare(sh)
+        a.hint(when (tool) {
+            PlanEdit.SCISSORS -> "Проведите линию поперёк элемента — по месту шва. Элемент разделится на два"
+            PlanEdit.ERASE -> "Касайтесь лишних элементов (текст, мусор) — они уберутся"
+            else -> toolHint(tool)
+        }, 3500)
+    }
+
+    /**
+     * Отметка захватки на плане (0.26, Владимир: «выбрал захватку, пальцем проставляю выделенные участки — они окрасились»):
+     * касание элемента — в захватку (повторное — снять), провести — все под пальцем.
+     */
+    fun startAssign(t: BoardTable, uch: String, zah: String) {
+        val els = TablePlan.elements(b, t)
+        val cur = TablePlan.current(t)
+        val sh = cur?.takeIf { c -> els.any { it.s == c.id } } ?: els.firstOrNull()?.let { z -> TablePlan.sheet(t, z.s) } ?: cur
+            ?: run { a.hint("Сначала «+ план» внизу таблицы", 2000); return }
+        endOutline(save = false)
+        clearMarks()
+        if (sh !== cur) { t.tab = t.sheets.indexOf(sh).coerceAtLeast(0); t.lay = null }
+        val pe = PlanEdit(t, sh, uch, zah).also { it.tool = PlanEdit.ASSIGN }
+        v.planEdit = pe
+        v.markedRecs = IdTables.zahRows(b, t, uch, zah).toSet()
+        showSheet(t)
+        assignBar(pe)
+        a.hint("Касайтесь элементов, которые залили, — окрасятся. Провести пальцем — все под ним. Повторное касание — снять", 4500)
+    }
+
+    private fun assignBar(pe: PlanEdit) {
+        val key = IdTables.zkey(pe.uch, pe.zah)
+        val n = b.zones.count { it.t == pe.t.id && !it.free && it.zkey() == key }
+        val pct = TablePlan.percent(b, pe.t)
+        val title = "Захватка ${IdTables.zahLabel(pe.uch, pe.zah)} · отмечено $n" + (pct?.let { " · выполнено ≈ $it %" } ?: "")
+        val buttons = ArrayList<TextView>()
+        buttons += Ui.pill(a, "● Цвет", colorOf(pe), Ui.DESK).apply {
+            tag = "pt_color"
+            setOnClickListener {
+                chooseColor(pe.t, colorOf(pe)) { c ->
+                    a.pushUndo()
+                    pe.color = c
+                    for (z in b.zones) if (z.t == pe.t.id && !z.free && z.zkey() == key) z.color = c
+                    a.changed()
+                    assignBar(pe)
+                }
+            }
+        }
+        buttons += Ui.pill(a, "Отменить", Ui.INK, Ui.DESK).apply { tag = "pt_undo"; setOnClickListener { a.undo() } }
+        buttons += Ui.pill(a, "Обвести вручную", Ui.INK, Ui.DESK).apply {
+            tag = "as_manual"
+            setOnClickListener { pe.tool = PlanEdit.MAGIC; outlineBar(pe); if (analysis?.matches(pe.sheet) != true) prepare(pe.sheet); a.hint(toolHint(PlanEdit.MAGIC), 3000) }
+        }
+        buttons += Ui.pill(a, "Готово", Color.WHITE, Ui.ACCENT).apply { tag = "pt_done"; setOnClickListener { endOutline(save = true) } }
+        a.showModeBar(title, buttons)
+    }
+
+    /** Элемент под точкой (координаты доски): внутри, иначе ближайший в пределах допуска (палец толще тонкой стены). */
+    private fun zoneAt(pe: PlanEdit, r: RectF, bx: Float, by: Float, strict: Boolean = false): BoardZone? {
+        val q = FloatArray(2)
+        v.tableDraw.toSheet(pe.t, pe.sheet, r, bx, by, q)
+        val sh = pe.sheet
+        val ratio = sh.ratio()
+        val list = b.zones.filter { it.t == pe.t.id && it.s == sh.id && (pe.tool != PlanEdit.ERASE || it.e) }
+        list.filter { it.contains(q[0], q[1]) }.minByOrNull { it.area(ratio) }?.let { return it }
+        val tol = Ui.dpf(a, if (strict) 5f else 14f) / b.camZ * (sh.cr - sh.cl) / max(1f, r.width())
+        var best: BoardZone? = null; var bd = tol
+        for (z in list) { val d = z.distance(q[0], q[1], ratio); if (d <= bd) { bd = d; best = z } }
+        return best
+    }
+
+    /** Палец/перо над листом при отметке — подсветить элемент. */
+    fun onHover(x: Float, y: Float) {
+        val pe = v.planEdit ?: return
+        if (pe.tool != PlanEdit.ASSIGN && pe.tool != PlanEdit.ERASE) return
+        val r = v.tableDraw.sheetRect(b, pe.t, RectF()) ?: return
+        v.planHover = zoneAt(pe, r, x, y)
+    }
+
+    private fun pickElements(pe: PlanEdit, r: RectF, x: Float, y: Float, tap: Boolean) {
+        val trail = ArrayList(pe.path)
+        pe.path.clear()
+        v.planHover = null
+        val hits = LinkedHashSet<BoardZone>()
+        if (tap || trail.size < 4) zoneAt(pe, r, x, y)?.let { hits += it }
+        else {
+            // Провели — все элементы под следом (с шагом ~4 dp на экране).
+            val step = Ui.dpf(a, 4f) / b.camZ
+            var i = 0
+            while (i + 3 < trail.size) {
+                val ax = trail[i]; val ay = trail[i + 1]; val bx2 = trail[i + 2]; val by2 = trail[i + 3]
+                val n = max(1, (kotlin.math.hypot(bx2 - ax, by2 - ay) / step).toInt())
+                for (k in 0..n) zoneAt(pe, r, ax + (bx2 - ax) * k / n, ay + (by2 - ay) * k / n, strict = true)?.let { hits += it }
+                i += 2
+            }
+        }
+        if (hits.isEmpty()) {
+            a.hint(if (pe.tool == PlanEdit.ERASE) "Здесь нет элемента" else "Здесь нет элемента — касайтесь серых элементов", 1600)
+            v.invalidate(); return
+        }
+        a.pushUndo()
+        if (pe.tool == PlanEdit.ERASE) {
+            b.zones.removeAll { z -> hits.any { it === z } }
+            a.changed()
+            outlineBar(pe)
+            return
+        }
+        val key = IdTables.zkey(pe.uch, pe.zah)
+        val color = colorOf(pe)
+        val one = hits.singleOrNull()
+        if (tap && one != null && !one.free && one.zkey() == key) {
+            // Повторное касание — снять отметку.
+            one.uch = ""; one.zah = ""; one.color = TablePlan.FREE; one.e = true
+        } else {
+            val moved = hits.count { !it.free && it.zkey() != key }
+            for (z in hits) { z.uch = pe.uch; z.zah = pe.zah; z.color = color; z.e = true }
+            if (moved > 0) a.hint("Перенесено из другой захватки: $moved", 2000)
+        }
+        a.changed()
+        assignBar(pe)
+    }
+
+    /** Ножницы / шов: линия поперёк — элементы под ней делятся; шов остаётся на плане зигзагом. */
+    private fun scissors(pe: PlanEdit, p0: FloatArray, p1: FloatArray, tap: Boolean) {
+        val sh = pe.sheet
+        val ratio = sh.ratio()
+        if (tap || kotlin.math.hypot(p1[0] - p0[0], (p1[1] - p0[1]) * ratio) < 1e-4f) { a.hint("Проведите линию поперёк элемента", 1800); return }
+        // Почти по горизонтали или вертикали (до 7°) — ровно: швы обычно вдоль осей.
+        val ddx = p1[0] - p0[0]; val ddy = (p1[1] - p0[1]) * ratio
+        val ang = Math.toDegrees(kotlin.math.atan2(kotlin.math.abs(ddy).toDouble(), kotlin.math.abs(ddx).toDouble()))
+        if (ang < 7.0) { val m = (p0[1] + p1[1]) / 2f; p0[1] = m; p1[1] = m }
+        else if (ang > 83.0) { val m = (p0[0] + p1[0]) / 2f; p0[0] = m; p1[0] = m }
+        val line = floatArrayOf(p0[0], p0[1], p1[0], p1[1])
+        val lx0 = min(p0[0], p1[0]); val lx1 = max(p0[0], p1[0]); val ly0 = min(p0[1], p1[1]); val ly1 = max(p0[1], p1[1])
+        var changed = false
+        val targets = b.zones.filter { z ->
+            if (z.t != pe.t.id || z.s != sh.id) return@filter false
+            val bb = z.box()
+            !(bb[2] < lx0 || bb[0] > lx1 || bb[3] < ly0 || bb[1] > ly1)
+        }
+        for (z in targets) {
+            val parts = PlanElements.split(z.pts, z.holes, ratio, line) ?: continue
+            if (!changed) { a.pushUndo(); changed = true }
+            val idx = b.zones.indexOfFirst { it === z }
+            if (idx < 0) continue
+            b.zones.removeAt(idx)
+            val made = parts.map { p -> BoardZone(z.t, z.s, z.uch, z.zah, p.outer, z.color).also { n -> n.e = true; n.holes = p.holes } }
+            b.zones.addAll(idx, made)
+        }
+        if (!changed) { a.hint("Линия должна пересечь элемент насквозь", 2000); return }
+        sh.seams += line
+        pe.t.lay = null
+        a.changed()
+        outlineBar(pe)
     }
 
     fun close() {

@@ -29,7 +29,9 @@ class TableLayout(val key: Long, val cols: List<TableCol>, val colX: FloatArray,
  * chips — границы кнопок шапки по x: цвет, «+ лист», «Обвести захватку» (по два числа на кнопку).
  */
 class PlanLayout(val top: Float, val h: Float, val tabsH: Float, val tabX: FloatArray, val sheetTop: Float, val sheetW: Float, val sheetH: Float,
-                 val chips: FloatArray, val chipText: Array<String>, val legend: List<Pair<BoardStatus?, Int>>, val title: String)
+                 val chips: FloatArray, val chipText: Array<String>, val legend: List<Pair<BoardStatus?, Int>>, val title: String,
+                 /** Готовность по разметке элементов (0.26), null — разметки нет. */
+                 val pct: Int? = null, val elements: Int = 0)
 
 /** Что под пальцем в таблице ИД: шапка, названия столбцов, ячейка (строка + столбец), «+ строка», «+ следующая захватка». */
 class TableHit(val part: Int, val rec: BoardRec?, val col: String?) {
@@ -53,6 +55,8 @@ class TableHit(val part: Int, val rec: BoardRec?, val col: String?) {
         const val PLAN_OUTLINE = 10
         const val PLAN_TAB = 11
         const val PLAN_SHEET = 12
+        /** «Элементы ▾» (0.26): найти, ножницы, убрать. */
+        const val PLAN_ELEM = 13
     }
 
     /** VOL у вида с частями (0.24): ключ части. */
@@ -210,9 +214,11 @@ class TableDraw {
         val need2 = addW + tw("+ следующая захватка", FONT, true) + PAD * 2
         val vol = if (volOn && all.isNotEmpty()) IdTables.volumes(b, t, all) else null
         val planAddW = tw("+ план", FONT, true) + PAD * 2
-        val chipText = arrayOf(if (t.zoneColor == TablePlan.OWN) "Цвет: свой ▾" else "Цвет: по ИГС ▾", "+ лист", "Обвести захватку")
+        val chipText = arrayOf(if (t.zoneColor == TablePlan.OWN) "Цвет: свой ▾" else "Цвет: по ИГС ▾", "+ лист", "Элементы ▾", "Обвести захватку")
         val chipW = chipText.map { tw(it, 13f, true) + 24f }
-        val planHeadNeed = PAD * 2 + tw("План захваток", 16f, true) + 30f + chipW.sum() + 8f * chipW.size
+        val pct = if (hasPlan) TablePlan.percent(b, t) else null
+        val pctText = pct?.let { "выполнено ≈ $it %" } ?: ""
+        val planHeadNeed = PAD * 2 + tw("План захваток", 16f, true) + 30f + chipW.sum() + 8f * chipW.size + (if (pct != null) tw(pctText, 14f, true) + 24f else 0f)
         var needAll = max(max(need, need2 + if (hasPlan) 0f else planAddW + PAD), if (vol != null) VOL_MIN_W else 0f)
         if (hasPlan) needAll = max(needAll, max(PLAN_MIN_W, planHeadNeed))
         if (cols.isNotEmpty() && needAll > total) { widths[widths.size - 1] += needAll - total; total = needAll }
@@ -240,11 +246,12 @@ class TableDraw {
             val sheetH = sheetW * cur.aspect()
             val sheetTop = top + PLAN_HEAD + tabsH
             val legend = TablePlan.legend(b, t)
-            val chips = FloatArray(6)
+            val chips = FloatArray(chipText.size * 2)
             var x = total - PAD
-            for (i in 2 downTo 0) { chips[i * 2 + 1] = x; x -= chipW[i]; chips[i * 2] = x; x -= 8f }
+            for (i in chipText.size - 1 downTo 0) { chips[i * 2 + 1] = x; x -= chipW[i]; chips[i * 2] = x; x -= 8f }
             val ph = PLAN_HEAD + tabsH + sheetH + PLAN_PAD + PLAN_LEG
-            plan = PlanLayout(top, ph, tabsH, tabX, sheetTop, sheetW, sheetH, chips, chipText, legend, if (t.sheets.size > 1) "" else cur.name)
+            plan = PlanLayout(top, ph, tabsH, tabX, sheetTop, sheetW, sheetH, chips, chipText, legend, if (t.sheets.size > 1) "" else cur.name,
+                pct, TablePlan.elements(b, t).size)
             height += ph
         }
         val planSplit = if (hasPlan) Float.MAX_VALUE else total - planAddW
@@ -317,8 +324,8 @@ class TableDraw {
         if (p != null && v >= p.top) {
             val dv = v - p.top
             if (dv < PLAN_HEAD) {
-                for (i in 0 until 3) if (u >= p.chips[i * 2] - 4f && u <= p.chips[i * 2 + 1] + 4f)
-                    return TableHit(when (i) { 0 -> TableHit.PLAN_COLOR; 1 -> TableHit.PLAN_ADD; else -> TableHit.PLAN_OUTLINE }, null, null)
+                for (i in 0 until p.chips.size / 2) if (u >= p.chips[i * 2] - 4f && u <= p.chips[i * 2 + 1] + 4f)
+                    return TableHit(when (i) { 0 -> TableHit.PLAN_COLOR; 1 -> TableHit.PLAN_ADD; 2 -> TableHit.PLAN_ELEM; else -> TableHit.PLAN_OUTLINE }, null, null)
                 return TableHit(TableHit.TITLE, null, null)
             }
             if (dv < PLAN_HEAD + p.tabsH) {
@@ -518,13 +525,22 @@ class TableDraw {
         val ty = top + PLAN_HEAD / 2f * k + 16f * k * 0.36f
         canvas.drawText("План захваток", x0 + PAD * 1.4f * k, ty, text)
         val tw0 = text.measureText("План захваток")
+        var tx0 = x0 + PAD * 1.4f * k + tw0 + 12f * k
+        // Готовность (0.26): «выполнено ≈ 13 %» — по площади элементов разметки, примерно.
+        if (p.pct != null) {
+            text.textSize = 14f * k; text.isFakeBoldText = true; text.color = if (p.pct >= 100) Ui.OK else Ui.ACCENT
+            val s = if (p.pct >= 100) "забетонировано ✓" else "выполнено ≈ ${p.pct} %"
+            canvas.drawText(s, tx0, ty, text)
+            tx0 += text.measureText(s) + 14f * k
+        }
         text.isFakeBoldText = false; text.textSize = 12.5f * k; text.color = Ui.MUTED
-        if (p.title.isNotEmpty()) canvas.drawText(fit(p.title, p.chips[0] * k - tw0 - 40f * k), x0 + PAD * 1.4f * k + tw0 + 12f * k, ty, text)
-        for (i in 0 until 3) {
+        if (p.title.isNotEmpty()) canvas.drawText(fit(p.title, x0 + p.chips[0] * k - tx0 - 12f * k), tx0, ty, text)
+        val last = p.chips.size / 2 - 1
+        for (i in 0..last) {
             rect.set(x0 + p.chips[i * 2] * k, top + 8f * k, x0 + p.chips[i * 2 + 1] * k, top + (PLAN_HEAD - 8f) * k)
-            fill.color = if (i == 2) Ui.ACCENT else Color.rgb(226, 231, 239)
+            fill.color = if (i == last) Ui.ACCENT else Color.rgb(226, 231, 239)
             canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, fill)
-            text.textSize = 13f * k; text.isFakeBoldText = true; text.color = if (i == 2) Color.WHITE else Ui.INK
+            text.textSize = 13f * k; text.isFakeBoldText = true; text.color = if (i == last) Color.WHITE else Ui.INK
             canvas.drawText(p.chipText[i], rect.left + 12f * k, rect.centerY() + 13f * k * 0.36f, text)
         }
         text.isFakeBoldText = false
@@ -551,6 +567,11 @@ class TableDraw {
         var lx = x0 + PAD * 1.4f * k
         text.textSize = 12.5f * k
         val cy = ly + 12.5f * k * 0.36f
+        if (p.elements > 0) {
+            text.color = Ui.MUTED
+            canvas.drawText("Серым — ещё не залито (${p.elements} эл.). Квадратик у номера захватки в таблице — отмечать её элементы", lx, cy, text)
+            return
+        }
         if (t.zoneColor == TablePlan.OWN) {
             text.color = Ui.MUTED
             canvas.drawText("Цвет — свой у каждой захватки. Касание области — её строки в таблице", lx, cy, text)
