@@ -120,6 +120,8 @@ class TableUi(private val a: BoardActivity) {
                 }
                 // Номер захватки, привязанной к заливке, — показать её на плане (ТЗ, раздел 8).
                 if (col == TableCol.ZAH && IdTables.fillsOf(b, t, r.uch, r.zah).isNotEmpty()) { showFills(t, r.uch, r.zah); return }
+                // Объём (0.23.1, Владимир): касание ячейки и пальцем — сразу ввод числа, без карточки строки.
+                if (col == TableCol.VOL) { volDialog(t, r); return }
                 if (!pen || col == null) { rowCard(r); return }
                 cellAction(t, r, col)
             }

@@ -121,7 +121,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     object RowPart { const val TITLE = 0; const val CHECK = 1; const val DWG = 2; const val STATUS = 3 }
     class Hit(val kind: Kind, val index: Int)
 
-    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP, FRAME_DRAG, POINT, PLAN }
+    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP, FRAME_DRAG, POINT, PLAN, FRAME_EDGE }
 
     // ---- Точная точка (0.14.1): лупа и привязка, как в DWG FastView ----
     // Палец закрывает угол, в который целятся: пока палец на экране, в углу экрана — лупа с перекрестием,
@@ -305,6 +305,29 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         if (inY && kotlin.math.abs(px - r) <= rr) return 4
         if (inX && kotlin.math.abs(py - t) <= rr) return 2
         if (inX && kotlin.math.abs(py - bt) <= rr) return 8
+        return 0
+    }
+
+    // ---- Стороны раздела (0.23.1): выделенный раздел — 8 ручек, каждая сторона тянется отдельно ----
+    private var frameEdges = 0
+    private val frameStart = RectF()
+
+    private fun singleFrame(): BoardFrame? = (selection.singleOrNull() as? BoardFrame)?.takeIf { exists(it) }
+
+    /** Ручка раздела под точкой экрана: какие стороны она двигает (1 — левая, 2 — верхняя, 4 — правая, 8 — нижняя). */
+    private fun frameEdgeAt(f: BoardFrame, px: Float, py: Float): Int {
+        val l = sx(f.x); val t = sy(f.y); val r = sx(f.x + f.w); val bt = sy(f.y + f.h)
+        val rr = Ui.dpf(context, 24f)
+        fun near(ax: Float, ay: Float) = hypot(ax - px, ay - py) <= rr
+        if (near(l, t)) return 1 or 2
+        if (near(r, t)) return 4 or 2
+        if (near(l, bt)) return 1 or 8
+        if (near(r, bt)) return 4 or 8
+        val mx = (l + r) / 2f; val my = (t + bt) / 2f
+        if (near(l, my)) return 1
+        if (near(r, my)) return 4
+        if (near(mx, t)) return 2
+        if (near(mx, bt)) return 8
         return 0
     }
 
@@ -1211,6 +1234,17 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 }
             }
         }
+        // Выделенный раздел: углы и середины сторон — менять рамку (стороны по отдельности, без масштаба содержимого).
+        singleFrame()?.let { f ->
+            val e = frameEdgeAt(f, downX, downY)
+            if (e != 0) {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                frameEdges = e
+                frameStart.set(f.x, f.y, f.x + f.w, f.y + f.h)
+                mode = Mode.FRAME_EDGE
+                return
+            }
+        }
         // Уголок рамки выделения — пером или пальцем, при любом инструменте.
         if (selection.isNotEmpty() && movable()) {
             val c = handleAt(downX, downY)
@@ -1345,6 +1379,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                     applyTransform(anchor.x, anchor.y, s, 0f, 0f)
                 }
             }
+            Mode.FRAME_EDGE -> {
+                if (!moved) return
+                val f = singleFrame() ?: return
+                if (!editStarted) { editStarted = true; host.onDragStart() }
+                val dx = wx(sxp) - wx(downX); val dy = wy(syp) - wy(downY)
+                val min = Ui.dpf(context, 40f) / b.camZ
+                var l = frameStart.left; var t = frameStart.top; var r = frameStart.right; var bt = frameStart.bottom
+                if (frameEdges and 1 != 0) l = min(frameStart.left + dx, r - min)
+                if (frameEdges and 4 != 0) r = max(frameStart.right + dx, l + min)
+                if (frameEdges and 2 != 0) t = min(frameStart.top + dy, bt - min)
+                if (frameEdges and 8 != 0) bt = max(frameStart.bottom + dy, t + min)
+                f.x = l; f.y = t; f.w = r - l; f.h = bt - t
+                invalidate()
+            }
             Mode.CROP -> {
                 if (!moved) return
                 val m = cropping ?: return
@@ -1443,6 +1491,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
             Mode.PAN -> if (quick && !moved && cropping == null) tapAt(wx(sxp), wy(syp))
             Mode.CROP -> if (editStarted) host.onDragEnd()
+            Mode.FRAME_EDGE -> if (editStarted) host.onDragEnd()
             Mode.PLAN -> planEdit?.let { pe ->
                 val f = pe.from
                 if (planAim) updateAim(sxp, syp)
@@ -2373,6 +2422,19 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         canvas.drawRect(rect, linePaint)
         if (!movable()) return
         val r = Ui.dpf(context, 8f) / z
+        val f = singleFrame()
+        if (f != null) {
+            // Раздел: ручки на углах и серединах сторон — прямо на рамке раздела.
+            rect.set(f.x, f.y, f.x + f.w, f.y + f.h)
+            val mx = rect.centerX(); val my = rect.centerY()
+            for ((cx, cy) in listOf(rect.left to rect.top, rect.right to rect.top, rect.left to rect.bottom, rect.right to rect.bottom,
+                    mx to rect.top, mx to rect.bottom, rect.left to my, rect.right to my)) {
+                fillPaint.color = Color.WHITE
+                canvas.drawCircle(cx, cy, r, fillPaint)
+                canvas.drawCircle(cx, cy, r, linePaint)
+            }
+            return
+        }
         for (cx in floatArrayOf(rect.left, rect.right)) for (cy in floatArrayOf(rect.top, rect.bottom)) {
             fillPaint.color = Color.WHITE
             canvas.drawCircle(cx, cy, r, fillPaint)
