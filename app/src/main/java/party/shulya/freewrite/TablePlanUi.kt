@@ -42,14 +42,22 @@ class PlanEdit(val t: BoardTable, val sheet: PlanSheet, val uch: String, val zah
     /** Протяжка пальцем/пером сейчас (координаты доски). */
     var from: PointF? = null
     var to: PointF? = null
+    /** След кисти сейчас (x, y доски). */
+    val path = ArrayList<Float>()
     /** Волшебная заливка считается. */
     var busy = false
+    /** Выбранный цвет захватки (0.23.1; null — как у её областей или следующий по порядку). */
+    var color: Int? = null
 
     companion object {
         const val MAGIC = 0
         const val RECT = 1
         const val CIRCLE = 2
         const val POINTS = 3
+        /** Кисть по стенам (0.23.1): провести вдоль стен — берутся стены под кистью. */
+        const val BRUSH = 4
+        /** Полуширина кисти на экране, dp. */
+        const val BRUSH_DP = 14f
         /** Зазор по ступеням — пикселей на картинке анализа (большая сторона до 2048); закрывается щель до 2× зазора. */
         val GAPS = intArrayOf(0, 3, 6, 10, 15, 22)
     }
@@ -259,6 +267,7 @@ class PlanUi(private val a: BoardActivity) {
         v.invalidate()
         a.showModeBar(TablePlan.zoneInfo(b, t, uch, zah), listOf(
             Ui.pill(a, "Обвести ещё", Ui.INK, Ui.DESK).apply { tag = "zone_more"; setOnClickListener { startOutline(t, uch, zah) } },
+            Ui.pill(a, "● Цвет", zones.firstOrNull()?.color ?: Ui.INK, Ui.DESK).apply { tag = "zone_color"; setOnClickListener { recolorZah(t, uch, zah) } },
             Ui.pill(a, "Стереть с плана", Ui.INK, Ui.DESK).apply { tag = "zone_erase"; setOnClickListener { eraseZah(t, uch, zah) } },
             Ui.pill(a, "Готово", Color.WHITE, Ui.ACCENT).apply { tag = "zone_done"; setOnClickListener { clearMarks(); a.hideModeBar() } },
         ))
@@ -313,6 +322,8 @@ class PlanUi(private val a: BoardActivity) {
     private class Analysis(val sheetId: String, val file: String, val crop: FloatArray, val w: Int, val h: Int, val ink: BooleanArray) {
         private val closed = HashMap<Int, BooleanArray>()
         fun closedFor(r: Int): BooleanArray = synchronized(closed) { closed.getOrPut(r) { MagicFill.dilate(ink, w, h, r) } }
+        /** Толстое (стены, колонны) — один раз на лист. */
+        val solid: BooleanArray by lazy { MagicFill.solidMask(ink, w, h) }
         fun matches(sh: PlanSheet) = sh.id == sheetId && sh.file == file && crop[0] == sh.cl && crop[1] == sh.ct && crop[2] == sh.cr && crop[3] == sh.cb
     }
 
@@ -330,7 +341,8 @@ class PlanUi(private val a: BoardActivity) {
     }
 
     private fun toolHint(tool: Int) = when (tool) {
-        PlanEdit.MAGIC -> "Касайтесь внутри помещения, плиты или по колонне — контур найдётся сам. Можно несколько раз"
+        PlanEdit.MAGIC -> "Касайтесь внутри помещения, плиты, по колонне или стене — контур найдётся сам. Можно несколько раз"
+        PlanEdit.BRUSH -> "Проведите пальцем или пером вдоль нужных стен — возьмутся стены под кистью"
         PlanEdit.RECT -> "Протяните от угла до угла"
         PlanEdit.CIRCLE -> "Протяните рамку круга от угла до угла"
         else -> "Касайтесь углов по порядку; касание первой точки — замкнуть"
@@ -346,7 +358,7 @@ class PlanUi(private val a: BoardActivity) {
                 analysis = an
                 // Ступень зазора по умолчанию — посчитать заранее.
                 val pe = v.planEdit
-                if (pe != null) exec.execute { an.closedFor(PlanEdit.GAPS[pe.gap]) }
+                if (pe != null) exec.execute { an.closedFor(PlanEdit.GAPS[pe.gap]); an.solid }
             }
         }
     }
@@ -419,10 +431,13 @@ class PlanUi(private val a: BoardActivity) {
         buttons += toolPill("▭", PlanEdit.RECT, "pt_rect")
         buttons += toolPill("◯", PlanEdit.CIRCLE, "pt_circle")
         buttons += toolPill("По точкам", PlanEdit.POINTS, "pt_points")
+        buttons += toolPill("Кисть по стенам", PlanEdit.BRUSH, "pt_brush")
         if (pe.tool == PlanEdit.MAGIC) {
             buttons += Ui.pill(a, "Зазор −", Ui.INK, Ui.DESK).apply { tag = "pt_gap_minus"; setOnClickListener { if (pe.gap > 0) { pe.gap--; outlineBar(pe) } } }
             buttons += Ui.pill(a, "+ (${pe.gap})", Ui.INK, Ui.DESK).apply { tag = "pt_gap_plus"; setOnClickListener { if (pe.gap < PlanEdit.GAPS.size - 1) { pe.gap++; outlineBar(pe) } } }
         }
+        // Цвет захватки: палитра, последние, пипетка (0.23.1).
+        buttons += Ui.pill(a, "● Цвет", colorOf(pe), Ui.DESK).apply { tag = "pt_color"; setOnClickListener { chooseColor(pe.t, colorOf(pe)) { c -> pe.color = c; outlineBar(pe); v.invalidate() } } }
         buttons += Ui.pill(a, "Отменить", Ui.INK, Ui.DESK).apply {
             tag = "pt_undo"
             setOnClickListener { undoPiece() }
@@ -432,6 +447,37 @@ class PlanUi(private val a: BoardActivity) {
         a.showModeBar("Захватка ${IdTables.zahLabel(pe.uch, pe.zah)}", buttons)
     }
 
+    /** Цвет захватки в обводке: выбранный, иначе как у её областей / следующий по порядку. */
+    fun colorOf(pe: PlanEdit): Int = pe.color ?: TablePlan.ownColorFor(b, pe.t, pe.uch, pe.zah)
+
+    /**
+     * Палитра (24 цвета, последние, пипетка — цвет области или пикселя плана). Выбрали цвет, а у таблицы «Цвет: по ИГС» —
+     * переключаем на «свой» (иначе выбранного цвета не видно).
+     */
+    fun chooseColor(t: BoardTable, current: Int, done: (Int) -> Unit) {
+        val apply: (Int) -> Unit = { c ->
+            ColorKit.remember(a, c)
+            if (t.zoneColor != TablePlan.OWN && b.tables.any { it === t }) {
+                a.pushUndo(); t.zoneColor = TablePlan.OWN; a.changed()
+                a.hint("Цвет захваток — свой (переключатель «Цвет» над планом)", 2500)
+            }
+            done(c)
+        }
+        ColorKit.showPalette(a, current, apply) { a.pickColor(apply) }
+    }
+
+    /** «Цвет» у обведённой захватки: все её области — новым цветом. */
+    private fun recolorZah(t: BoardTable, uch: String, zah: String) {
+        val zones = TablePlan.zonesOf(b, t, uch, zah)
+        if (zones.isEmpty()) return
+        chooseColor(t, zones[0].color) { c ->
+            a.pushUndo()
+            for (z in TablePlan.zonesOf(b, t, uch, zah)) z.color = c
+            a.changed()
+            showZah(t, uch, zah, moveCamera = false)
+        }
+    }
+
     /** Касание или протяжка по листу в режиме обводки (координаты доски). */
     fun onGesture(x0: Float, y0: Float, x1: Float, y1: Float, tap: Boolean) {
         val pe = v.planEdit ?: return
@@ -439,6 +485,13 @@ class PlanUi(private val a: BoardActivity) {
         val p0 = FloatArray(2); val p1 = FloatArray(2)
         v.tableDraw.toSheet(pe.t, pe.sheet, r, x0, y0, p0)
         v.tableDraw.toSheet(pe.t, pe.sheet, r, x1, y1, p1)
+        if (pe.tool == PlanEdit.BRUSH) {
+            val trail = ArrayList(pe.path)
+            pe.path.clear()
+            if (trail.size < 2) trail.addAll(listOf(x0, y0))
+            brush(pe, r, trail)
+            return
+        }
         when (pe.tool) {
             PlanEdit.MAGIC -> if (tap) magic(pe, p0[0], p0[1]) else a.hint("Волшебная заливка — касанием внутри помещения", 1800)
             PlanEdit.RECT, PlanEdit.CIRCLE -> {
@@ -479,14 +532,13 @@ class PlanUi(private val a: BoardActivity) {
         pe.busy = true
         val gap = PlanEdit.GAPS[pe.gap]
         exec.execute {
-            val res = runCatching { MagicFill.find(an.ink, an.closedFor(gap), an.w, an.h, ax, ay, gap) }.getOrNull()
+            val res = runCatching { MagicFill.find(an.ink, an.closedFor(gap), an.w, an.h, ax, ay, gap, an.solid) }.getOrNull()
             main.post {
                 pe.busy = false
                 if (v.planEdit !== pe) return@post
                 when {
                     res == null -> a.hint("Не получилось — обведите прямоугольником или по точкам", 2200)
-                    res.error == MagicFill.ERR_LINE -> a.hint("Попали по линии — коснитесь внутри помещения или по самой колонне", 2400)
-                    res.error == MagicFill.ERR_WALL -> a.hint("Это стены, а не отдельная колонна — для колонны в стене возьмите «▭»", 2600)
+                    res.error == MagicFill.ERR_LINE -> a.hint("Здесь тесно от линий — коснитесь ближе к середине или уменьшите зазор «−»", 2600)
                     !res.ok -> a.hint("Не получилось — обведите прямоугольником или по точкам", 2200)
                     else -> {
                         val pts = FloatArray(res.pts.size)
@@ -496,9 +548,47 @@ class PlanUi(private val a: BoardActivity) {
                         }
                         pe.pieces += pts
                         v.invalidate()
-                        if (res.leaked) a.hint("Заливка дошла до края плана — если это не то, «Отменить» и прибавьте зазор «+»", 3500)
+                        when {
+                            res.leaked -> a.hint("Заливка дошла до края плана — если это не то, «Отменить» и прибавьте зазор «+»", 3500)
+                            res.kind == MagicFill.WALL -> a.hint("Выделены стены — всё, что соединено. Нужна часть: «Отменить» и «Кисть по стенам»", 4000)
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    /** Кисть по стенам: след (координаты доски) → толстое под кистью на картинке анализа → куски. */
+    private fun brush(pe: PlanEdit, r: RectF, trail: List<Float>) {
+        val sh = pe.sheet
+        val an = analysis?.takeIf { it.matches(sh) }
+        if (an == null) { a.hint("Готовлю план… проведите ещё раз через секунду", 1800); if (analysis?.matches(sh) != true) prepare(sh); return }
+        if (pe.busy) return
+        val q = FloatArray(2)
+        val path = FloatArray(trail.size)
+        for (i in trail.indices step 2) {
+            v.tableDraw.toSheet(pe.t, sh, r, trail[i], trail[i + 1], q)
+            path[i] = (q[0] - sh.cl) / (sh.cr - sh.cl) * an.w
+            path[i + 1] = (q[1] - sh.ct) / (sh.cb - sh.ct) * an.h
+        }
+        // Полуширина кисти: 14 dp на экране → пиксели картинки анализа.
+        val radius = Ui.dpf(a, PlanEdit.BRUSH_DP) / b.camZ / r.width() * an.w
+        pe.busy = true
+        exec.execute {
+            val pieces = runCatching { MagicFill.brush(an.solid, an.w, an.h, path, radius) }.getOrDefault(emptyList())
+            main.post {
+                pe.busy = false
+                if (v.planEdit !== pe) return@post
+                if (pieces.isEmpty()) { a.hint("Под кистью ничего не нашлось — проведите по стенам", 2000); return@post }
+                for (pc in pieces) {
+                    val f = FloatArray(pc.size)
+                    for (i in pc.indices step 2) {
+                        f[i] = sh.cl + pc[i] / an.w * (sh.cr - sh.cl)
+                        f[i + 1] = sh.ct + pc[i + 1] / an.h * (sh.cb - sh.ct)
+                    }
+                    pe.pieces += f
+                }
+                v.invalidate()
             }
         }
     }
@@ -511,7 +601,9 @@ class PlanUi(private val a: BoardActivity) {
         a.hideModeBar()
         if (save && pe.pieces.isNotEmpty() && b.tables.any { it === pe.t }) {
             a.pushUndo()
-            val color = TablePlan.ownColorFor(b, pe.t, pe.uch, pe.zah)
+            val color = colorOf(pe)
+            // Выбрали цвет — у всей захватки он один (и у прежних её областей).
+            if (pe.color != null) for (z in TablePlan.zonesOf(b, pe.t, pe.uch, pe.zah)) z.color = color
             val made = pe.pieces.map { BoardZone(pe.t.id, pe.sheet.id, pe.uch, pe.zah, it, color) }
             b.zones += made
             a.changed()

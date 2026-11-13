@@ -78,6 +78,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onPenSeen() {}
         /** Нажали булавку закреплённой картинки. */
         fun onPinTap(img: BoardImage) {}
+        /** Касание булавки закреплённой таблицы (0.23.1). */
+        fun onTablePinTap(t: BoardTable) {}
         /** Касание части строки ИД ([RowPart]): галочка — отметить/снять, ИГС — следующий статус. */
         fun onRowTap(row: BoardRow, part: Int) {}
         /** «Заливка» по точкам: уже поставленные точки (x, y, x, y…) для показа; null — точек нет. */
@@ -113,7 +115,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         private set
 
     /** Выделенное можно двигать и менять размер (строки таблицы стоят на своих местах — их только выделяют). */
-    private fun movable() = selection.any { it !is BoardRec && it !is BoardVItem }
+    private fun movable() = selection.any { it !is BoardRec && it !is BoardVItem && !(it is BoardTable && it.locked) }
 
     /** Части строки ИД: название, «Чек-лист», «DWG», «ИГС» (статус). */
     object RowPart { const val TITLE = 0; const val CHECK = 1; const val DWG = 2; const val STATUS = 3 }
@@ -141,6 +143,17 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         fun near(l: Float, t: Float, rr: Float, bt: Float) = x >= l - r && x <= rr + r && y >= t - r && y <= bt + r
         host.fillDraft()?.let { p -> var i = 0; while (i + 1 < p.size) { c(p[i], p[i + 1]); i += 2 } }
+        // Обводка на плане таблицы (0.23.1): поставленные точки и углы областей этого листа.
+        planEdit?.let { pe ->
+            val sr = tableDraw.sheetRect(b, pe.t, RectF())
+            if (sr != null) {
+                val q = FloatArray(2)
+                var i = 0
+                while (i + 1 < pe.points.size) { tableDraw.fromSheet(pe.sheet, sr, pe.points[i], pe.points[i + 1], q); c(q[0], q[1]); i += 2 }
+                for (pc in pe.pieces) { i = 0; while (i + 1 < pc.size) { tableDraw.fromSheet(pe.sheet, sr, pc[i], pc[i + 1], q); c(q[0], q[1]); i += 2 } }
+                for (zn in b.zones) if (zn.t == pe.t.id && zn.s == pe.sheet.id) { i = 0; while (i + 1 < zn.pts.size) { tableDraw.fromSheet(pe.sheet, sr, zn.pts[i], zn.pts[i + 1], q); c(q[0], q[1]); i += 2 } }
+            }
+        }
         for (f in b.fills) {
             val bb = f.bounds()
             if (!near(bb.left, bb.top, bb.right, bb.bottom)) continue
@@ -179,6 +192,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     /** Обводка захватки на листе плана (0.23): касания по листу идут в неё. */
     var planEdit: PlanEdit? = null
+
+    /** Обводка пальцем с лупой (по точкам, прямоугольник, круг). */
+    private var planAim = false
 
     /** Картинки листов планов для рисования (место считается каждый кадр из таблицы). */
     private val planImgs = HashMap<String, BoardImage>()
@@ -238,8 +254,19 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         // Строка ИД — по левому краю (там название): длинная строка может выходить за рамку справа.
         for (r in b.rows) { val ax = r.x + 20f * r.scale; val ay = r.y + r.h / 2f; if (ax >= f.x && ax <= f.x + f.w && ay >= f.y && ay <= f.y + f.h) out += r }
         // Таблица — по левому краю названия.
-        for (t in b.tables) { val ax = t.x + 20f * t.scale; val ay = t.y + 19f * t.scale; if (ax >= f.x && ax <= f.x + f.w && ay >= f.y && ay <= f.y + f.h) out += t }
+        for (t in b.tables) { if (t.locked) continue; val ax = t.x + 20f * t.scale; val ay = t.y + 19f * t.scale; if (ax >= f.x && ax <= f.x + f.w && ay >= f.y && ay <= f.y + f.h) out += t }
         for (v in b.vedoms) { val ax = v.x + 20f * v.scale; val ay = v.y + 19f * v.scale; if (ax >= f.x && ax <= f.x + f.w && ay >= f.y && ay <= f.y + f.h) out += v }
+        return out
+    }
+
+    /** Что нарисовано и написано на листе плана таблицы (середина предмета внутри листа). */
+    fun planContents(t: BoardTable): List<Any> {
+        val sr = tableDraw.sheetRect(b, t, RectF()) ?: return emptyList()
+        val out = ArrayList<Any>()
+        val r = RectF()
+        fun inside(o: Any) { boundsOf(o, r); if (sr.contains(r.centerX(), r.centerY())) out += o }
+        b.strokes.forEach { inside(it) }; b.texts.forEach { inside(it) }; b.fills.forEach { inside(it) }
+        b.stickers.forEach { inside(it) }; b.callouts.forEach { inside(it) }
         return out
     }
 
@@ -292,9 +319,22 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         return true
     }
 
-    /** Булавка под точкой экрана. */
-    fun pinAt(px: Float, py: Float): BoardImage? {
+    /** Булавка закреплённой таблицы (0.23.1) — на правом верхнем углу таблицы. */
+    private fun tablePinCenter(t: BoardTable, out: PointF): Boolean {
+        tableDraw.bounds(b, t, rect2)
+        if (rect2.width() * b.camZ < pinR * 4f) return false
+        out.set(sx(rect2.right) - pinR * 0.3f, sy(rect2.top) + pinR * 0.3f)
+        return true
+    }
+
+    /** Булавка под точкой экрана: закреплённая картинка или таблица. */
+    fun pinAt(px: Float, py: Float): Any? {
         val c = PointF()
+        for (i in b.tables.indices.reversed()) {
+            val t = b.tables[i]
+            if (!t.locked || !tablePinCenter(t, c)) continue
+            if (hypot(c.x - px, c.y - py) <= pinR * 1.7f) return t
+        }
         for (i in b.images.indices.reversed()) {
             val m = b.images[i]
             if (!m.locked || !pinCenter(m, c)) continue
@@ -302,6 +342,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         return null
     }
+
+    private fun pinTap(o: Any) { if (o is BoardTable) host.onTablePinTap(o) else if (o is BoardImage) host.onPinTap(o) }
 
     // ---- Защита от ладони ----
     // Пока перо над экраном (и ещё немного после), касания пальцем — это ладонь: их не слушаем.
@@ -436,6 +478,13 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 Kind.STICKER -> b.stickers.getOrNull(h.index); Kind.ROW -> b.rows.getOrNull(h.index); Kind.TABLE -> b.tables.getOrNull(h.index)
                 Kind.VEDOM -> b.vedoms.getOrNull(h.index)
                 else -> null
+            }
+            if (lift is BoardTable && lift.locked) {
+                // Закреплённая таблица не поднимается — только выделяется (на панели — «Открепить»).
+                mode = Mode.NONE
+                select(listOf(lift))
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                return@Runnable
             }
             if (lift != null) {
                 if (mode == Mode.PAN || !(selection.size == 1 && selection[0] === lift)) {
@@ -839,7 +888,17 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             seen.addAll(selection)
             for (f in selection.filterIsInstance<BoardFrame>()) for (o in frameContents(f)) if (seen.add(o)) objs += o
         }
+        // Рисунки и надписи на листе плана таблицы (0.23.1) едут вместе с таблицей — и при переносе, и при размере.
+        run {
+            val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Any, Boolean>())
+            seen.addAll(objs)
+            for (t in selection.filterIsInstance<BoardTable>()) {
+                if (t.locked) continue
+                for (o in planContents(t)) if (seen.add(o)) objs += o
+            }
+        }
         for (o in objs) {
+            if (o is BoardTable && o.locked) continue
             origs += when (o) {
                 is BoardText -> Orig(o, floatArrayOf(o.x, o.y, o.size), 0f)
                 is BoardImage -> Orig(o, floatArrayOf(o.x, o.y, o.w, o.h), 0f)
@@ -964,7 +1023,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (o in b.rows) { boundsOf(o, rect2); if (inside(rect2.centerX(), rect2.centerY())) out += o }
         for (o in b.tables) {
             boundsOf(o, rect2)
-            if (inside(rect2.left + 20f * o.scale, rect2.top + 19f * o.scale)) { out += o; continue }
+            if (inside(rect2.left + 20f * o.scale, rect2.top + 19f * o.scale)) { if (!o.locked) out += o; continue }
             // Обвели номера захваток — выделены строки (ТЗ, раздел 14.3): статус всем, «Не выполнено»…
             for (r in IdTables.rowsOf(b, o)) {
                 val rr = tableDraw.rowRect(b, o, r, rect2) ?: continue
@@ -1126,7 +1185,13 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             if (r != null && b.tables.any { it === pe.t } && r.contains(x, y)) {
                 parent?.requestDisallowInterceptTouchEvent(true)
                 mode = Mode.PLAN
-                pe.from = PointF(x, y); pe.to = PointF(x, y)
+                // Пальцем по точкам, прямоугольником или кругом — лупа с перекрестием и привязкой (палец закрывает угол).
+                planAim = !isPen(tool) && tool != MotionEvent.TOOL_TYPE_MOUSE &&
+                    (pe.tool == PlanEdit.POINTS || pe.tool == PlanEdit.RECT || pe.tool == PlanEdit.CIRCLE)
+                if (planAim) { updateAim(downX, downY); sceneValid = false }
+                val p0 = if (planAim) PointF(aim.x, aim.y) else PointF(x, y)
+                pe.from = p0; pe.to = PointF(p0.x, p0.y)
+                pe.path.clear(); pe.path += x; pe.path += y
                 invalidate()
                 return
             }
@@ -1315,7 +1380,11 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 invalidate()
             }
             Mode.PLAN -> {
-                planEdit?.to?.set(wx(sxp), wy(syp))
+                val pe = planEdit
+                if (pe != null) {
+                    if (planAim) { updateAim(sxp, syp); pe.to?.set(aim.x, aim.y) } else pe.to?.set(wx(sxp), wy(syp))
+                    if (pe.tool == PlanEdit.BRUSH) { pe.path += wx(sxp); pe.path += wy(syp) }
+                }
                 invalidate()
             }
             Mode.POINT -> {
@@ -1376,8 +1445,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             Mode.CROP -> if (editStarted) host.onDragEnd()
             Mode.PLAN -> planEdit?.let { pe ->
                 val f = pe.from
+                if (planAim) updateAim(sxp, syp)
+                val ex = if (planAim) aim.x else wx(sxp); val ey = if (planAim) aim.y else wy(syp)
+                if (pe.tool == PlanEdit.BRUSH) { pe.path += wx(sxp); pe.path += wy(syp) }
                 pe.from = null; pe.to = null
-                if (f != null) host.onPlanGesture(f.x, f.y, wx(sxp), wy(syp), !moved)
+                planAim = false
+                // Пальцем с лупой точку ставят и после движения (палец ведёт перекрестие).
+                val tap = !moved || (pe.tool == PlanEdit.POINTS && f != null)
+                if (f != null) host.onPlanGesture(if (pe.tool == PlanEdit.POINTS) ex else f.x, if (pe.tool == PlanEdit.POINTS) ey else f.y, ex, ey, tap)
                 invalidate()
             }
             Mode.POINT -> {
@@ -1414,7 +1489,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 if (!moved || lasso.size < 3) {
                     val pin = pinAt(sxp, syp)
                     val o = if (pin != null) null else selectableAt(wx(sxp), wy(syp))
-                    if (pin != null) host.onPinTap(pin) else if (o != null) select(listOf(o)) else clearSelection()
+                    if (pin != null) pinTap(pin) else if (o != null) select(listOf(o)) else clearSelection()
                 } else {
                     lassoSelect()
                 }
@@ -1471,7 +1546,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
      * объект — выделить, пусто — снять выделение.
      */
     private fun tapAt(x: Float, y: Float) {
-        pinAt(sx(x), sy(y))?.let { host.onPinTap(it); return }
+        pinAt(sx(x), sy(y))?.let { pinTap(it); return }
         val h = hitAt(x, y)
         if (h?.kind == Kind.STICKER && host.tool() != BoardActivity.Tool.SELECT) {
             clearSelection()
@@ -1744,6 +1819,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             linePaint.alpha = 255
             drawn++
         }
+        // Таблицы и ведомости (0.23.1) — под штрихами: рисунки пером на плане таблицы видны поверх.
+        for (t in b.tables) {
+            tableDraw.bounds(b, t, rect2)
+            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) {
+                tableDraw.draw(canvas, b, t, z, vis, marked = markedRecs, selected = selection.takeIf { s -> s.any { it is BoardRec } }); drawn++
+                if (t.sheets.isNotEmpty()) drawPlanSheet(canvas, t, z)
+            }
+        }
+        for (v in b.vedoms) {
+            vedomDraw.bounds(b, v, rect2)
+            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) {
+                vedomDraw.draw(canvas, b, v, z, vis, selected = selection.takeIf { s -> s.any { it is BoardVItem } }, marked = markedItems); drawn++
+            }
+        }
         // Издалека ручка рисуется одним контуром ровной толщины — на глаз не отличить, а в разы быстрее.
         val fast = z < 0.6f
         val minW = BoardTiles.MIN_PX / z // издалека штрих не тоньше ~0,8 пикселя — написанное видно, а не пропадает
@@ -1787,19 +1876,6 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         for (c in b.callouts) if (calloutVisible(c)) { drawCallout(canvas, c, z); drawn++ }
         for (s in b.stickers) if (visible(s.x, s.y, s.x + stickerW(s), s.y + s.h)) { drawSticker(canvas, s); drawn++ }
         for (r in b.rows) if (visible(r.x, r.y, r.x + rowW(r), r.y + r.h)) { drawRow(canvas, r, z); drawn++ }
-        for (t in b.tables) {
-            tableDraw.bounds(b, t, rect2)
-            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) {
-                tableDraw.draw(canvas, b, t, z, vis, marked = markedRecs, selected = selection.takeIf { s -> s.any { it is BoardRec } }); drawn++
-                if (t.sheets.isNotEmpty()) drawPlanSheet(canvas, t, z)
-            }
-        }
-        for (v in b.vedoms) {
-            vedomDraw.bounds(b, v, rect2)
-            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom)) {
-                vedomDraw.draw(canvas, b, v, z, vis, selected = selection.takeIf { s -> s.any { it is BoardVItem } }, marked = markedItems); drawn++
-            }
-        }
         activeCell?.let { (r, col) ->
             val t = IdTables.tableOf(b, r) ?: return@let
             val c = tableDraw.cellRect(b, t, r, col, rect2) ?: return@let
@@ -1857,6 +1933,15 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         canvas.restore()
         if (!plain) drawFrameLabels(canvas)
         if (!plain) drawPins(canvas)
+        // Обводка плана пальцем (0.23.1): перекрестие (с привязкой) и лупа, как у заливки по точкам.
+        if (!plain && !capturing && mode == Mode.PLAN && planAim && (sceneValid || renderScene())) {
+            canvas.save()
+            canvas.scale(z, z)
+            canvas.translate(-b.camX, -b.camY)
+            drawAim(canvas, z)
+            canvas.restore()
+            drawLoupe(canvas)
+        }
         if (!plain && !capturing) hover?.let {
             when {
                 host.tool() == BoardActivity.Tool.PIPETTE -> pipetteRing(context, canvas, it.x, it.y, host.pipetteColor(it.x, it.y))
@@ -2010,7 +2095,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     /** Черновик обводки: готовые куски, протяжка прямоугольника/круга, точки. */
     private fun drawPlanDraft(canvas: Canvas, pe: PlanEdit, sh: PlanSheet, r: RectF, z: Float) {
-        val acc = Ui.ACCENT
+        val acc = pe.color ?: Ui.ACCENT
         for (pc in pe.pieces) {
             zonePath(pc, sh, r)
             fillPaint.color = acc; fillPaint.alpha = 70
@@ -2019,12 +2104,31 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             linePaint.color = acc; linePaint.strokeWidth = Ui.dpf(context, 2.5f) / z
             canvas.drawPath(zonePath, linePaint)
         }
+        if (pe.tool == PlanEdit.BRUSH && pe.path.size >= 4) {
+            // След кисти — полупрозрачной широкой линией.
+            val p = Path()
+            p.moveTo(pe.path[0], pe.path[1])
+            var i = 2
+            while (i + 1 < pe.path.size) { p.lineTo(pe.path[i], pe.path[i + 1]); i += 2 }
+            val bp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+                color = acc; alpha = 80; strokeWidth = Ui.dpf(context, PlanEdit.BRUSH_DP) * 2f / z
+            }
+            canvas.drawPath(p, bp)
+        }
         val f = pe.from; val to = pe.to
         if (f != null && to != null && (pe.tool == PlanEdit.RECT || pe.tool == PlanEdit.CIRCLE)) {
             dashPaint.strokeWidth = Ui.dpf(context, 2f) / z
             dashPaint.pathEffect = DashPathEffect(floatArrayOf(Ui.dpf(context, 6f) / z, Ui.dpf(context, 4f) / z), 0f)
             val l = min(f.x, to.x); val tp = min(f.y, to.y); val rr = max(f.x, to.x); val bt = max(f.y, to.y)
             if (pe.tool == PlanEdit.RECT) canvas.drawRect(l, tp, rr, bt, dashPaint) else canvas.drawOval(l, tp, rr, bt, dashPaint)
+        }
+        if (pe.tool == PlanEdit.POINTS && pe.points.size >= 2 && to != null) {
+            // Резинка от последней точки до перекрестия.
+            tableDraw.fromSheet(sh, r, pe.points[pe.points.size - 2], pe.points[pe.points.size - 1], planPt)
+            dashPaint.strokeWidth = Ui.dpf(context, 1.5f) / z
+            dashPaint.pathEffect = DashPathEffect(floatArrayOf(Ui.dpf(context, 6f) / z, Ui.dpf(context, 4f) / z), 0f)
+            canvas.drawLine(planPt[0], planPt[1], to.x, to.y, dashPaint)
         }
         if (pe.points.size >= 2) {
             val n = pe.points.size / 2
@@ -2143,8 +2247,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private fun drawPins(canvas: Canvas) {
         val c = PointF()
         val r = pinR
-        for (m in b.images) {
-            if (!m.locked || !visible(m.x, m.y, m.x + m.w, m.y + m.h) || !pinCenter(m, c)) continue
+        val pins = ArrayList<PointF>()
+        for (m in b.images) if (m.locked && visible(m.x, m.y, m.x + m.w, m.y + m.h) && pinCenter(m, c)) pins += PointF(c.x, c.y)
+        for (t in b.tables) if (t.locked) {
+            tableDraw.bounds(b, t, rect2)
+            if (visible(rect2.left, rect2.top, rect2.right, rect2.bottom) && tablePinCenter(t, c)) pins += PointF(c.x, c.y)
+        }
+        for (pc in pins) {
+            c.set(pc.x, pc.y)
             fillPaint.color = Color.WHITE
             canvas.drawCircle(c.x, c.y, r, fillPaint)
             linePaint.color = Ui.ACCENT

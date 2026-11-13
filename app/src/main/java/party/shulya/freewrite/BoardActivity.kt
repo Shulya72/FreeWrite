@@ -581,7 +581,16 @@ class BoardActivity : Activity(), BoardView.Host {
         if (!colorTool(tool)) setTool(Tool.PEN) else refreshColors()
     }
 
+    /** Пипетка с ответом (0.23.1, цвет захватки на плане): коснулись — цвет уходит в onColor, инструмент — прежний. */
+    private var pipetteCallback: ((Int) -> Unit)? = null
+
+    internal fun pickColor(onColor: (Int) -> Unit) {
+        startPipette(forSelection = false)
+        pipetteCallback = onColor
+    }
+
     private fun startPipette(forSelection: Boolean) {
+        pipetteCallback = null
         current?.let { commit(it) }
         pipetteForSelection = forSelection
         // Для рисования вернёмся к ручке/маркеру/фигурам — чтобы новый цвет сразу было видно.
@@ -1312,6 +1321,21 @@ class BoardActivity : Activity(), BoardView.Host {
                 img.locked = false
                 changed()
                 view.select(listOf(img))
+            }
+            .setNegativeButton("Оставить", null)
+            .show()
+    }
+
+    override fun onTablePinTap(t: BoardTable) {
+        AlertDialog.Builder(this)
+            .setTitle("Таблица закреплена")
+            .setMessage("Её нельзя сдвинуть или растянуть — рисунки поверх плана остаются на своих местах. Строки и статусы правятся как обычно.")
+            .setPositiveButton("Открепить") { _, _ ->
+                if (board.tables.none { it === t }) return@setPositiveButton
+                pushUndo()
+                t.locked = false
+                changed()
+                view.select(listOf(t))
             }
             .setNegativeButton("Оставить", null)
             .show()
@@ -2176,6 +2200,15 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         val fi = view.fillAt(x, y)
         if (fi >= 0) return board.fills[fi].color
+        // Область захватки на плане таблицы (0.23.1).
+        for (t in board.tables) {
+            val sh = TablePlan.current(t) ?: continue
+            val r = view.tableDraw.sheetRect(board, t, android.graphics.RectF()) ?: continue
+            if (!r.contains(x, y)) continue
+            val f = FloatArray(2)
+            view.tableDraw.toSheet(t, sh, r, x, y, f)
+            board.zones.lastOrNull { it.t == t.id && it.s == sh.id && it.contains(f[0], f[1]) }?.let { return TablePlan.zoneColor(board, t, it) }
+        }
         val snap = pipetteSnap ?: view.plainSnapshot()?.also { pipetteSnap = it }
         return snap?.colorAt(sx, sy)
     }
@@ -2184,6 +2217,7 @@ class BoardActivity : Activity(), BoardView.Host {
         val c = pipetteColor(sx, sy) ?: return
         pipetteSnap = null
         setTool(toolBeforePipette)
+        pipetteCallback?.let { cb -> pipetteCallback = null; cb(c); hint("Цвет взят"); return }
         if (pipetteForSelection && view.selection.isNotEmpty()) {
             applyColorToSelection(c)
         } else {

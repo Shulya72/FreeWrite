@@ -83,11 +83,58 @@ class MagicFillTest {
     }
 
     @Test
-    fun thinLineOrWallIsNotAColumn() {
-        val im = rooms()
-        val r = im.find(21, 150, 1) // по наружной стене 3 px
-        assertFalse(r.ok)
-        assertTrue(r.error == MagicFill.ERR_LINE || r.error == MagicFill.ERR_WALL)
+    fun thinLineIsNotAColumn() {
+        // По тонкой стене (3 px) — не колонна и не ошибка: заливается помещение рядом.
+        val r = rooms().find(21, 150, 1)
+        assertTrue(r.ok); assertFalse(r.onInk)
+        assertEquals(MagicFill.ROOM, r.kind)
+    }
+
+    /** Помещение с подписью «текстом» (буквы — тонкие штрихи 6 px высотой). */
+    private fun roomWithText(): Img = rooms().apply {
+        for (k in 0 until 8) { val x = 60 + k * 5; box(x, 140, x + 1, 146); box(x, 140, x + 3, 141); box(x + 2, 140, x + 3, 146) }
+    }
+
+    @Test
+    fun tapNearOrOnTextIsStillRoom() {
+        val im = roomWithText()
+        // Рядом с текстом (раньше зазор «прилипал» к буквам).
+        val near = im.find(80, 149, 6)
+        assertTrue(near.ok); assertEquals(MagicFill.ROOM, near.kind)
+        assertTrue("помещение целиком: ${near.area}", near.area > 30000)
+        // Прямо по букве — тоже помещение, а не «колонна» из слова.
+        val on = im.find(60, 143, 6)
+        assertTrue(on.ok); assertEquals(MagicFill.ROOM, on.kind)
+        assertTrue(on.area > 30000)
+    }
+
+    /** Толстые стены 10 px: наружные и перегородка. */
+    private fun thickWalls(): Img = Img(600, 400).apply {
+        frame(50, 50, 550, 350, 10)
+        box(295, 50, 305, 350)
+    }
+
+    @Test
+    fun wallTapAndBrushAlongWall() {
+        val im = thickWalls()
+        val ink = MagicFill.inkMask(im.lum)
+        val solid = MagicFill.solidMask(ink, im.w, im.h)
+        // Касание стены — все соединённые стены (на листе маска толстого считается целиком).
+        val w = MagicFill.find(ink, MagicFill.dilate(ink, im.w, im.h, 4), im.w, im.h, 55, 200, 4, solid)
+        assertTrue(w.ok); assertEquals(MagicFill.WALL, w.kind)
+        assertTrue("все стены: ${w.area}", w.area > 15000)
+        // Кисть вдоль части нижней стены — только эта часть стены.
+        val pieces = MagicFill.brush(solid, im.w, im.h, floatArrayOf(100f, 345f, 180f, 346f, 250f, 344f), 14f)
+        assertEquals(1, pieces.size)
+        val a = MagicFill.area(pieces[0])
+        assertTrue("часть стены ≈ 178×10: $a", a in 1200f..2600f)
+        val xs = pieces[0].filterIndexed { i, _ -> i % 2 == 0 }; val ys = pieces[0].filterIndexed { i, _ -> i % 2 == 1 }
+        val box = floatArrayOf(xs.min(), ys.min(), xs.max(), ys.max())
+        assertTrue("рамка ${box.joinToString { (it * 1).toString() }}", box[0] >= 80f && box[2] <= 270f && box[1] >= 338f && box[3] <= 352f)
+        // Кисть по бумаге — просто след кисти.
+        val free = MagicFill.brush(solid, im.w, im.h, floatArrayOf(150f, 150f, 250f, 150f), 10f)
+        assertEquals(1, free.size)
+        assertTrue("след: ${MagicFill.area(free[0])}", MagicFill.area(free[0]) in 1500f..2600f)
     }
 
     @Test

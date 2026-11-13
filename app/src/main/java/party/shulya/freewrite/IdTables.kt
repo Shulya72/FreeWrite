@@ -36,6 +36,9 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
     /** Открытая вкладка плана на этом планшете (не сохраняется). */
     @Transient var tab = 0
 
+    /** Закреплена булавкой (0.23.1): не двигается и не меняет размер — рисунки поверх плана остаются на месте. */
+    var locked = false
+
     /** Раскладка (считает [TableDraw]): пересчитывается, когда меняются строки, столбцы, статусы. */
     internal var lay: TableLayout? = null
 
@@ -292,6 +295,7 @@ object IdTables {
             sb.append(']')
         }
         TablePlan.sheetsJson(sb, t)
+        if (t.locked) sb.append(",\"lk\":1")
         sb.append('}')
         return sb.toString()
     }
@@ -323,6 +327,7 @@ object IdTables {
             }
         }
         TablePlan.parseSheets(j, t)
+        t.locked = j.optInt("lk") == 1
         return t
     }
 
