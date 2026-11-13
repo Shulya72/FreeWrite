@@ -96,6 +96,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         fun onTableLongPress(t: BoardTable, h: TableHit) {}
         /** Обводка захватки на плане таблицы (0.23): касание (tap) или протяжка от (x0, y0) до (x1, y1), координаты доски. */
         fun onPlanGesture(x0: Float, y0: Float, x1: Float, y1: Float, tap: Boolean) {}
+        /** Палец/перо над листом плана при отметке элементов (0.26): подсветить элемент под ним. */
+        fun onPlanHover(x: Float, y: Float) {}
         /** Коснулись пустого места доски (снять активную ячейку таблицы). */
         fun onEmptyTap() {}
         /** Касание ведомости: строка (ответ, схема), «+ схемы», «Передать». */
@@ -189,10 +191,13 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         return found
     }
 
-    private fun updateAim(px: Float, py: Float) {
+    private fun updateAim(px: Float, py: Float, snap: Boolean = true) {
         aimFinger.set(px, py)
-        aimSnapped = snapPoint(wx(px), wy(py), aim)
+        if (snap) aimSnapped = snapPoint(wx(px), wy(py), aim) else { aim.set(wx(px), wy(py)); aimSnapped = false }
     }
+
+    /** Лупа на плане (0.26 — и пером, и во всех режимах, кроме кисти): привязка к углам — только где она нужна. */
+    private fun planSnap() = planEdit?.let { PlanEdit.snapTool(it.tool) } ?: true
 
     // ---- Легенда (0.14): подсветить метки и выноски одного статуса, остальное притушить ----
     var highlight: String? = null
@@ -211,6 +216,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     /** Обводка захватки на листе плана (0.23): касания по листу идут в неё. */
     var planEdit: PlanEdit? = null
+
+    /** Элемент под пальцем при отметке (0.26) — обводка акцентом. */
+    var planHover: BoardZone? = null
 
     /** Обводка пальцем с лупой (по точкам, прямоугольник, круг). */
     private var planAim = false
@@ -1244,10 +1252,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             if (r != null && b.tables.any { it === pe.t } && r.contains(x, y)) {
                 parent?.requestDisallowInterceptTouchEvent(true)
                 mode = Mode.PLAN
-                // Пальцем по точкам, прямоугольником или кругом — лупа с перекрестием и привязкой (палец закрывает угол).
-                planAim = !isPen(tool) && tool != MotionEvent.TOOL_TYPE_MOUSE &&
-                    (pe.tool == PlanEdit.POINTS || pe.tool == PlanEdit.RECT || pe.tool == PlanEdit.CIRCLE)
-                if (planAim) { updateAim(downX, downY); sceneValid = false }
+                // Лупа с перекрестием (0.26 — пальцем и пером, во всех режимах, кроме кисти): палец или рука закрывают место.
+                planAim = tool != MotionEvent.TOOL_TYPE_MOUSE && pe.tool != PlanEdit.BRUSH
+                if (planAim) { updateAim(downX, downY, planSnap()); sceneValid = false }
+                if (pe.tool == PlanEdit.ASSIGN || pe.tool == PlanEdit.ERASE) host.onPlanHover(if (planAim) aim.x else x, if (planAim) aim.y else y)
                 val p0 = if (planAim) PointF(aim.x, aim.y) else PointF(x, y)
                 pe.from = p0; pe.to = PointF(p0.x, p0.y)
                 pe.path.clear(); pe.path += x; pe.path += y
@@ -1471,8 +1479,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             Mode.PLAN -> {
                 val pe = planEdit
                 if (pe != null) {
-                    if (planAim) { updateAim(sxp, syp); pe.to?.set(aim.x, aim.y) } else pe.to?.set(wx(sxp), wy(syp))
-                    if (pe.tool == PlanEdit.BRUSH) { pe.path += wx(sxp); pe.path += wy(syp) }
+                    if (planAim) { updateAim(sxp, syp, planSnap()); pe.to?.set(aim.x, aim.y) } else pe.to?.set(wx(sxp), wy(syp))
+                    if (PlanEdit.pathTool(pe.tool)) { pe.path += wx(sxp); pe.path += wy(syp) }
+                    if (pe.tool == PlanEdit.ASSIGN || pe.tool == PlanEdit.ERASE) host.onPlanHover(if (planAim) aim.x else wx(sxp), if (planAim) aim.y else wy(syp))
                 }
                 invalidate()
             }
@@ -1535,9 +1544,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             Mode.FRAME_EDGE -> if (editStarted) host.onDragEnd()
             Mode.PLAN -> planEdit?.let { pe ->
                 val f = pe.from
-                if (planAim) updateAim(sxp, syp)
+                if (planAim) updateAim(sxp, syp, planSnap())
                 val ex = if (planAim) aim.x else wx(sxp); val ey = if (planAim) aim.y else wy(syp)
-                if (pe.tool == PlanEdit.BRUSH) { pe.path += wx(sxp); pe.path += wy(syp) }
+                if (PlanEdit.pathTool(pe.tool)) { pe.path += wx(sxp); pe.path += wy(syp) }
+                planHover = null
                 pe.from = null; pe.to = null
                 planAim = false
                 // Пальцем с лупой точку ставят и после движения (палец ведёт перекрестие).
@@ -2149,10 +2159,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         val pe = planEdit?.takeIf { it.t === t && it.sheet.id == sh.id }
         for (zn in b.zones) {
             if (zn.t != t.id || zn.s != sh.id) continue
-            zonePath(zn.pts, sh, r)
+            zonePath(zn, sh, r)
             val c = TablePlan.zoneColor(b, t, zn)
-            val dim = pe != null && zn.zkey() != IdTables.zkey(pe.uch, pe.zah)
-            fillPaint.color = c; fillPaint.alpha = if (dim) 45 else 100
+            if (zn.free) {
+                // Элемент без захватки — бледно-серый: «ещё не залито», в глаза не бросается.
+                fillPaint.color = c; fillPaint.alpha = 60
+                canvas.drawPath(zonePath, fillPaint)
+                linePaint.color = c; linePaint.alpha = 140
+                linePaint.strokeWidth = Ui.dpf(context, 1f) / z
+                canvas.drawPath(zonePath, linePaint)
+                fillPaint.alpha = 255; linePaint.alpha = 255
+                continue
+            }
+            val dim = pe != null && !pe.elements && zn.zkey() != IdTables.zkey(pe.uch, pe.zah)
+            fillPaint.color = c; fillPaint.alpha = if (dim) 45 else 110
             canvas.drawPath(zonePath, fillPaint)
             fillPaint.alpha = 255
             linePaint.color = c; linePaint.alpha = if (dim) 110 else 230
@@ -2160,10 +2180,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawPath(zonePath, linePaint)
             linePaint.alpha = 255
         }
+        // Швы (ножницы и швы чертежа) — красным зигзагом, как на чертежах.
+        for (sm in sh.seams) drawSeam(canvas, sh, r, sm[0], sm[1], sm[2], sm[3], z)
+        planHover?.let { hz ->
+            if (hz.t == t.id && hz.s == sh.id && b.zones.any { it === hz }) {
+                zonePath(hz, sh, r)
+                linePaint.color = Ui.ACCENT
+                linePaint.strokeWidth = Ui.dpf(context, 3f) / z
+                canvas.drawPath(zonePath, linePaint)
+            }
+        }
         markedZones?.let { mz ->
             for (zn in mz) {
                 if (zn.t != t.id || zn.s != sh.id || b.zones.none { it === zn }) continue
-                zonePath(zn.pts, sh, r)
+                zonePath(zn, sh, r)
                 linePaint.color = Ui.ACCENT
                 linePaint.strokeWidth = Ui.dpf(context, 4f) / z
                 canvas.drawPath(zonePath, linePaint)
@@ -2173,8 +2203,48 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         canvas.restore()
     }
 
+    /** Контур области с дырами (чёт-нечет). */
+    private fun zonePath(zn: BoardZone, sh: PlanSheet, r: RectF) {
+        zonePath(zn.pts, sh, r)
+        if (zn.holes.isEmpty()) return
+        val keep = Path(zonePath)
+        for (hole in zn.holes) { zonePath(hole, sh, r); keep.addPath(zonePath) }
+        keep.fillType = Path.FillType.EVEN_ODD
+        zonePath.set(keep)
+    }
+
+    /** Шов: отрезок (доли листа) зигзагом постоянного на экране размера. */
+    private fun drawSeam(canvas: Canvas, sh: PlanSheet, r: RectF, fx0: Float, fy0: Float, fx1: Float, fy1: Float, z: Float) {
+        tableDraw.fromSheet(sh, r, fx0, fy0, planPt); val ax = planPt[0]; val ay = planPt[1]
+        tableDraw.fromSheet(sh, r, fx1, fy1, planPt); val bx = planPt[0]; val by = planPt[1]
+        drawZigzag(canvas, ax, ay, bx, by, z, SEAM)
+    }
+
+    private fun drawZigzag(canvas: Canvas, ax: Float, ay: Float, bx: Float, by: Float, z: Float, color: Int) {
+        val len = hypot(bx - ax, by - ay)
+        if (len <= 0f) return
+        val step = Ui.dpf(context, 5f) / z
+        val amp = Ui.dpf(context, 3f) / z
+        val n = (len / step).toInt().coerceIn(1, 4000)
+        val ux = (bx - ax) / len; val uy = (by - ay) / len
+        val p = Path()
+        p.moveTo(ax, ay)
+        for (k in 1 until n) {
+            val d = k * len / n
+            val s = if (k % 2 == 0) -amp else amp
+            p.lineTo(ax + ux * d - uy * s, ay + uy * d + ux * s)
+        }
+        p.lineTo(bx, by)
+        linePaint.color = color
+        linePaint.strokeWidth = Ui.dpf(context, 1.6f) / z
+        canvas.drawPath(p, linePaint)
+    }
+
+    private val SEAM = Color.rgb(214, 40, 40)
+
     private fun zonePath(pts: FloatArray, sh: PlanSheet, r: RectF) {
         zonePath.rewind()
+        zonePath.fillType = Path.FillType.WINDING
         var i = 0
         while (i + 1 < pts.size) {
             tableDraw.fromSheet(sh, r, pts[i], pts[i + 1], planPt)
@@ -2208,6 +2278,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawPath(p, bp)
         }
         val f = pe.from; val to = pe.to
+        if (f != null && to != null && pe.tool == PlanEdit.SCISSORS) drawZigzag(canvas, f.x, f.y, to.x, to.y, z, SEAM)
         if (f != null && to != null && (pe.tool == PlanEdit.RECT || pe.tool == PlanEdit.CIRCLE)) {
             dashPaint.strokeWidth = Ui.dpf(context, 2f) / z
             dashPaint.pathEffect = DashPathEffect(floatArrayOf(Ui.dpf(context, 6f) / z, Ui.dpf(context, 4f) / z), 0f)

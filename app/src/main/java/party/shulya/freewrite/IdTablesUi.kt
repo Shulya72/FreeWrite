@@ -335,6 +335,7 @@ class TableUi(private val a: BoardActivity) {
             TableHit.PLAN_ADD -> a.planUi.addSheet(t)
             TableHit.PLAN_COLOR -> a.planUi.colorMenu(t)
             TableHit.PLAN_OUTLINE -> a.planUi.chooseZah(t)
+            TableHit.PLAN_ELEM -> a.planUi.elementsMenu(t)
             TableHit.PLAN_TAB -> h.col?.toIntOrNull()?.let { a.planUi.setTab(t, it) }
             TableHit.PLAN_SHEET -> a.planUi.onSheetTap(t, h.fx, h.fy)
             TableHit.CELL -> {
@@ -345,7 +346,9 @@ class TableUi(private val a: BoardActivity) {
                 // Цветной квадратик у номера захватки (0.25.1): план под таблицей (0.23) — её области или обвести; заливка на
                 // доске — показать её (ТЗ, раздел 8). Сам номер — ввод, как у всех ячеек.
                 val hasFills = col == TableCol.ZAH && IdTables.fillsOf(b, t, r.uch, r.zah).isNotEmpty()
-                if (col == TableCol.ZAH && (t.sheets.isNotEmpty() || hasFills) && h.cx < TableDraw.PAD + TableDraw.SWATCH + 10f) {
+                if (col == TableCol.ZAH && (t.sheets.isNotEmpty() || hasFills) && h.cx < TableDraw.PAD + TableDraw.SWATCH + 14f) {
+                    // Лист размечен на элементы (0.26) — сразу отмечать элементы этой захватки.
+                    if (TablePlan.elements(b, t).isNotEmpty()) { a.planUi.startAssign(t, r.uch, r.zah); return }
                     if (t.sheets.isNotEmpty() && TablePlan.zonesOf(b, t, r.uch, r.zah).isNotEmpty()) { a.planUi.showZah(t, r.uch, r.zah); return }
                     if (hasFills) { showFills(t, r.uch, r.zah); return }
                     a.planUi.startOutline(t, r.uch, r.zah); return

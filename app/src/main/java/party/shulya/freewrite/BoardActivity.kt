@@ -130,9 +130,10 @@ class BoardActivity : Activity(), BoardView.Host {
         buildUi()
         setContentView(root)
         RemoteSync.transport()?.let { remote = RemoteSync(this, it, remoteHost) }
-        pdf = PdfInsert(this, { hint(it, 3500) }) { blocks, asked ->
-            // Лист для плана таблицы (0.23) — под таблицу, иначе — на доску.
-            if (planUiMade && planUi.target != null) planUi.onSheets(blocks) else placeImages(blocks, asked, sheets = true)
+        pdf = PdfInsert(this, { hint(it, 3500) }) { blocks, asked, kept ->
+            // Лист для плана таблицы (0.23) — под таблицу (с PDF — для поиска элементов, 0.26), иначе — на доску.
+            if (planUiMade && planUi.target != null) planUi.onSheets(blocks, kept)
+            else { kept?.let { java.io.File(java.io.File(filesDir, "note_images"), it.file).delete() }; placeImages(blocks, asked, sheets = true) }
         }
         updateSubtitle()
         engine.start(this)
@@ -667,19 +668,22 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     private fun restore(snap: BoardSnapshot) {
-        if (view.planEdit != null) planUi.endOutline(save = false)
+        // Отметка элементов, ножницы, «убрать» (0.26): «Отменить» — шаг назад, режим остаётся.
+        val keep = view.planEdit?.takeIf { planUi.keepOnUndo(it) }
+        if (view.planEdit != null && keep == null) planUi.endOutline(save = false)
         val tabs = board.tables.associate { it.id to it.tab } // открытая вкладка плана — та же
         board = board.restored(snap)
         for (t in board.tables) tabs[t.id]?.let { t.tab = it }
+        if (keep != null) planUi.rebind(keep)
         titleView.text = board.title
         view.clearSelection()
         checkCrop()
         changed()
     }
 
-    private fun undo() {
+    internal fun undo() {
         if (fillPts.isNotEmpty()) { removeFillPoint(); return }
-        if (view.planEdit != null) { planUi.undoPiece(); return }
+        if (view.planEdit != null && planUi.undoPiece()) return
         val g = current
         if (g != null && g.strokes.isNotEmpty()) {
             g.strokes.removeAt(g.strokes.lastIndex)
@@ -802,8 +806,9 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
-        if ((requestCode == REQ_PDF || requestCode == REQ_IMAGE) && resultCode != RESULT_OK && planUiMade) planUi.clearTarget()
+        if ((requestCode == REQ_PDF || requestCode == REQ_IMAGE) && resultCode != RESULT_OK && planUiMade) { planUi.clearTarget(); pdf.keepPdf = false }
         if (requestCode == REQ_PDF && resultCode == RESULT_OK) { data?.data?.let { openPdf(it) }; return }
+        if (requestCode == REQ_SHEET_PDF) { if (resultCode == RESULT_OK) data?.data?.let { planUi.onSheetPdf(it) }; return }
         if (requestCode != REQ_IMAGE || resultCode != RESULT_OK || data == null) return
         val uris = ArrayList<android.net.Uri>()
         data.clipData?.let { c -> for (k in 0 until c.itemCount) c.getItemAt(k).uri?.let { uris += it } }
@@ -819,7 +824,18 @@ class BoardActivity : Activity(), BoardView.Host {
     /** Выбрать картинку или PDF для плана таблицы (0.23); результат — в [PlanUi.onSheets]. */
     internal fun pickForPlan(pdf: Boolean) {
         if (pdf && this.pdf.busy) { hint("Ещё готовлю листы PDF — подождите"); planUi.clearTarget(); return }
-        if (pdf) pickPdf() else pickImage()
+        if (pdf) { this.pdf.keepPdf = true; pickPdf() } else pickImage()
+    }
+
+    /** PDF для уже вставленного листа плана (0.26: лист вставлен до 0.26 — линий нет); ответ — в [PlanUi.onSheetPdf]. */
+    internal fun pickSheetPdf() {
+        val i = Intent(Intent.ACTION_GET_CONTENT).setType("application/pdf").addCategory(Intent.CATEGORY_OPENABLE)
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent.createChooser(i, "PDF этого листа"), REQ_SHEET_PDF)
+        } catch (t: Throwable) {
+            hint("Не нашлось приложения для выбора файла")
+        }
     }
 
     /** Разложить новые картинки (или листы PDF) рядами (до 4 в ряд) в середине экрана и выделить их. */
@@ -1047,6 +1063,7 @@ class BoardActivity : Activity(), BoardView.Host {
     internal val planUi by lazy { planUiMade = true; PlanUi(this) }
 
     override fun onPlanGesture(x0: Float, y0: Float, x1: Float, y1: Float, tap: Boolean) = planUi.onGesture(x0, y0, x1, y1, tap)
+    override fun onPlanHover(x: Float, y: Float) = planUi.onHover(x, y)
 
     override fun onEmptyTap() = tableUi.deactivate()
 
@@ -2407,5 +2424,6 @@ class BoardActivity : Activity(), BoardView.Host {
         const val EXTRA_INSERT_NAME = "insert_name"
         private const val REQ_IMAGE = 42
         private const val REQ_PDF = 43
+        private const val REQ_SHEET_PDF = 44
     }
 }

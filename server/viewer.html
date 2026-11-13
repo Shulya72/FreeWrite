@@ -413,11 +413,29 @@ function zahStatus(t, u, z) {
   for (const r of rows) { let i = list.findIndex((s) => s.id === (r.sid || "i0")); if (i < 0) i = 0; if (i < bi) { bi = i; best = list[i] || stIn("id", r.sid || "i0"); } }
   return best;
 }
-function zoneColor(t, z) { if (t.zc === "own") return z.color | 0; const st = zahStatus(t, z.u, z.z); return st ? st.color : NO_ROWS; }
+/** Элемент разметки без захватки (0.26) — серый «ещё не залито». */
+const FREE = 0xff9698a2 | 0;
+function isFree(z) { return z.e === 1 && !z.z && !z.u; }
+function zoneColor(t, z) { if (isFree(z)) return FREE; if (t.zc === "own") return z.color | 0; const st = zahStatus(t, z.u, z.z); return st ? st.color : NO_ROWS; }
+function ringArea(p, r) { let a = 0; const n = p.length >> 1; for (let i = 0; i < n; i++) { const j = (i + 1) % n; a += p[2 * i] * p[2 * j + 1] * r - p[2 * j] * p[2 * i + 1] * r; } return Math.abs(a) / 2; }
+/** Готовность по разметке (0.26): площадь элементов в захватках к площади всех элементов, примерно; null — разметки нет. */
+function planPercent(t) {
+  let all = 0, done = 0; const sh = new Map(sheetsOf(t).map((s) => [s.id, s]));
+  for (const z of B.zones) {
+    if (z.t !== t.id || z.e !== 1 || !sh.has(z.s)) continue;
+    const s = sh.get(z.s), r = (s.ph || 1) / (s.pw || 1);
+    const a = Math.max(0, ringArea(z.pts, r) - (z.h || []).reduce((q, h) => q + ringArea(h, r), 0)) * (s.pw || 1) * (s.pw || 1);
+    all += a; if (!isFree(z)) done += a;
+  }
+  if (all <= 0) return null;
+  const p = done / all * 100;
+  return p > 0 && p < 1 ? 1 : p > 99 && p < 100 ? 99 : Math.round(p);
+}
 function zonesOf(t) { const ids = new Set(sheetsOf(t).map((s) => s.id)); return B.zones.filter((z) => z.t === t.id && ids.has(z.s)); }
 function planLegend(t) {
   const seen = new Set(), counts = new Map(); let none = 0;
   for (const z of zonesOf(t)) {
+    if (isFree(z)) continue;
     const k = zkey(z.u, z.z); if (seen.has(k)) continue; seen.add(k);
     const st = zahStatus(t, z.u, z.z); if (!st) none++; else counts.set(st.id, (counts.get(st.id) || 0) + 1);
   }
@@ -503,7 +521,7 @@ function tLayout(t) {
   const swatch = new Map();
   for (const f of B.fills) if (f.lt === t.id && !swatch.has(zkey(f.lu, f.lz))) swatch.set(zkey(f.lu, f.lz), f.color);
   const sheets = sheetsOf(t);
-  for (const z of zonesOf(t)) swatch.set(zkey(z.u, z.z), zoneColor(t, z));
+  for (const z of zonesOf(t)) if (!isFree(z)) swatch.set(zkey(z.u, z.z), zoneColor(t, z));
   const missing = vol ? vol.reduce((s, v) => s + v.missing, 0) : 0;
   const need = Math.max(TF.P * 2 + tw(t.title || "Без шифра", TF.TF, true) + (prefix ? measure(prefix + " ·", 14, false) + 8 : 0) + (chip ? tw(chip, 12, true) + 32 : 0) + 24 + tw(info, 12, false) + TF.P,
     TF.P * 3 + tw("+ строка", TF.FONT, true) + tw("+ следующая захватка", TF.FONT, true) + TF.P * 2, vol ? 1000 : 0, sheets.length ? PF.MINW : 0);
@@ -641,9 +659,16 @@ function drawPlan(t, L, x0, y0, w, k, z) {
   const ty = top + PF.HEAD / 2 * k + 16 * k * 0.36;
   ctx.font = "bold " + 16 * k + "px " + FONT; ctx.fillStyle = C.ink; ctx.fillText("План захваток", x0 + TF.P * 1.4 * k, ty);
   const tw0 = ctx.measureText("План захваток").width;
+  let tx0 = x0 + TF.P * 1.4 * k + tw0 + 12 * k;
+  const pct = planPercent(t);
+  if (pct !== null) {
+    const ps = pct >= 100 ? "забетонировано ✓" : "выполнено ≈ " + pct + " %";
+    ctx.font = "bold " + 14 * k + "px " + FONT; ctx.fillStyle = pct >= 100 ? "#2e9b4f" : "#d4470c"; ctx.fillText(ps, tx0, ty);
+    tx0 += ctx.measureText(ps).width + 14 * k;
+  }
   ctx.font = 12.5 * k + "px " + FONT; ctx.fillStyle = C.muted;
   const sub = [sheetsOf(t).length === 1 && sh.n ? sh.n : "", t.zc === "own" ? "цвет — свой у каждой захватки" : "цвет — по ИГС"].filter(Boolean).join(" · ");
-  ctx.fillText(sub, x0 + TF.P * 1.4 * k + tw0 + 12 * k, ty);
+  ctx.fillText(sub, tx0, ty);
   if (P.tabsH) {
     const ty0 = top + PF.HEAD * k;
     for (let i = 0; i < P.tabX.length - 1; i++) {
@@ -661,23 +686,35 @@ function drawPlan(t, L, x0, y0, w, k, z) {
     if (bmp) { ctx.imageSmoothingQuality = "high"; ctx.drawImage(bmp, c[0] * bmp.width, c[1] * bmp.height, (c[2] - c[0]) * bmp.width, (c[3] - c[1]) * bmp.height, sx, sy, sw, shh); }
     else { ctx.fillStyle = C.desk; ctx.fillRect(sx, sy, sw, shh); }
     ctx.save(); ctx.beginPath(); ctx.rect(sx, sy, sw, shh); ctx.clip();
+    const X = (fx) => sx + (fx - c[0]) / (c[2] - c[0]) * sw, Y = (fy) => sy + (fy - c[1]) / (c[3] - c[1]) * shh;
     for (const zn of B.zones) {
       if (zn.t !== t.id || zn.s !== sh.id) continue;
       ctx.beginPath();
-      for (let i = 0; i + 1 < zn.pts.length; i += 2) {
-        const px = sx + (zn.pts[i] - c[0]) / (c[2] - c[0]) * sw, py = sy + (zn.pts[i + 1] - c[1]) / (c[3] - c[1]) * shh;
-        if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+      for (const ring of [zn.pts, ...(zn.h || [])]) {
+        for (let i = 0; i + 1 < ring.length; i += 2) { if (i) ctx.lineTo(X(ring[i]), Y(ring[i + 1])); else ctx.moveTo(X(ring[i]), Y(ring[i + 1])); }
+        ctx.closePath();
       }
-      ctx.closePath();
-      const col = zoneColor(t, zn);
-      ctx.fillStyle = css(col, 100 / 255); ctx.fill();
-      ctx.strokeStyle = css(col, 230 / 255); ctx.lineWidth = 1.5 / z; ctx.stroke();
+      const col = zoneColor(t, zn), free = isFree(zn);
+      ctx.fillStyle = css(col, (free ? 60 : 110) / 255); ctx.fill("evenodd");
+      ctx.strokeStyle = css(col, (free ? 140 : 230) / 255); ctx.lineWidth = (free ? 1 : 1.5) / z; ctx.stroke();
+    }
+    // Швы (0.26) — красным зигзагом.
+    for (const sm of sh.seams || []) {
+      if (sm.length < 4) continue;
+      const ax = X(sm[0]), ay = Y(sm[1]), bx = X(sm[2]), by = Y(sm[3]), len = Math.hypot(bx - ax, by - ay);
+      if (len <= 0) continue;
+      const step = 5 / z, amp = 3 / z, n = Math.max(1, Math.min(4000, Math.floor(len / step))), ux = (bx - ax) / len, uy = (by - ay) / len;
+      ctx.beginPath(); ctx.moveTo(ax, ay);
+      for (let q = 1; q < n; q++) { const d = q * len / n, s = q % 2 ? amp : -amp; ctx.lineTo(ax + ux * d - uy * s, ay + uy * d + ux * s); }
+      ctx.lineTo(bx, by); ctx.strokeStyle = "#d62828"; ctx.lineWidth = 1.6 / z; ctx.stroke();
     }
     ctx.restore();
   }
   const ly = sy + shh + (PF.PAD + PF.LEG / 2) * k, cy = ly + 12.5 * k * 0.36;
   let lx = x0 + TF.P * 1.4 * k;
   ctx.font = 12.5 * k + "px " + FONT;
+  const nEl = B.zones.filter((zz) => zz.t === t.id && zz.e === 1).length;
+  if (nEl) { ctx.fillStyle = C.muted; ctx.fillText("Серым — ещё не залито (" + nEl + " эл.), цветом — захватки", lx, cy); return; }
   if (t.zc === "own") { ctx.fillStyle = C.muted; ctx.fillText("Цвет — свой у каждой захватки", lx, cy); return; }
   if (!P.legend.length) { ctx.fillStyle = C.muted; ctx.fillText("Захватки на плане пока не обведены", lx, cy); return; }
   for (const [st, n] of P.legend) {
