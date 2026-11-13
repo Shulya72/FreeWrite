@@ -150,6 +150,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private val aim = PointF()
     private val aimFinger = PointF()
     private var aimSnapped = false
+    /** Вид привязки (0.26.1): 0 — точка/угол области, [PlanSnap.END] — угол чертежа, [PlanSnap.CROSS] — пересечение. */
+    private var aimKind = 0
     private val loupePath = Path()
     private val snapColor = Color.rgb(30, 150, 70)
 
@@ -158,9 +160,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         val r = Ui.dpf(context, 18f) / b.camZ
         var best = r
         var found = false
+        aimKind = 0
         fun c(px: Float, py: Float) {
             val d = hypot(px - x, py - y)
-            if (d < best) { best = d; out.set(px, py); found = true }
+            if (d < best) { best = d; out.set(px, py); found = true; aimKind = 0 }
         }
         fun near(l: Float, t: Float, rr: Float, bt: Float) = x >= l - r && x <= rr + r && y >= t - r && y <= bt + r
         host.fillDraft()?.let { p -> var i = 0; while (i + 1 < p.size) { c(p[i], p[i + 1]); i += 2 } }
@@ -173,6 +176,16 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 while (i + 1 < pe.points.size) { tableDraw.fromSheet(pe.sheet, sr, pe.points[i], pe.points[i + 1], q); c(q[0], q[1]); i += 2 }
                 for (pc in pe.pieces) { i = 0; while (i + 1 < pc.size) { tableDraw.fromSheet(pe.sheet, sr, pc[i], pc[i + 1], q); c(q[0], q[1]); i += 2 } }
                 for (zn in b.zones) if (zn.t == pe.t.id && zn.s == pe.sheet.id) { i = 0; while (i + 1 < zn.pts.size) { tableDraw.fromSheet(pe.sheet, sr, zn.pts[i], zn.pts[i + 1], q); c(q[0], q[1]); i += 2 } }
+                // Углы и пересечения линий самого чертежа (0.26.1, «как в автокаде»): по PDF листа.
+                pe.snap?.let { sn ->
+                    tableDraw.toSheet(pe.t, pe.sheet, sr, x, y, q)
+                    val rf = r * (pe.sheet.cr - pe.sheet.cl) / max(1f, sr.width())
+                    sn.near(q[0], q[1], rf)?.let { hit ->
+                        tableDraw.fromSheet(pe.sheet, sr, hit.fx, hit.fy, q)
+                        val d = hypot(q[0] - x, q[1] - y)
+                        if (d < best) { best = d; out.set(q[0], q[1]); found = true; aimKind = hit.kind }
+                    }
+                }
             }
         }
         for (f in b.fills) {
@@ -2469,12 +2482,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         canvas.drawLine(aim.x - c, aim.y, aim.x + c, aim.y, linePaint)
         canvas.drawLine(aim.x, aim.y - c, aim.x, aim.y + c, linePaint)
         if (aimSnapped) {
+            // Как в AutoCAD: квадрат — угол (конец линии), квадрат с крестом — пересечение.
             val q = Ui.dpf(context, 7f) / z
             linePaint.color = snapColor
             linePaint.strokeWidth = Ui.dpf(context, 2f) / z
             canvas.drawRect(aim.x - q, aim.y - q, aim.x + q, aim.y + q, linePaint)
+            if (aimKind == PlanSnap.CROSS) {
+                canvas.drawLine(aim.x - q, aim.y - q, aim.x + q, aim.y + q, linePaint)
+                canvas.drawLine(aim.x - q, aim.y + q, aim.x + q, aim.y - q, linePaint)
+            }
         }
     }
+
+    /** Подпись привязки под лупой: «угол», «пересечение», «точка». */
+    private val snapLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFakeBoldText = true; textAlign = Paint.Align.CENTER }
 
     /**
      * Лупа: круг в верхнем углу экрана — с другой стороны от пальца (палец под лупой — внизу),
@@ -2513,6 +2534,16 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         linePaint.color = if (aimSnapped) snapColor else Ui.ACCENT
         linePaint.strokeWidth = Ui.dpf(context, 2.5f)
         canvas.drawCircle(cx, cy, r, linePaint)
+        if (aimSnapped) {
+            val s = when (aimKind) { PlanSnap.END -> "угол"; PlanSnap.CROSS -> "пересечение"; else -> "точка" }
+            snapLabel.textSize = Ui.dpf(context, 12.5f)
+            val tw = snapLabel.measureText(s) + Ui.dpf(context, 16f)
+            val ty = if (cy > height / 2f) cy - r - Ui.dpf(context, 16f) else cy + r + Ui.dpf(context, 16f)
+            fillPaint.color = snapColor
+            canvas.drawRoundRect(cx - tw / 2f, ty - Ui.dpf(context, 11f), cx + tw / 2f, ty + Ui.dpf(context, 11f), Ui.dpf(context, 11f), Ui.dpf(context, 11f), fillPaint)
+            snapLabel.color = Color.WHITE
+            canvas.drawText(s, cx, ty + Ui.dpf(context, 4.5f), snapLabel)
+        }
     }
 
     /** «Заливка» по точкам: поставленные точки, линии между ними и будущая заливка. */

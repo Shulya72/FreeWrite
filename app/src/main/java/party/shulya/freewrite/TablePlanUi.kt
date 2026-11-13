@@ -50,6 +50,8 @@ class PlanEdit(val t: BoardTable, val sheet: PlanSheet, val uch: String, val zah
     var color: Int? = null
     /** Разметка элементов (0.26): куски становятся элементами без захватки; ножницы, «убрать». */
     var elements = false
+    /** Привязка к углам и пересечениям линий чертежа (0.26.1) — по PDF листа; готовится в фоне. */
+    @Volatile var snap: PlanSnap? = null
 
     companion object {
         const val MAGIC = 0
@@ -115,7 +117,7 @@ class PlanUi(private val a: BoardActivity) {
         val t = b.tables.firstOrNull { it.id == old.t.id }
         val sh = t?.sheets?.firstOrNull { it.id == old.sheet.id }
         if (t == null || sh == null) { v.planEdit = null; a.hideModeBar(); return }
-        val pe = PlanEdit(t, sh, old.uch, old.zah).also { it.tool = old.tool; it.elements = old.elements; it.color = old.color; it.gap = old.gap }
+        val pe = PlanEdit(t, sh, old.uch, old.zah).also { it.tool = old.tool; it.elements = old.elements; it.color = old.color; it.gap = old.gap; it.snap = old.snap }
         v.planEdit = pe
         v.planHover = null
         if (pe.tool == PlanEdit.ASSIGN) v.markedRecs = IdTables.zahRows(b, t, pe.uch, pe.zah).toSet()
@@ -369,6 +371,7 @@ class PlanUi(private val a: BoardActivity) {
         clearMarks()
         val pe = PlanEdit(t, sh, uch, zah)
         v.planEdit = pe
+        attachSnap(pe)
         v.markedRecs = IdTables.zahRows(b, t, uch, zah).toSet()
         showSheet(t)
         outlineBar(pe)
@@ -690,6 +693,24 @@ class PlanUi(private val a: BoardActivity) {
 
     private val prefs get() = a.getSharedPreferences("plan", Context.MODE_PRIVATE)
 
+    /** Привязка «как в AutoCAD» (0.26.1): у листа есть PDF — углы и пересечения его линий, в фоне. */
+    private var snapKey = ""
+    private var snapIndex: PlanSnap? = null
+
+    private fun attachSnap(pe: PlanEdit) {
+        val sh = pe.sheet
+        if (sh.pdf.isEmpty() || !File(imageDir, sh.pdf).isFile) return
+        val key = sh.pdf + "#" + sh.page
+        snapIndex?.takeIf { snapKey == key }?.let { pe.snap = it; return }
+        exec.execute {
+            val s = runCatching { PlanSnap(loadVector(sh)) }.getOrNull() ?: return@execute
+            main.post {
+                snapKey = key; snapIndex = s
+                if (v.planEdit === pe) pe.snap = s
+            }
+        }
+    }
+
     /** Свои галочки слоёв на этой доске (имя слоя → участвует), остальные — по названию. */
     private fun layerUse(): Map<String, Boolean> {
         val s = prefs.getString("layers_" + b.id, null) ?: return emptyMap()
@@ -926,6 +947,7 @@ class PlanUi(private val a: BoardActivity) {
         clearMarks()
         val pe = PlanEdit(t, sh, "", "").also { it.elements = true; it.tool = tool }
         v.planEdit = pe
+        attachSnap(pe)
         showSheet(t)
         outlineBar(pe)
         if ((tool == PlanEdit.MAGIC || tool == PlanEdit.BRUSH) && analysis?.matches(sh) != true) prepare(sh)
@@ -950,6 +972,7 @@ class PlanUi(private val a: BoardActivity) {
         if (sh !== cur) { t.tab = t.sheets.indexOf(sh).coerceAtLeast(0); t.lay = null }
         val pe = PlanEdit(t, sh, uch, zah).also { it.tool = PlanEdit.ASSIGN }
         v.planEdit = pe
+        attachSnap(pe)
         v.markedRecs = IdTables.zahRows(b, t, uch, zah).toSet()
         showSheet(t)
         assignBar(pe)

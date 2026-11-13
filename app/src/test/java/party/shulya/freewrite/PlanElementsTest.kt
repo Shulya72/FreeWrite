@@ -167,6 +167,24 @@ class PlanElementsTest {
         assertEquals(2, PlanElements.split(rect, listOf(hole), 0.7f, floatArrayOf(0.4f, 0.1f, 0.4f, 0.5f))!!.size)
     }
 
+    /** Привязка «как в AutoCAD» (0.26.1): угол пилона, пересечение линий; размеры и штриховка — нет. */
+    @Test
+    fun snapToCornersAndCrossings() {
+        val content = WALLS + "\n/OC /oc0 BDC 1 w 450 50 m 550 150 l S 450 150 m 550 50 l S EMC"
+        val sn = PlanSnap(PdfVector.read(pdf(content, WALL_LAYERS), 0))
+        // Угол пилона 100,100…110,150 (y вверх) → левый верхний на картинке: 100 / 600, (400 − 150) / 400.
+        val h = sn.near(0.169f, 0.628f, 0.01f)!!
+        assertEquals(PlanSnap.END, h.kind)
+        assertEquals(100f / 600f, h.fx, 1e-4f); assertEquals(250f / 400f, h.fy, 1e-4f)
+        // Пересечение двух линий в 500, 100 → 500 / 600, 300 / 400.
+        val c = sn.near(0.835f, 0.752f, 0.01f)!!
+        assertEquals(PlanSnap.CROSS, c.kind)
+        assertEquals(500f / 600f, c.fx, 1e-3f); assertEquals(0.75f, c.fy, 1e-3f)
+        // Вдали от линий — ничего; линия размеров (слой DIMS) — не привязывает.
+        assertEquals(null, sn.near(0.9f, 0.1f, 0.01f))
+        assertEquals(null, sn.near(100f / 600f, (400f - 80f) / 400f, 0.003f))
+    }
+
     @Test
     fun brokenXrefStillReads() {
         val good = pdf(WALLS, WALL_LAYERS)
