@@ -211,10 +211,10 @@ object IdExcel {
     fun writeVedom(b: Board, v: BoardVedom, out: OutputStream, today: String = IdTables.today()) {
         val st = Styles()
         val s = Sheet(("Ведомость " + v.num).replace(Regex("[\\[\\]:*?/\\\\]"), " ").take(31))
-        s.rows.add(listOf(Cell("Ведомость ${v.num} — ${Vedoms.kindName(v.kind)}", 5)))
+        s.rows.add(listOf(Cell("Ведомость ${v.num}" + (if (v.made.isNotEmpty()) " от ${IdTables.dateLong(v.made)}" else "") + " — ${Vedoms.kindName(v.kind)}", 5)))
         s.rows.add(listOf(Cell("Объект: " + b.title)))
         if (v.to.isNotBlank()) s.rows.add(listOf(Cell("Кому: " + v.to)))
-        s.rows.add(listOf(Cell(if (v.isDraft) (if (v.kind == Vedoms.LIST) "Список" else "Сборка (схемы на столе)") else Vedoms.giveLabel(v.kind) + " с " + IdTables.dateLong(v.given))))
+        s.rows.add(listOf(Cell(if (v.isDraft) (if (v.kind == Vedoms.LIST) "Список" else "Сборка (схемы на столе)") else Vedoms.giveLabel(v.kind) + " от " + IdTables.dateLong(v.given))))
         s.rows.add(listOf(Cell(Vedoms.summary(b, v, today))))
         s.rows.add(emptyList())
         val answers = Vedoms.hasAnswers(v.kind) && !v.isDraft
@@ -229,7 +229,7 @@ object IdExcel {
                 Cell(l.uch.ifEmpty { null }, 3), Cell(l.zah.ifEmpty { null }, 3), Cell(l.con.ifEmpty { null }, 3), Cell(l.work.ifEmpty { null }, 3), r?.date?.let { IdTables.excelDay(it) }?.let { Cell(it, 2) } ?: Cell(null, 3), Cell(r?.who?.ifEmpty { null }, 3))
             row += if (r != null) IdTables.status(b, BoardStatus.ID, r.igs).let { Cell(it.name, st.status(it.color)) } else Cell("строка удалена", 3)
             if (answers) {
-                row += if (i.res.isEmpty()) Cell("Ждём", 3) else Cell(Vedoms.resName(v.kind, i.res), st.status(Vedoms.resColor(i.res)))
+                row += if (i.res.isEmpty()) Cell("Ждём", 3) else Cell(Vedoms.resName(Vedoms.kindOf(v, i), i.res), st.status(Vedoms.resColor(i.res)))
                 row += IdTables.excelDay(i.rd)?.let { Cell(it, 2) } ?: Cell(null, 3)
             }
             s.rows.add(row)

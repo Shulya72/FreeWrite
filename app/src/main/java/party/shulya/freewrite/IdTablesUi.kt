@@ -38,8 +38,37 @@ class TableUi(private val a: BoardActivity) {
     /** Кто правит (для истории схемы). */
     private fun who() = Profile.name(a)
 
-    /** Поставить значение ячейки; статусы и даты — с записью в историю схемы (ТЗ, раздел 7). */
-    private fun put(r: BoardRec, col: String, value: String) = Vedoms.set(b, r, col, value, who())
+    /**
+     * Поставить значение ячейки; статусы и даты — с записью в историю схемы (ТЗ, раздел 7). ИГС «Сборка» (0.25) — схема
+     * ложится в ведомость дня (первая за день — предложение завести ведомость); вывели из «Сборки» — уходит из ведомости на столе.
+     */
+    private fun put(r: BoardRec, col: String, value: String): Boolean {
+        val old = r.get(col)
+        if (!Vedoms.set(b, r, col, value, who())) return false
+        if (col == TableCol.IGS) {
+            // В ведомости на столе: «Сборка» — заказчику, «На согласовании АН» — через АН; другой статус — схема уходит из ведомости.
+            val gone = Vedoms.followTable(b, r)
+            if (gone.isNotEmpty()) a.hint("Схема убрана из ведомости ${gone.joinToString()} — она больше не в сборке", 2200)
+            if (value == IdTables.IGS_ASSEMBLY) queueAssembly(r)
+        }
+        return true
+    }
+
+    // Схемы, которым только что поставили «Сборку» (несколько сразу — лассо): одним заходом после правки.
+    private val asmQueue = LinkedHashSet<BoardRec>()
+    private var asmPosted = false
+
+    private fun queueAssembly(r: BoardRec) {
+        asmQueue += r
+        if (asmPosted) return
+        asmPosted = true
+        v.post {
+            asmPosted = false
+            val list = asmQueue.toList()
+            asmQueue.clear()
+            a.vedomUi.onAssembly(list)
+        }
+    }
 
     /** Срок «долго на подписи» в днях (настраивается в сводке; хранится на планшете). */
     var longDays: Int
@@ -707,7 +736,7 @@ class TableUi(private val a: BoardActivity) {
                 // История и ведомости схемы (шаг 2).
                 val inV = Vedoms.itemsOf(b, cur)
                 if (inV.isNotEmpty()) body.addView(Ui.text(a, "В ведомостях: " + inV.joinToString { (x, i) ->
-                    x.num + if (!x.isDraft && Vedoms.hasAnswers(x.kind)) " — " + Vedoms.resName(x.kind, i.res).lowercase() else "" }, 14f, Ui.INK2)
+                    x.num + if (!x.isDraft && Vedoms.hasAnswers(x.kind)) " — " + Vedoms.resName(Vedoms.kindOf(x, i), i.res).lowercase() else "" }, 14f, Ui.INK2)
                     .apply { setPadding(0, dp(10f), 0, 0); tag = "card_vedoms" })
                 if (t.sheets.isNotEmpty()) {
                     val uu = cur.uch; val zz = cur.zah

@@ -4,6 +4,7 @@ import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.app.Dialog
 import android.content.ClipData
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.RectF
@@ -107,7 +108,7 @@ class VedomUi(private val a: BoardActivity) {
         var dialog: AlertDialog? = null
         val about = mapOf(
             Vedoms.CUST to "схемам — «На подписи у заказчика» и дата «Отдал заказчику»; ответы: подписано (→ «Сдано в ПТО») или замечания",
-            Vedoms.AN to "схемам — «На подписи АН»; ответы: согласовано (→ к заказчику), не согласовано, замечания",
+            Vedoms.AN to "схемам — «На согласовании АН»; ответы: согласовано (→ к заказчику), не согласовано, замечания",
             Vedoms.PTO to "схемам — «Сдано в ПТО» и дата; закрывается сразу",
             Vedoms.LIST to "просто список: «что делать завтра», «что проверить» — статусы не меняет",
         )
@@ -148,45 +149,116 @@ class VedomUi(private val a: BoardActivity) {
         AlertDialog.Builder(a).setTitle(Vedoms.kindName(kind))
             .setView(box)
             .setPositiveButton("Создать") { _, _ ->
-                a.pushUndo()
-                val (x, y, s) = place(recs)
-                val nv = BoardVedom(x, y, s, kind, num.text.toString().trim().ifEmpty { Vedoms.nextNum(b, kind) })
-                nv.to = to.text.toString().trim()
-                b.vedoms += nv
-                val n = if (recs.isNullOrEmpty()) 0 else Vedoms.add(b, nv, recs, who())
-                a.changed()
-                v.clearSelection()
-                goTo(nv)
-                if (recs.isNullOrEmpty()) collectDialog(nv)
-                else {
-                    a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} — «Сборка». Унесёте — «${Vedoms.giveLabel(kind)} →»", 2500)
-                    warnWaiting(nv, recs)
-                }
+                val numS = num.text.toString().trim().ifEmpty { Vedoms.nextNum(b, kind) }
+                val toS = to.text.toString().trim()
+                val s = newScale()
+                val (w, h) = ghost(s, recs?.size ?: 6)
+                // Место выбирает Владимир (0.25): двигает доску, держит палец или перо → «Вставить ведомость сюда».
+                a.startPlacing("Ведомость $numS: двигайте доску, подержите палец или перо там, где поставить", w, h,
+                    onPlace = { x, y -> makeVedom(kind, numS, toS, recs, x, y, s) })
             }
             .setNegativeButton("Отмена", null)
             .show()
     }
 
-    /** Где поставить новую ведомость: справа от выделенного или посреди экрана; размер — как у таблиц и ведомостей доски. */
-    private fun place(recs: List<BoardRec>?): Triple<Float, Float, Float> {
-        val sizes = (b.tables.map { it.scale } + b.vedoms.map { it.scale }).sorted()
-        val s = if (sizes.isNotEmpty()) sizes[sizes.size / 2] else a.resources.displayMetrics.density / b.camZ
-        val sel = if (!recs.isNullOrEmpty()) v.selectionBounds() else null
-        val (x, y) = if (sel != null) freeSpot(sel.right + 40f * s, sel.top, s)
-        else freeSpot(v.wx(v.width / 2f) - 300f * s, v.wy(v.height / 2f) - 120f * s, s)
-        return Triple(x, y, s)
+    private fun makeVedom(kind: String, numS: String, toS: String, recs: List<BoardRec>?, x: Float, y: Float, s: Float) {
+        a.pushUndo()
+        val nv = BoardVedom(x, y, s, kind, numS)
+        nv.made = IdTables.today()
+        nv.to = toS
+        b.vedoms += nv
+        // Схемы — по номеру (пока искали место, доска могла смениться: отмена, правки коллег).
+        val now = recs.orEmpty().mapNotNull { r -> b.recs.firstOrNull { it.id == r.id } }
+        val n = if (now.isEmpty()) 0 else Vedoms.add(b, nv, now, who())
+        a.changed()
+        v.clearSelection()
+        if (recs.isNullOrEmpty()) collectDialog(nv)
+        else {
+            a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} — «Сборка». Унесёте — «${Vedoms.giveLabel(kind)} →»", 2500)
+            warnWaiting(nv, now)
+        }
     }
 
-    /** Свободное место для ведомости: не поверх таблиц и других ведомостей (занято — правее занятого). */
-    private fun freeSpot(x0: Float, y: Float, s: Float): Pair<Float, Float> {
-        var x = x0
-        repeat(20) {
-            val box = RectF(x, y, x + 640f * s, y + 300f * s)
-            val hit = b.tables.map { v.tableDraw.bounds(b, it, RectF()) }.plus(b.vedoms.map { v.vedomDraw.bounds(b, it, RectF()) })
-                .firstOrNull { RectF.intersects(box, it) } ?: return x to y
-            x = hit.right + 40f * s
+    // ---------------------------------------------------------------- сборка из таблицы (0.25)
+
+    /** Открытое окно «Сборка — ведомость от …?» (для проверок). */
+    internal var asmAsk: AlertDialog? = null
+
+    private fun declinedKey() = "asmNo_" + b.id
+
+    /** «Не сегодня» сказано сегодня на этой доске — больше не спрашиваем до завтра. */
+    private fun declinedToday(day: String) = a.getSharedPreferences("igs", Context.MODE_PRIVATE).getString(declinedKey(), "") == day
+
+    /**
+     * В таблице поставили «Сборку» (Владимир, 13.11.2026): есть ведомость сегодняшней сборки — схемы ложатся в неё сами;
+     * нет — первая «Сборка» дня: предложить завести ведомость от сегодня и положить в неё все схемы в «Сборке», которых нет
+     * в ведомостях.
+     */
+    fun onAssembly(recs: List<BoardRec>) {
+        val list = recs.filter { r -> b.recs.any { it === r } && r.igs == IdTables.IGS_ASSEMBLY && Vedoms.waitingElsewhere(b, r, null).isEmpty() }
+        if (list.isEmpty()) return
+        val today = IdTables.today()
+        Vedoms.assemblyOf(b, today)?.let { x ->
+            // Та же правка, что и статус (снимок отмены уже сделан) — «Отменить» уберёт и статус, и позицию.
+            val n = Vedoms.add(b, x, list, who())
+            a.changed()
+            if (n > 0) a.hint("В ведомость ${x.num} от ${IdTables.dateShort(x.made)}: +${Ui.plural(n, "схема", "схемы", "схем")} · всего ${Vedoms.items(b, x).size}", 2200)
+            return
         }
-        return x to y
+        if (declinedToday(today) || asmAsk?.isShowing == true) return
+        val loose = Vedoms.looseAssembly(b)
+        val more = loose.size - list.size
+        val anName = IdTables.status(b, BoardStatus.ID, IdTables.IGS_AN).name
+        val d = AlertDialog.Builder(a)
+            .setTitle("Сборка — ведомость от ${IdTables.dateLong(today)}?")
+            .setMessage("Первая «Сборка» сегодня. Завести ведомость сборки от сегодняшнего дня и положить в неё " +
+                (if (more > 0) "все схемы в «Сборке» без ведомости — ${loose.size}" else Ui.plural(loose.size, "схему", "схемы", "схем")) +
+                "? Дальше сегодня «Сборка» в таблице — схема сама ляжет в эту ведомость. Какие идут на АН — в ведомости коснитесь " +
+                "«ИГС сейчас» → «$anName». Унесли — смените состояние ведомости на «На подписи у заказчика».")
+            .setPositiveButton("Создать") { _, _ -> placeAssembly(Vedoms.CUST, today) }
+            .setNegativeButton("Не сегодня") { _, _ ->
+                a.getSharedPreferences("igs", Context.MODE_PRIVATE).edit().putString(declinedKey(), today).apply()
+                a.hint("Сегодня не спрашиваю. Ведомость можно собрать кнопкой «Ведомости»", 2200)
+            }
+            .create()
+        asmAsk = d
+        d.show()
+    }
+
+    /** Размер новой ведомости — как у таблиц и ведомостей доски. */
+    private fun newScale(): Float {
+        val sizes = (b.tables.map { it.scale } + b.vedoms.map { it.scale }).sorted()
+        return if (sizes.isNotEmpty()) sizes[sizes.size / 2] else a.resources.displayMetrics.density / b.camZ
+    }
+
+    /** Контур новой ведомости при выборе места: примерная ширина и высота (шапка + n строк). */
+    private fun ghost(s: Float, rows: Int) = (900f * s) to ((58f + 26f + 30f * rows.coerceIn(1, 8) + 30f) * s)
+
+    /**
+     * Ведомость сегодняшней сборки (0.25): место — выбирает Владимир («схемы из разных таблиц — ведомость туда, где удобно»):
+     * двигает доску, держит палец или перо → «Вставить ведомость сюда». В неё — все схемы в «Сборке» без ведомости.
+     */
+    private fun placeAssembly(kind: String, today: String) {
+        val s = newScale()
+        val n = Vedoms.looseAssembly(b).size
+        val (w, h) = ghost(s, n)
+        a.startPlacing("Ведомость ${Vedoms.nextNum(b, kind)} от ${IdTables.dateShort(today)}: двигайте доску, подержите палец или перо там, где поставить",
+            w, h, onPlace = { x, y -> createAssembly(kind, today, x, y, s) },
+            onCancel = { a.hint("Ведомость не создана — схемы остались в «Сборке». Следующая «Сборка» предложит снова", 2600) })
+    }
+
+    private fun createAssembly(kind: String, today: String, x: Float, y: Float, s: Float) {
+        val loose = Vedoms.looseAssembly(b)
+        if (loose.isEmpty()) { a.hint("Схем в «Сборке» без ведомости уже нет", 1800); return }
+        a.pushUndo()
+        val nv = BoardVedom(x, y, s, kind, Vedoms.nextNum(b, kind))
+        nv.made = today
+        nv.to = b.vedoms.lastOrNull { it.kind == kind && it.to.isNotBlank() }?.to.orEmpty()
+        b.vedoms += nv
+        val n = Vedoms.add(b, nv, loose, who())
+        a.changed()
+        a.hint("Ведомость ${nv.num} от ${IdTables.dateShort(today)}: ${Ui.plural(n, "схема", "схемы", "схем")}. Сегодняшние «Сборки» лягут в неё сами; " +
+            "унесли — нажмите «Сборка от …» в шапке ведомости → «${Vedoms.giveLabel(kind)}»", 5000)
     }
 
     // ---------------------------------------------------------------- касания
@@ -200,6 +272,8 @@ class VedomUi(private val a: BoardActivity) {
             VedomHit.CELL -> {
                 val i = h.item ?: return
                 if (h.col == VedomDraw.RES || h.col == VedomDraw.RD) { resultPopup(x, listOf(i)); return }
+                // В сборке «ИГС сейчас»: «Сборка» (заказчику) или «На согласовании АН» (сначала на АН) — касание, список рядом.
+                if (h.col == TableCol.IGS && x.isDraft && x.kind == Vedoms.CUST) { routePopup(x, i); return }
                 if (pen) showInTable(x, i) else itemCard(x, i)
             }
             else -> v.select(listOf(x))
@@ -265,7 +339,7 @@ class VedomUi(private val a: BoardActivity) {
 
     /**
      * Кнопка состояния в шапке ведомости: «Сборка» (схемы лежат на столе) или «На подписи у заказчика» (унесли; для АН —
-     * «На подписи АН», для ПТО — «Сдано в ПТО»). Из «Сборки» — окно с датой; назад в «Сборку» — пока нет ответов.
+     * «На согласовании АН», для ПТО — «Сдано в ПТО»). Из «Сборки» — окно с датой; назад в «Сборку» — пока нет ответов.
      */
     fun stateDialog(x: BoardVedom) {
         if (x.kind == Vedoms.LIST) return
@@ -300,7 +374,11 @@ class VedomUi(private val a: BoardActivity) {
             Vedoms.CUST -> "унесли заказчику — у схем «${gv.name}» и дата «Отдал заказчику»"
             Vedoms.AN -> "унесли на АН — у схем «${gv.name}»"
             else -> "отдали в ПТО — у схем «${gv.name}» и дата «Сдано в ПТО»"
-        } + if (!x.isDraft) " · ${IdTables.dateLong(x.given)}" else "", gv.color, !x.isDraft, "vstate_give") { giveDialog(x) }
+        } + if (!x.isDraft) " · ${IdTables.dateLong(x.given)}" else " · дата — сегодня, ${IdTables.dateLong(IdTables.today())}", gv.color, !x.isDraft, "vstate_give") { giveNow(x, IdTables.today()) }
+        if (x.isDraft) box.addView(Ui.text(a, "Унесли в другой день — выбрать дату", 14f, Ui.ACCENT, bold = true).apply {
+            tag = "vstate_date"; isClickable = true; setPadding(dp(6f), dp(14f), dp(6f), dp(4f))
+            setOnClickListener { dlg?.dismiss(); giveDialog(x) }
+        })
         dlg = AlertDialog.Builder(a).setTitle("${Vedoms.title(x)} — состояние").setView(ScrollView(a).apply { addView(box) })
             .setNegativeButton("Закрыть", null).show()
     }
@@ -572,7 +650,9 @@ class VedomUi(private val a: BoardActivity) {
             else -> "получат статус «$st»."
         }
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0) }
-        box.addView(Ui.text(a, "${Ui.plural(items.size, "схема", "схемы", "схем")} $what", 15f, Ui.INK))
+        val viaAn = items.count { it.via == Vedoms.AN }
+        box.addView(Ui.text(a, "${Ui.plural(items.size - viaAn, "схема", "схемы", "схем")} $what" +
+            if (viaAn > 0) " Через АН — $viaAn: их статус не меняется." else "", 15f, Ui.INK))
         val dateBtn = Ui.pill(a, "Дата: ${IdTables.dateLong(date)}", Ui.INK, Ui.DESK).apply { tag = "give_date" }
         dateBtn.setOnClickListener { pickDate(date) { d -> if (d.isNotEmpty()) { date = d; dateBtn.text = "Дата: ${IdTables.dateLong(date)}" } } }
         box.addView(dateBtn, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(12f) })
@@ -588,6 +668,25 @@ class VedomUi(private val a: BoardActivity) {
             }
             .setNegativeButton("Отмена", null)
             .show()
+    }
+
+    /**
+     * Состояние «Сборка» → «На подписи у заказчика» (0.25, Владимир): дата — день перевода, без лишних вопросов; всем схемам
+     * ведомости — статус передачи «от даты» и дата «Отдал заказчику».
+     */
+    fun giveNow(x: BoardVedom, date: String) {
+        if (x.kind == Vedoms.LIST || !x.isDraft) return
+        val items = Vedoms.items(b, x)
+        if (items.isEmpty()) { a.hint("В ведомости ${x.num} пока нет схем — «+ схемы»", 1800); return }
+        a.pushUndo()
+        Vedoms.give(b, x, date, who())
+        a.changed()
+        a.buildSelectionBar()
+        val st = IdTables.status(b, BoardStatus.ID, Vedoms.giveStatus(x.kind)).name
+        val viaAn = items.count { it.via == Vedoms.AN }
+        a.hint("${x.num} — «${Vedoms.giveLabel(x.kind)}» от ${IdTables.dateShort(date)}: ${Ui.plural(items.size - viaAn, "схема", "схемы", "схем")} — «$st от ${IdTables.dateShort(date)}»" +
+            (if (viaAn > 0) "; через АН — $viaAn, их статус не меняется" else "") +
+            if (Vedoms.hasAnswers(x.kind)) ". Ответы — касание «Ждём» у строки" else "", 3500)
     }
 
     private fun pickDate(cur0: String, done: (String) -> Unit) {
@@ -606,7 +705,7 @@ class VedomUi(private val a: BoardActivity) {
         a.changed()
         a.buildSelectionBar()
         val closed = Vedoms.isClosed(b, x)
-        val what = if (res.isEmpty()) "снова ждём ответа" else Vedoms.resName(x.kind, res) + " · " + IdTables.dateLong(ansDate())
+        val what = if (res.isEmpty()) "снова ждём ответа" else Vedoms.resName(Vedoms.kindOf(x, items[0]), res) + " · " + IdTables.dateLong(ansDate())
         a.hint((if (items.size == 1) what else "$what — у ${items.size} схем") + if (closed && !wasClosed) ". Ведомость ${x.num} закрыта" else "", 2500)
         if (closed && !wasClosed && x.kind == Vedoms.AN) offerToCustomer(x)
     }
@@ -624,23 +723,30 @@ class VedomUi(private val a: BoardActivity) {
     fun toCustomer(x: BoardVedom) {
         val ok = Vedoms.approvedForCustomer(b, x)
         if (ok.isEmpty()) { a.hint("Согласованных схем, ещё не собранных заказчику, нет", 1800); return }
-        a.pushUndo()
-        val r = v.vedomDraw.bounds(b, x, RectF())
-        val (nx, ny) = freeSpot(r.left, r.bottom + 40f * x.scale, x.scale)
-        val nv = BoardVedom(nx, ny, x.scale, Vedoms.CUST, Vedoms.nextNum(b, Vedoms.CUST))
-        nv.to = b.vedoms.lastOrNull { it.kind == Vedoms.CUST && it.to.isNotBlank() }?.to.orEmpty()
-        b.vedoms += nv
-        val n = Vedoms.add(b, nv, ok, who())
-        a.changed()
-        goTo(nv)
-        a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} из ${x.num}. Унесёте заказчику — «На подписи у заказчика →»", 3000)
+        val (w, h) = ghost(x.scale, ok.size)
+        val xid = x.id; val xnum = x.num; val sc = x.scale
+        // Место выбирает Владимир (0.25): двигает доску, держит палец или перо → «Вставить ведомость сюда».
+        a.startPlacing("Ведомость ${Vedoms.nextNum(b, Vedoms.CUST)} заказчику — ${Ui.plural(ok.size, "схема", "схемы", "схем")} из $xnum: " +
+            "двигайте доску, подержите палец или перо там, где поставить", w, h, onPlace = { nx, ny ->
+            val src = Vedoms.vedom(b, xid)
+            val now = if (src == null) emptyList() else Vedoms.approvedForCustomer(b, src)
+            if (now.isEmpty()) { a.hint("Согласованных схем, ещё не собранных заказчику, нет", 1800); return@startPlacing }
+            a.pushUndo()
+            val nv = BoardVedom(nx, ny, sc, Vedoms.CUST, Vedoms.nextNum(b, Vedoms.CUST))
+            nv.made = IdTables.today()
+            nv.to = b.vedoms.lastOrNull { it.kind == Vedoms.CUST && it.to.isNotBlank() }?.to.orEmpty()
+            b.vedoms += nv
+            val n = Vedoms.add(b, nv, now, who())
+            a.changed()
+            a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} из $xnum. Унесёте заказчику — «На подписи у заказчика →»", 3000)
+        })
     }
 
-    private fun resButton(x: BoardVedom, res: String, current: String?, tag: String, pick: () -> Unit): TextView {
+    private fun resButton(x: BoardVedom, res: String, current: String?, tag: String, kind: String = x.kind, pick: () -> Unit): TextView {
         val c = Vedoms.resColor(res)
         val fg = Board.statusFg(c)
         val cur = res == current
-        return Ui.text(a, Vedoms.resName(x.kind, res).let { if (res.isEmpty()) "Ждём ответа" else it } + if (cur) "  — сейчас" else "", 16f, fg, bold = true).apply {
+        return Ui.text(a, Vedoms.resName(kind, res).let { if (res.isEmpty()) "Ждём ответа" else it } + if (cur) "  — сейчас" else "", 16f, fg, bold = true).apply {
             background = GradientDrawable().apply {
                 cornerRadius = Ui.dpf(a, 12f); setColor(if (res.isEmpty()) Color.WHITE else Board.statusBg(c)); setStroke(dp(if (cur) 3f else 1.5f), fg)
             }
@@ -654,10 +760,10 @@ class VedomUi(private val a: BoardActivity) {
     }
 
     /** Кнопки ответов + «Ждём» + дата ответа (общая для отметок подряд). */
-    private fun answerBox(x: BoardVedom, current: String?, after: () -> Unit, pick: (String) -> Unit): LinearLayout {
+    private fun answerBox(x: BoardVedom, current: String?, after: () -> Unit, kind: String = x.kind, pick: (String) -> Unit): LinearLayout {
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
-        for (res in Vedoms.results(x.kind) + "") {
-            box.addView(resButton(x, res, current, "res_" + res.ifEmpty { "wait" }) { pick(res) },
+        for (res in Vedoms.results(kind) + "") {
+            box.addView(resButton(x, res, current, "res_" + res.ifEmpty { "wait" }, kind) { pick(res) },
                 LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
         }
         val dateLine = Ui.text(a, "Дата ответа: " + (if (answerDate.isEmpty()) "сегодня" else IdTables.dateLong(answerDate)) + "  ✎", 15f, Ui.INK2).apply {
@@ -666,6 +772,59 @@ class VedomUi(private val a: BoardActivity) {
         }
         box.addView(dateLine)
         return box
+    }
+
+    /**
+     * «ИГС сейчас» в сборке (0.25, Владимир): у каждой схемы — «Сборка» (пойдёт заказчику) или «На согласовании АН» (сначала на
+     * согласование АН). Список рядом с ячейкой; выбор — статус схемы в таблице тоже меняется.
+     */
+    fun routePopup(x: BoardVedom, item: BoardVItem) {
+        popup?.dismiss()
+        val r = Vedoms.rec(b, item) ?: return
+        val holder = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10f), dp(6f), dp(10f), dp(10f))
+            background = Ui.rounded(a, Ui.PAPER, Ui.RULE, 14f)
+        }
+        holder.addView(Ui.text(a, "ИГС · " + Vedoms.labelText(b, item), 14f, Ui.INK2, bold = true).apply { setPadding(dp(4f), dp(4f), dp(4f), 0) })
+        for ((an, sid) in listOf(false to IdTables.IGS_ASSEMBLY, true to IdTables.IGS_AN)) {
+            val st = IdTables.status(b, BoardStatus.ID, sid)
+            val cur = r.igs == sid
+            val fg = Board.statusFg(st.color)
+            holder.addView(Ui.text(a, st.name + (if (cur) "  — сейчас" else "") + if (an) "\nсначала на согласование АН" else "\nпойдёт заказчику", 15f, fg, bold = true).apply {
+                background = GradientDrawable().apply { cornerRadius = Ui.dpf(a, 12f); setColor(Board.statusBg(st.color)); setStroke(dp(if (cur) 3f else 1.5f), fg) }
+                setPadding(dp(14f), dp(10f), dp(14f), dp(10f))
+                minHeight = dp(48f)
+                tag = if (an) "route_an" else "route_asm"
+                isClickable = true
+                setOnClickListener {
+                    popup?.dismiss()
+                    if (cur) return@setOnClickListener
+                    a.pushUndo()
+                    Vedoms.route(b, x, item, an, who())
+                    a.changed()
+                    a.hint(if (an) "${st.name}: схема пойдёт сначала на АН — передача заказчику её не тронет" else "Сборка: схема пойдёт заказчику", 2000)
+                }
+            }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
+        }
+        val rect = v.vedomDraw.cellRect(b, x, item, TableCol.IGS, RectF())
+        val w = dp(300f)
+        val pw = PopupWindow(holder, w, ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            elevation = Ui.dpf(a, 10f)
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            isOutsideTouchable = true
+        }
+        popup = pw
+        val loc = IntArray(2)
+        v.getLocationOnScreen(loc)
+        var px = loc[0] + dp(40f)
+        var py = loc[1] + v.height / 3
+        if (rect != null) {
+            px = loc[0] + ((rect.left - b.camX) * b.camZ).toInt()
+            py = loc[1] + ((rect.bottom - b.camY) * b.camZ).toInt() + dp(4f)
+        }
+        px = px.coerceIn(0, (a.resources.displayMetrics.widthPixels - w).coerceAtLeast(0))
+        pw.showAtLocation(v, Gravity.NO_GRAVITY, px, py.coerceAtLeast(0))
     }
 
     /** Список ответов рядом с ячейкой «Ответ» (палец и перо): выбор вторым касанием, случайное касание ничего не меняет. */
@@ -684,7 +843,7 @@ class VedomUi(private val a: BoardActivity) {
             holder.removeAllViews()
             holder.addView(Ui.text(a, if (items.size == 1) "Ответ · " + Vedoms.labelText(b, items[0]) else "Ответ для ${items.size} схем", 14f, Ui.INK2, bold = true)
                 .apply { setPadding(dp(4f), dp(4f), dp(4f), 0) })
-            holder.addView(answerBox(x, items.singleOrNull()?.res, { show() }) { res -> popup?.dismiss(); setAnswer(x, items, res) })
+            holder.addView(answerBox(x, items.singleOrNull()?.res, { show() }, kind = Vedoms.kindOf(x, items[0])) { res -> popup?.dismiss(); setAnswer(x, items, res) })
         }
         show()
         val content = ScrollView(a).apply { addView(holder) }
@@ -764,7 +923,7 @@ class VedomUi(private val a: BoardActivity) {
                 if (!x.isDraft && Vedoms.hasAnswers(x.kind)) {
                     body.addView(Ui.text(a, "Ответ по ведомости" + if (cur.rd.isNotEmpty()) " · " + IdTables.dateLong(cur.rd) else "", 14f, Ui.MUTED, bold = true)
                         .apply { setPadding(0, dp(12f), 0, 0) })
-                    body.addView(answerBox(x, cur.res, { show() }) { res -> setAnswer(x, listOf(cur), res); show() })
+                    body.addView(answerBox(x, cur.res, { show() }, kind = Vedoms.kindOf(x, cur)) { res -> setAnswer(x, listOf(cur), res); show() })
                 } else if (x.isDraft && x.kind != Vedoms.LIST) {
                     body.addView(Ui.text(a, "Сборка: ответы — когда унесли («${Vedoms.giveLabel(x.kind)}»).", 14f, Ui.MUTED).apply { setPadding(0, dp(10f), 0, 0) })
                 }
@@ -833,7 +992,7 @@ class VedomUi(private val a: BoardActivity) {
                 val res = when {
                     x.isDraft -> "сборка"
                     !Vedoms.hasAnswers(x.kind) -> "передана " + IdTables.dateShort(x.given)
-                    else -> "передана " + IdTables.dateShort(x.given) + " · " + Vedoms.resName(x.kind, i.res).lowercase() +
+                    else -> "передана " + IdTables.dateShort(x.given) + " · " + Vedoms.resName(Vedoms.kindOf(x, i), i.res).lowercase() +
                         if (i.rd.isNotEmpty()) " " + IdTables.dateShort(i.rd) else ""
                 }
                 box.addView(Ui.text(a, "${x.num} · ${Vedoms.kindName(x.kind)} — $res", 14f, Ui.INK).apply { setPadding(0, dp(2f), 0, dp(2f)) })

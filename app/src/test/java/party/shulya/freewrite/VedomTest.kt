@@ -167,7 +167,7 @@ class VedomTest {
         // Согласованные — одной кнопкой заказчику; схема, что ждёт АН, — предупреждение при сборе в другую.
         assertEquals(listOf(ia[0].r), Vedoms.approvedForCustomer(pa, va).map { it.id })
         assertEquals(listOf(va), Vedoms.waitingElsewhere(pa, Vedoms.rec(pa, ia[2])!!, null))
-        // На подписи АН дольше срока — по дате передачи АН (и у заказчика — с 11.11, после согласования АН).
+        // На согласовании АН дольше срока — по дате передачи АН (и у заказчика — с 11.11, после согласования АН).
         val sa = IgsSummary(pa, longDays = 7, today = "2026-11-30")
         assertEquals(setOf(ia[0].r, ia[2].r, ia[3].r), sa.ctrlLong.map { it.id }.toSet())
         assertEquals(setOf(ia[0].r), IgsSummary(pa, longDays = 7, today = "2026-11-19").ctrlLong.map { it.id }.toSet().minus(setOf(ia[2].r, ia[3].r)))
@@ -196,7 +196,7 @@ class VedomTest {
         // Унесли заказчику — «На подписи у заказчика», дата; кнопка состояния.
         Vedoms.give(b, v, "2026-11-12", "Владимир Шульмин")
         assertTrue(recs.take(3).all { it.igs == IdTables.IGS_CUST && it.dcust == "2026-11-12" })
-        assertEquals("На подписи у заказчика · 12.11.26 ▾", Vedoms.stateChip(b, v))
+        assertEquals("На подписи у заказчика от 12.11.26 ▾", Vedoms.stateChip(b, v))
         // Ошиблись — назад в сборку (ответов ещё нет): снова «Сборка», дата убрана.
         assertTrue(Vedoms.canUngive(b, v))
         Vedoms.ungive(b, v, "Владимир Шульмин")
@@ -297,6 +297,19 @@ class VedomTest {
         FileOutputStream(File(dir, name)).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
+    /** Ищут место для новой ведомости (0.25): подержать палец (sx, sy) → «Вставить ведомость сюда». */
+    private fun placeHere(s: Screen, sx: Float = s.view.width * 0.6f, sy: Float = s.view.height * 0.3f) {
+        assertTrue("ищут место для ведомости", s.a.placingNow)
+        pause(1000) // перо рядом недавно — палец был бы ладонью
+        val d = SystemClock.uptimeMillis()
+        s.view.dispatchTouchEvent(event(d, d, MotionEvent.ACTION_DOWN, sx, sy, MotionEvent.TOOL_TYPE_FINGER))
+        pause(700)
+        s.view.dispatchTouchEvent(event(d, d + 700, MotionEvent.ACTION_UP, sx, sy, MotionEvent.TOOL_TYPE_FINGER))
+        idle()
+        s.a.placePopup!!.contentView.findViewWithTag<View>("place_here").performClick()
+        idle()
+    }
+
     private class Screen(val a: BoardActivity, val view: BoardView) {
         val b get() = a.board()
         fun sx(x: Float) = (x - b.camX) * b.camZ
@@ -336,7 +349,11 @@ class VedomTest {
         det.window!!.decorView.findViewWithTag<EditText>("vnew_to").setText("Технадзор заказчика")
         det.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()
+        // Место ведомости (0.25): подержать палец там, где поставить → «Вставить ведомость сюда».
+        assertTrue(s.b.vedoms.isEmpty())
+        placeHere(s, s.view.width * 0.75f, s.view.height * 0.2f)
         val v = s.b.vedoms.single()
+        assertEquals(s.view.wx(s.view.width * 0.75f), v.x, 0.5f)
         assertEquals(Vedoms.CUST, v.kind)
         // Сбор: отбор «В работе» и «Возврат» уже выбран — 15 схем, все отмечены.
         val col = latest()
@@ -437,6 +454,7 @@ class VedomTest {
         idle()
         latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()
+        placeHere(s, s.view.width * 0.4f, s.view.height * 0.8f)
         val list = s.b.vedoms.first { it.kind == Vedoms.LIST }
         assertEquals(1, Vedoms.items(s.b, list).size)
         s.view.select(listOf(list))
@@ -482,20 +500,18 @@ class VedomTest {
         assertEquals("Лоток №1", s.b.recs.last().zah)
         assertEquals(4, Vedoms.items(s.b, v).size)
         // Передать АН → согласовано → «Согласованные → заказчику».
-        // Кнопка состояния в шапке: касание → «Сборка» / «На подписи АН» → окно с датой → «Унесли на АН».
+        // Кнопка состояния в шапке: касание → «Сборка» / «На согласовании АН» → сразу, дата — сегодня (0.25).
         val hb = s.view.vedomDraw.bounds(s.b, v, RectF())
         s.view.fitRect(hb.left, hb.top, hb.right, hb.bottom); idle()
-        assertEquals("Сборка ▾", s.view.vedomDraw.layout(s.b, v).state)
+        assertTrue(s.view.vedomDraw.layout(s.b, v).state.startsWith("Сборка"))
         val hh = s.view.vedomDraw.hit(s.b, v, hb.right - 30f * v.scale, v.y + 22f * v.scale)!!
         assertEquals(VedomHit.STATE, hh.part)
         s.a.vedomUi.onTap(v, hh, pen = false)
         idle()
         latest().window!!.decorView.findViewWithTag<View>("vstate_give").performClick()
         idle()
-        assertEquals("Унесли на АН", latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).text.toString())
-        latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
-        idle()
         assertTrue(!v.isDraft)
+        assertEquals(IdTables.today(), v.given)
         assertTrue(Vedoms.items(s.b, v).mapNotNull { Vedoms.rec(s.b, it) }.all { it.igs == IdTables.IGS_AN })
         s.view.invalidate()
         shot(s.view, "vedom-an-given.png")
@@ -505,6 +521,7 @@ class VedomTest {
         assertTrue(Vedoms.isClosed(s.b, v))
         latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick() // «Собрать»
         idle()
+        placeHere(s)
         val cust = s.b.vedoms.first { it.kind == Vedoms.CUST }
         assertEquals(4, Vedoms.items(s.b, cust).size)
         assertTrue(cust.isDraft)

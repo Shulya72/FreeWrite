@@ -165,7 +165,9 @@ class TableDraw {
         for (r in rows) {
             h = 31 * h + r.id.hashCode()
             for (c in cols) h = 31 * h + r.get(c.k).hashCode()
+            h = 31 * h + r.dcust.hashCode() // «На подписи у заказчика от …» (0.25)
         }
+        h = 31 * h + b.events.size
         t.lay?.let { if (it.key == h) return it }
 
         val allN = if (f == null || f.isEmpty) rows.size else IdTables.allRows(b, t).size
@@ -587,7 +589,7 @@ class TableDraw {
             val st = IdTables.status(b, IdTables.groupOf(c.k), r.get(c.k))
             text.textSize = FONT * k
             text.isFakeBoldText = true
-            val name = fit(st.name, cw - 2 * PAD * k - 22f * k)
+            val name = fit(if (c.k == TableCol.IGS) IdTables.igsText(b, r) else st.name, cw - 2 * PAD * k - 22f * k)
             val pw = text.measureText(name) + 22f * k
             rect.set(cx + PAD * k, ry + 4.5f * k, cx + PAD * k + pw, ry + (ROW_H - 4.5f) * k)
             val fg = Board.statusFg(st.color)

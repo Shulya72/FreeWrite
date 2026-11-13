@@ -41,6 +41,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     interface Host {
         fun board(): Board
         fun tool(): BoardActivity.Tool
+        /** Режим «найдите место»: подержали палец или перо в точке (x, y) доски (sx, sy — экран). */
+        fun onPlaceAt(x: Float, y: Float, sx: Float, sy: Float) {}
         fun fingerWrites(): Boolean
         /** Стиль штриха в пикселях экрана (BoardView переводит в единицы доски). */
         fun strokeStyle(): NoteInkView.StrokeStyle
@@ -121,7 +123,24 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     object RowPart { const val TITLE = 0; const val CHECK = 1; const val DWG = 2; const val STATUS = 3 }
     class Hit(val kind: Kind, val index: Int)
 
-    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP, FRAME_DRAG, POINT, PLAN, FRAME_EDGE }
+    private enum class Mode { NONE, PAN, PINCH, INK, ERASE, STATUS, MOVE_SEL, RESIZE, PINCH_SEL, LASSO, PIPETTE, CALLOUT_DRAG, LEADER, PALM, CROP, FRAME_DRAG, POINT, PLAN, FRAME_EDGE, PLACE }
+
+    // ---- Место для новой ведомости (0.25, Владимир: «как на компьютере — левой двигаю экран, правой — меню «Вставить»») ----
+    /** Ищут место: размер контура ведомости в единицах доски; null — режим выключен. Палец и перо — только двигают доску. */
+    var placing: android.util.SizeF? = null
+        set(v) { field = v; placeGhost = null; removeCallbacks(placeLong); invalidate() }
+    /** Где подержали — контур будущей ведомости (левый верхний угол). */
+    var placeGhost: PointF? = null
+        set(v) { field = v; invalidate() }
+    private val placeLong = Runnable {
+        if (mode == Mode.PLACE && !moved && placing != null) {
+            mode = Mode.NONE
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            val x = wx(downX); val y = wy(downY)
+            placeGhost = PointF(x, y)
+            host.onPlaceAt(x, y, downX, downY)
+        }
+    }
 
     // ---- Точная точка (0.14.1): лупа и привязка, как в DWG FastView ----
     // Палец закрывает угол, в который целятся: пока палец на экране, в углу экрана — лупа с перекрестием,
@@ -544,6 +563,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     }
 
     companion object {
+        /** Сколько держать палец или перо, чтобы выбрать место для ведомости. */
+        const val PLACE_MS = 550L
         /** Сколько после пера (касания или наведения) пальцы считаются ладонью. */
         const val PEN_GRACE_MS = 700L
         /** Если перо пришло так скоро после касания пальцем, сдвиг доски пальцем отменяется. */
@@ -1081,7 +1102,11 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 val tool = ev.getToolType(idx)
                 val finger = !isPen(tool)
                 val fingerMode = !activeIsPen && (mode == Mode.MOVE_SEL || mode == Mode.RESIZE || mode == Mode.PINCH_SEL || mode == Mode.LEADER)
-                if (isPen(tool) && (mode == Mode.PAN || mode == Mode.PINCH || mode == Mode.NONE || mode == Mode.PALM || fingerMode)) {
+                if (mode == Mode.PLACE) {
+                    // Ищут место — второй палец: приближают или двигают доску.
+                    removeCallbacks(placeLong)
+                    startPinch(ev)
+                } else if (isPen(tool) && (mode == Mode.PAN || mode == Mode.PINCH || mode == Mode.NONE || mode == Mode.PALM || fingerMode)) {
                     revertFingerIfRecent()
                     begin(ev, idx) // ладонь или пальцы лежали — работает перо
                 } else if (finger && !host.fingerWrites() && (penNear() || palmSized(ev, idx) || mode == Mode.PALM)) {
@@ -1125,8 +1150,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 if (ev.getPointerId(ev.actionIndex) == activePointer) finish(ev, ev.actionIndex)
                 mode = Mode.NONE
                 removeCallbacks(longPress)
+                removeCallbacks(placeLong)
             }
             MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(placeLong)
                 // Система отменила жест (например, распознала ладонь) — сдвинутое возвращаем на место.
                 if (mode == Mode.MOVE_SEL || mode == Mode.RESIZE || mode == Mode.PINCH_SEL) revertEdit()
                 else if (editStarted) host.onDragEnd()
@@ -1182,6 +1209,13 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
         }
 
+        if (placing != null) {
+            // Ищут место для ведомости: двигаем доску; подержали на месте — «Вставить сюда».
+            mode = Mode.PLACE
+            parent?.requestDisallowInterceptTouchEvent(true)
+            postDelayed(placeLong, PLACE_MS)
+            return
+        }
         if (t == BoardActivity.Tool.PIPETTE) {
             mode = Mode.PIPETTE
             hover = PointF(downX, downY)
@@ -1354,6 +1388,11 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         if (!moved && hypot(sxp - downX, syp - downY) > slop) {
             moved = true
             removeCallbacks(longPress)
+        }
+        if (mode == Mode.PLACE) {
+            if (!moved) return
+            removeCallbacks(placeLong)
+            mode = Mode.PAN // сдвинули — двигаем доску (дальше как обычно)
         }
         when (mode) {
             Mode.PAN -> {
@@ -1991,6 +2030,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.restore()
             drawLoupe(canvas)
         }
+        if (!plain && !capturing) drawPlaceGhost(canvas, z)
         if (!plain && !capturing) hover?.let {
             when {
                 host.tool() == BoardActivity.Tool.PIPETTE -> pipetteRing(context, canvas, it.x, it.y, host.pipetteColor(it.x, it.y))
@@ -2316,6 +2356,26 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     }
 
     /** Куда ляжет точка: резинка от последней точки, перекрестие; прилипла — зелёный квадрат. */
+    /** Контур будущей ведомости там, где подержали (режим «найдите место»). */
+    private fun drawPlaceGhost(canvas: Canvas, z: Float) {
+        val sz = placing ?: return
+        val g = placeGhost ?: return
+        val l = sx(g.x); val t = sy(g.y); val r = l + sz.width * z; val bt = t + sz.height * z
+        val d = resources.displayMetrics.density
+        val fillP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(46, 212, 71, 12) }
+        val lineP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE; strokeWidth = 2.5f * d; color = Ui.ACCENT
+            pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f * d, 6f * d), 0f)
+        }
+        val rr = RectF(l, t, r, bt)
+        canvas.drawRoundRect(rr, 8f * d, 8f * d, fillP)
+        canvas.drawRoundRect(rr, 8f * d, 8f * d, lineP)
+        val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Ui.ACCENT; textSize = 15f * d; isFakeBoldText = true }
+        canvas.drawText("Ведомость — сюда", l + 12f * d, t + 24f * d, tp)
+        // Точка, где держали.
+        canvas.drawCircle(l, t, 6f * d, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Ui.ACCENT })
+    }
+
     private fun drawAim(canvas: Canvas, z: Float) {
         val p = host.fillDraft()
         val color = host.strokeStyle().color

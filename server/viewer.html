@@ -374,8 +374,21 @@ function cellText(r, k) {
     if (k === "vol" && t && tParts(t).length) return ""; // у таблицы с частями старый общий объём не считается
     const u = t ? unitFor(t, r.w || "") : ""; return volFmt(+v) + (u ? " " + u : "");
   }
+  if (k === "igs") return igsText(r);
   return isSt(k) ? stIn(TGROUP[k], recVal(r, k)).name : isDate(k) ? dShort(recVal(r, k)) : recVal(r, k);
 }
+// «На подписи у заказчика от 13.11.26» (0.25, как IdTables.igsText): у заказчика — дата «Отдал заказчику», на АН — передача ведомости АН.
+function igsSince(r) {
+  const sid = r.sid || "i0";
+  if (sid === "i2") return r.dc || "";
+  if (sid === "i6") {
+    let best = "";
+    for (const i of B.vitems) if (i.r === r.id) { const v = B.vedoms.find((x) => x.id === i.v); if (v && v.kind === "an" && v.given && v.given > best) best = v.given; }
+    return best;
+  }
+  return "";
+}
+function igsText(r) { const n = stIn("id", r.sid || "i0").name, d = igsSince(r); return d ? n + " от " + dShort(d) : n; }
 // Объёмы (0.21): как IdTables в приложении.
 function normW(s) { return String(s || "").toLowerCase().replace(/ё/g, "е").replace(/захватка|захв\.|участок/g, "").replace(/[\s№"«»]/g, "").replace(/[.,;:]+$/, ""); }
 // Участок + захватка (как IdTables.zkey): «этаж 3» участка LM1 и LM2 — разные захватки.
@@ -545,7 +558,7 @@ function drawTable(t, z, hl) {
       if (isSt(c.k)) {
         const st = stIn(TGROUP[c.k], recVal(r, c.k)), fg = statusFg(st.color);
         ctx.font = "bold " + fs + "px " + FONT;
-        const name = fitText(st.name, cw - 2 * TF.P * k - 22 * k), pw = ctx.measureText(name).width + 22 * k, ph = R - 9 * k;
+        const name = fitText(c.k === "igs" ? igsText(r) : st.name, cw - 2 * TF.P * k - 22 * k), pw = ctx.measureText(name).width + 22 * k, ph = R - 9 * k;
         rrect(cx + TF.P * k, ry + 4.5 * k, pw, ph, ph / 2); ctx.fillStyle = statusBg(st.color); ctx.fill();
         ctx.strokeStyle = fg; ctx.lineWidth = 1.2 * k; ctx.stroke();
         ctx.fillStyle = fg; ctx.fillText(name, cx + (TF.P + 11) * k, cy + fs * 0.36);
@@ -786,7 +799,9 @@ const VCOL = { n: "№", cipher: "Шифр", uch: "Участок", zah: "Зах
 function vKind(v) { return VKIND[v.kind] || VKIND.list; }
 function vAnswers(v) { return (v.kind === "an" || v.kind === "cust") && !!v.given; }
 function vItems(v) { return B.vitems.filter((i) => i.v === v.id).sort((a, b) => ((a.o || 0) - (b.o || 0)) || (a.id < b.id ? -1 : 1)); }
-function resName(v, res) { return res === "ok" ? (v.kind === "an" ? "Согласовано" : "Подписано") : res === "no" ? "Не согласовано" : res === "fix" ? "Замечания" : "Ждём"; }
+// Схема «через АН» в ведомости заказчику (0.25, i.via === "an") — ответ как у АН.
+function resName(v, res, i) { const an = v.kind === "an" || (i && i.via === "an" && v.kind === "cust");
+  return res === "ok" ? (an ? "Согласовано" : "Подписано") : res === "no" ? "Не согласовано" : res === "fix" ? "Замечания" : "Ждём"; }
 function resColor(res) { return res === "ok" ? 0xff23803a | 0 : res === "no" ? 0xff8e1b2f | 0 : res === "fix" ? 0xffd4640c | 0 : 0xff8a93a3 | 0; }
 function daysSince(iso) { const d = Date.parse(iso + "T00:00:00"); return isNaN(d) ? 0 : Math.round((Date.now() - d) / 86400000 - 0.5); }
 function vClosed(v) {
@@ -795,13 +810,15 @@ function vClosed(v) {
   if (v.kind === "an" || v.kind === "cust") { const it = vItems(v); return it.length > 0 && it.every((i) => !!i.res); }
   return false;
 }
-const VGIVE = { an: "На подписи АН", cust: "На подписи у заказчика", pto: "Сдано в ПТО" };
-function vState(v) { return !v.given ? (v.kind === "list" ? "список" : "сборка") : vClosed(v) ? "закрыта" : (VGIVE[v.kind] || "передана") + " · " + dShort(v.given); }
+const VGIVE = { an: "На согласовании АН", cust: "На подписи у заказчика", pto: "Сдано в ПТО" };
+function vState(v) { return !v.given ? (v.kind === "list" ? "список" : "сборка" + (v.made ? " от " + dShort(v.made) : "")) : vClosed(v) ? "закрыта" : (VGIVE[v.kind] || "передана") + " от " + dShort(v.given); }
 function vSummary(v) {
   const it = vItems(v); const head = plural(it.length, "схема", "схемы", "схем");
   if (!vAnswers(v)) return head;
   const parts = [head];
-  for (const res of v.kind === "an" ? ["ok", "no", "fix"] : ["ok", "fix"]) { const n = it.filter((i) => i.res === res).length; if (n) parts.push(resName(v, res).toLowerCase() + " " + n); }
+  const counts = new Map();
+  for (const i of it) if (i.res) { const n = resName(v, i.res, i).toLowerCase(); counts.set(n, (counts.get(n) || 0) + 1); }
+  for (const [n, c] of counts) parts.push(n + " " + c);
   const wait = it.filter((i) => !i.res).length;
   if (wait) parts.push(`ждём ${wait} (${daysSince(v.given)} дн.)`);
   return parts.join(" · ");
@@ -819,7 +836,7 @@ function vLayout(v) {
     return cols.map((c) => c === "n" ? String(idx + 1) : c === "cipher" ? (t ? fullTitle(t) : i.lt || "") : c === "uch" ? (t ? r.u || "" : i.lu || "") : c === "zah" ? (t ? r.z || "" : i.lz || "")
       : c === "con" ? (t ? r.c || "" : i.lc || "") : c === "work" ? (t ? r.w || "" : i.lw || "")
       : c === "nsch" ? (t ? r.ns || "" : "") : c === "aosr" ? (t ? r.na || "" : "") : c === "igs" ? (t ? stIn("id", r.sid || "i0").name : "строка удалена")
-      : c === "res" ? resName(v, i.res || "") : c === "rd" ? dShort(i.rd || "") : "");
+      : c === "res" ? resName(v, i.res || "", i) : c === "rd" ? dShort(i.rd || "") : "");
   });
   const igsColor = items.map((i) => { const r = recs.get(i.r); return r && tabs.get(r.t) ? stIn("id", r.sid || "i0").color : 0; });
   const title = [v.num, vKind(v)[0]].filter(Boolean).join(" · "), state = vState(v);

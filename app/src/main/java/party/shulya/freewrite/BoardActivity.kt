@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.widget.PopupWindow
 import android.view.View
 import android.widget.CheckBox
 import android.widget.EditText
@@ -533,6 +534,7 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     private fun setTool(t: Tool, quiet: Boolean = false) {
+        if (!quiet && view.placing != null) { val c = placeCancel; endPlacing(); c?.invoke() } // выбрали инструмент — место не ищем
         if (t != Tool.WRITE) current?.let { commit(it) }
         if (t != Tool.WRITE) tableUi.deactivate()
         tool = t
@@ -1262,6 +1264,72 @@ class BoardActivity : Activity(), BoardView.Host {
 
     /** Инструмент сейчас (для таблиц: в «В текст» касание пером ячейки — писать в неё). */
     internal val activeTool: Tool get() = tool
+
+    // ---------------------------------------------------------------- место для ведомости (0.25)
+
+    private var placeDone: ((Float, Float) -> Unit)? = null
+    private var placeCancel: (() -> Unit)? = null
+    /** Меню «Вставить ведомость сюда» у места, где подержали (для проверок). */
+    internal var placePopup: PopupWindow? = null
+    val placingNow: Boolean get() = view.placing != null
+
+    /**
+     * «Найдите место» (Владимир: «как на компьютере — левой двигаю экран, правой — меню «Вставить»»): палец и перо двигают
+     * доску, два пальца — приближают; подержали на месте — контур ведомости и меню «Вставить сюда» / «Не сюда».
+     * w, h — размер контура в единицах доски.
+     */
+    internal fun startPlacing(label: String, w: Float, h: Float, onPlace: (Float, Float) -> Unit, onCancel: () -> Unit = {}) {
+        endPlacing()
+        if (view.cropping != null) endCrop()
+        tableUi.deactivate()
+        placeDone = onPlace
+        placeCancel = onCancel
+        view.placing = android.util.SizeF(w, h)
+        showModeBar(label, listOf(Ui.pill(this, "Отмена", Ui.INK, Ui.DESK).apply {
+            tag = "place_cancel"
+            setOnClickListener { val c = placeCancel; endPlacing(); c?.invoke() }
+        }))
+    }
+
+    internal fun endPlacing() {
+        val wasOn = view.placing != null
+        placePopup?.let { placePopup = null; it.dismiss() }
+        placeDone = null
+        placeCancel = null
+        view.placing = null
+        if (wasOn) hideModeBar()
+    }
+
+    override fun onPlaceAt(x: Float, y: Float, sx: Float, sy: Float) {
+        val done = placeDone ?: return
+        placePopup?.let { placePopup = null; it.dismiss() }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ui.rounded(this@BoardActivity, Color.WHITE, Ui.RULE, 14f)
+            elevation = Ui.dpf(this@BoardActivity, 8f)
+            setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+        }
+        box.addView(Ui.pill(this, "Вставить ведомость сюда", Color.WHITE, Ui.ACCENT).apply {
+            tag = "place_here"
+            setOnClickListener { endPlacing(); done(x, y) }
+        })
+        box.addView(Ui.pill(this, "Не сюда", Ui.INK, Ui.DESK).apply {
+            tag = "place_no"
+            setOnClickListener { placePopup?.dismiss() }
+        }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { leftMargin = dp(8f) })
+        val pw = PopupWindow(box, Ui.WRAP, Ui.WRAP, true).apply {
+            isOutsideTouchable = true
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        }
+        pw.setOnDismissListener { if (placePopup === pw) { placePopup = null; view.placeGhost = null } }
+        placePopup = pw
+        val loc = IntArray(2)
+        view.getLocationInWindow(loc)
+        val px = (loc[0] + sx - dp(24f)).toInt().coerceAtLeast(0)
+        val py = (loc[1] + sy + dp(20f)).toInt().coerceAtLeast(0)
+        pw.showAtLocation(view, Gravity.NO_GRAVITY, px, py)
+    }
 
     internal fun hideModeBar() {
         modeBar.removeAllViews()

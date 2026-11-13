@@ -235,7 +235,8 @@ object IdTables {
     const val IGS_NOT_GIVEN = "i5"  // Не предоставлена
     const val IGS_WORK = "i1"       // В работе
     const val IGS_ASSEMBLY = "i9"   // Сборка — схема готова, лежит в пачке ведомости на столе (0.22.1, Владимир)
-    const val IGS_AN = "i6"         // На подписи АН
+    const val IGS_AN = "i6"         // На согласовании АН (до 0.25 — «На подписи АН»)
+    private const val OLD_AN = "На подписи АН"
     const val IGS_AN_NO = "i7"      // Не согласована
     const val IGS_CUST = "i2"       // На подписи у заказчика
     const val IGS_BACK = "i8"       // Возврат на корректировку
@@ -253,7 +254,7 @@ object IdTables {
         BoardStatus("i5", "Не предоставлена", Color.rgb(198, 40, 40)),
         BoardStatus("i1", "В работе", Color.rgb(31, 95, 209)),
         BoardStatus("i9", "Сборка", Color.rgb(0, 131, 143)),
-        BoardStatus("i6", "На подписи АН", Color.rgb(123, 63, 196)),
+        BoardStatus("i6", "На согласовании АН", Color.rgb(123, 63, 196)),
         BoardStatus("i7", "Не согласована", Color.rgb(142, 27, 47)),
         BoardStatus("i2", "На подписи у заказчика", Color.rgb(184, 138, 0)),
         BoardStatus("i8", "Возврат на корректировку", Color.rgb(212, 100, 12)),
@@ -316,6 +317,8 @@ object IdTables {
             b.statuses.addAll(rest)
         }
         b.statuses.firstOrNull { it.group == BoardStatus.ID && it.id == IGS_NONE && it.name == "Не выполнено" }?.name = "Конструкция не выполнена"
+        // 0.25 (Владимир: «пусть везде будет одинаково — На согласовании АН»); своё название статуса не трогаем.
+        b.statuses.firstOrNull { it.group == BoardStatus.ID && it.id == IGS_AN && it.name == OLD_AN }?.name = igsStatuses().first { it.id == IGS_AN }.name
         // 0.22.1: статус «Сборка» (схема лежит в пачке ведомости) — после «В работе»; одинаково на всех планшетах.
         val ids2 = b.statuses.filter { it.group == BoardStatus.ID }
         if (ids2.any { it.id in IGS_ONLY } && ids2.none { it.id == IGS_ASSEMBLY || it.name.equals("Сборка", ignoreCase = true) }) {
@@ -580,8 +583,32 @@ object IdTables {
 
     // ---------------------------------------------------------------- значение ячейки
 
+    /**
+     * С какого дня схема в нынешнем статусе ИГС — для «На подписи у заказчика от 13.11.26» (0.25, Владимир): у заказчика —
+     * дата «Отдал заказчику», на АН — день перевода по истории. Для остальных статусов — пусто.
+     */
+    fun igsSince(b: Board, r: BoardRec): String = when (r.igs) {
+        IGS_CUST -> r.dcust.ifEmpty { eventDay(b, r, IGS_CUST) }
+        IGS_AN -> eventDay(b, r, IGS_AN)
+        else -> ""
+    }
+
+    private fun eventDay(b: Board, r: BoardRec, to: String): String {
+        val e = b.events.lastOrNull { it.r == r.id && it.k == TableCol.IGS && it.to == to } ?: return ""
+        val c = java.util.Calendar.getInstance().apply { timeInMillis = e.at }
+        return iso(c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH) + 1, c.get(java.util.Calendar.DAY_OF_MONTH))
+    }
+
+    /** Статус ИГС в таблице: «На подписи у заказчика от 13.11.26» (с какого дня — [igsSince]). */
+    fun igsText(b: Board, r: BoardRec): String {
+        val n = status(b, BoardStatus.ID, r.igs).name
+        val d = igsSince(b, r)
+        return if (d.isEmpty()) n else "$n от ${dateShort(d)}"
+    }
+
     fun cellText(b: Board, r: BoardRec, k: String): String = when (k) {
-        TableCol.CK, TableCol.DWG, TableCol.IGS -> status(b, groupOf(k), r.get(k)).name
+        TableCol.IGS -> igsText(b, r)
+        TableCol.CK, TableCol.DWG -> status(b, groupOf(k), r.get(k)).name
         TableCol.DATE, TableCol.DCUST, TableCol.DPTO -> dateShort(r.get(k))
         TableCol.VOL -> if (r.vol.isEmpty() || tableOf(b, r)?.parts()?.isNotEmpty() == true) "" else volText(r.vol) + tableOf(b, r)?.let { t -> unitFor(t, r.work).let { u -> if (u.isEmpty()) "" else " $u" } }.orEmpty()
         else -> if (TableKinds.partOf(k) != null) r.get(k).let { v -> if (v.isEmpty()) "" else volText(v) + tableOf(b, r)?.let { t -> unitFor(t, r.work).let { u -> if (u.isEmpty()) "" else " $u" } }.orEmpty() }

@@ -17,6 +17,8 @@ class BoardVedom(var x: Float, var y: Float, var scale: Float, var kind: String,
     var to = ""
     /** Дата передачи «2026-11-11»; пусто — черновик. */
     var given = ""
+    /** «Ведомость от …» (0.25): день, когда завели (первая «Сборка» дня); пусто — не записан (до 0.25). */
+    var made = ""
 
     /** Раскладка (считает [VedomDraw]). */
     internal var lay: VedomLayout? = null
@@ -39,6 +41,11 @@ class BoardVItem(var v: String, var r: String, var o: Double) {
     var lz = ""
     var lc = ""
     var lw = ""
+    /**
+     * Путь схемы в ведомости заказчику (0.25, Владимир): "" — сразу заказчику; [Vedoms.AN] — сначала на согласование АН
+     * (отмечают в сборке: «ИГС сейчас» → АН). Передача ведомости её статус не трогает, ответ по ней — как у АН.
+     */
+    var via = ""
 }
 
 /** Подпись позиции ведомости: шифр (полное имя таблицы), участок, захватка, тип конструкции, вид работ. */
@@ -100,8 +107,8 @@ object Vedoms {
         OK -> Color.rgb(35, 128, 58); NO -> Color.rgb(142, 27, 47); FIX -> Color.rgb(212, 100, 12); else -> Color.rgb(138, 147, 163)
     }
 
-    /** Что значит передача по виду ведомости: «На подписи у заказчика», «На подписи АН», «Сдано в ПТО». */
-    fun giveLabel(k: String) = when (k) { AN -> "На подписи АН"; CUST -> "На подписи у заказчика"; PTO -> "Сдано в ПТО"; else -> "" }
+    /** Что значит передача по виду ведомости: «На подписи у заказчика», «На согласовании АН», «Сдано в ПТО». */
+    fun giveLabel(k: String) = when (k) { AN -> "На согласовании АН"; CUST -> "На подписи у заказчика"; PTO -> "Сдано в ПТО"; else -> "" }
 
     /** Кнопка передачи: «Унесли заказчику», «Унесли на АН», «Сдали в ПТО». */
     fun giveVerb(k: String) = when (k) { AN -> "Унесли на АН"; CUST -> "Унесли заказчику"; PTO -> "Сдали в ПТО"; else -> "" }
@@ -123,6 +130,7 @@ object Vedoms {
         sb.append(",\"scale\":").append(v.scale.toDouble()).append(",\"kind\":").append(q(v.kind)).append(",\"num\":").append(q(v.num))
         if (v.to.isNotEmpty()) sb.append(",\"to\":").append(q(v.to))
         if (v.given.isNotEmpty()) sb.append(",\"given\":").append(q(v.given))
+        if (v.made.isNotEmpty()) sb.append(",\"made\":").append(q(v.made))
         sb.append('}')
         return sb.toString()
     }
@@ -132,7 +140,7 @@ object Vedoms {
         return BoardVedom(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(),
             j.optDouble("scale", 1.0).toFloat().takeIf { it > 0f && it.isFinite() } ?: 1f, kind, j.optString("num")).also {
             it.id = j.optString("id", "")
-            it.to = j.optString("to"); it.given = j.optString("given")
+            it.to = j.optString("to"); it.given = j.optString("given"); it.made = j.optString("made")
         }
     }
 
@@ -142,6 +150,7 @@ object Vedoms {
         sb.append(",\"o\":").append(JSONObject.numberToString(i.o))
         fun s(k: String, x: String) { if (x.isNotEmpty()) sb.append(",\"").append(k).append("\":").append(q(x)) }
         s("res", i.res); s("rd", i.rd); s("lt", i.lt); s("lu", i.lu); s("lz", i.lz); s("lc", i.lc); s("lw", i.lw)
+        s("via", i.via)
         sb.append('}')
         return sb.toString()
     }
@@ -150,7 +159,11 @@ object Vedoms {
         it.id = j.optString("id", "")
         it.res = j.optString("res").takeIf { r -> r == OK || r == NO || r == FIX }.orEmpty()
         it.rd = j.optString("rd"); it.lt = j.optString("lt"); it.lu = j.optString("lu"); it.lz = j.optString("lz"); it.lc = j.optString("lc"); it.lw = j.optString("lw")
+        it.via = j.optString("via").takeIf { x -> x == AN }.orEmpty()
     }
+
+    /** По каким правилам отвечают за позицию: у схемы «через АН» в ведомости заказчику — как у АН. */
+    fun kindOf(v: BoardVedom, i: BoardVItem): String = if (v.kind == CUST && i.via == AN) AN else v.kind
 
     fun eventJson(e: BoardEvent): String {
         val sb = StringBuilder(160)
@@ -207,9 +220,9 @@ object Vedoms {
     /** Кнопка состояния в шапке ведомости: «Сборка ▾», «На подписи у заказчика · 12.11.26 ▾», «Закрыта ✓», «Список». */
     fun stateChip(b: Board, v: BoardVedom): String = when {
         v.kind == LIST -> "Список"
-        v.isDraft -> "Сборка ▾"
+        v.isDraft -> if (v.made.isNotEmpty()) "Сборка от " + IdTables.dateShort(v.made) + " ▾" else "Сборка ▾"
         isClosed(b, v) -> "Закрыта ✓"
-        else -> giveLabel(v.kind) + " · " + IdTables.dateShort(v.given) + " ▾"
+        else -> giveLabel(v.kind) + " от " + IdTables.dateShort(v.given) + " ▾"
     }
 
     fun state(b: Board, v: BoardVedom): String = when {
@@ -225,10 +238,13 @@ object Vedoms {
         val head = Ui.plural(list.size, "схема", "схемы", "схем")
         if (v.isDraft || !hasAnswers(v.kind)) return head
         val parts = arrayListOf(head)
-        for (res in results(v.kind)) {
-            val n = list.count { it.res == res }
-            if (n > 0) parts += resName(v.kind, res).lowercase() + " " + n
+        // Названия ответов — по позиции: у схем «через АН» — «согласовано», у остальных — «подписано».
+        val counts = LinkedHashMap<String, Int>()
+        for (res in (results(v.kind) + results(AN)).distinct()) for (i in list) if (i.res == res) {
+            val n = resName(kindOf(v, i), res).lowercase()
+            counts[n] = (counts[n] ?: 0) + 1
         }
+        for ((n, c) in counts) parts += "$n $c"
         val wait = list.count { it.res.isEmpty() }
         if (wait > 0) parts += "ждём $wait (${IdTables.daysSince(v.given, today)} дн.)"
         return parts.joinToString(" · ")
@@ -256,6 +272,49 @@ object Vedoms {
             if (v.kind != LIST && (v.isDraft || hasAnswers(v.kind)) && out.none { it === v }) out += v
         }
         return out
+    }
+
+    /**
+     * Ведомость сегодняшней сборки (0.25, Владимир): заведена сегодня, ещё на столе (не передана), не список. Новые
+     * «Сборки» дня ложатся в неё сами.
+     */
+    fun assemblyOf(b: Board, day: String): BoardVedom? =
+        b.vedoms.lastOrNull { it.isDraft && it.kind != LIST && it.made == day }
+
+    /** Схемы в «Сборке», которых нет ни в одной ведомости на столе или в ожидании ответа. */
+    fun looseAssembly(b: Board): List<BoardRec> =
+        b.tables.flatMap { IdTables.allRows(b, it) }.filter { it.igs == IdTables.IGS_ASSEMBLY && waitingElsewhere(b, it, null).isEmpty() }
+
+    /**
+     * Статус ИГС схемы поменяли в таблице (0.25): схема в ведомости на столе — «Сборка» → пойдёт заказчику, «На согласовании АН» →
+     * пойдёт через АН (остаётся в ведомости); любой другой статус — уходит из ведомости. Номера ведомостей, откуда ушла.
+     */
+    fun followTable(b: Board, r: BoardRec): List<String> {
+        val out = ArrayList<String>()
+        val it = b.vitems.iterator()
+        while (it.hasNext()) {
+            val i = it.next()
+            if (i.r != r.id) continue
+            val v = vedom(b, i.v) ?: continue
+            if (!v.isDraft || v.kind == LIST) continue
+            when {
+                r.igs == IdTables.IGS_ASSEMBLY -> i.via = ""
+                r.igs == IdTables.IGS_AN && v.kind == CUST -> i.via = AN
+                else -> { it.remove(); out += v.num }
+            }
+        }
+        return out
+    }
+
+    /**
+     * В сборке (ведомость заказчику на столе) «ИГС сейчас»: «Сборка» — схема пойдёт заказчику; «На согласовании АН» — сначала
+     * на согласование АН (Владимир: «то, что на согласовании АН, прокликаю вручную из «Сборки» в «АН»»).
+     */
+    fun route(b: Board, v: BoardVedom, i: BoardVItem, an: Boolean, who: String, now: Long = System.currentTimeMillis()) {
+        if (!v.isDraft || v.kind != CUST) return
+        i.via = if (an) AN else ""
+        val r = rec(b, i) ?: return
+        set(b, r, TableCol.IGS, if (an) IdTables.IGS_AN else IdTables.IGS_ASSEMBLY, who, v.num, if (an) "на согласование АН" else "в сборке", now)
     }
 
     /** Ведомости, где есть схема (для истории). */
@@ -291,6 +350,7 @@ object Vedoms {
             remember(b, i)
             b.vitems += i
             if (v.isDraft && v.kind != LIST && r.igs in TO_ASSEMBLY) set(b, r, TableCol.IGS, IdTables.IGS_ASSEMBLY, who, v.num, "в сборке", now)
+            if (v.isDraft && v.kind == CUST && r.igs == IdTables.IGS_AN) i.via = AN
             o += 1.0
             n++
         }
@@ -340,6 +400,8 @@ object Vedoms {
         for (i in items(b, v)) {
             remember(b, i)
             val r = rec(b, i) ?: continue
+            // Схема «через АН» (0.25) уже на согласовании АН — передача заказчику её не трогает.
+            if (v.kind == CUST && i.via == AN) continue
             if (st.isNotEmpty()) set(b, r, TableCol.IGS, st, who, v.num, giveVerb(v.kind).lowercase(), now)
             when (v.kind) {
                 CUST -> set(b, r, TableCol.DCUST, date, who, v.num, "", now)
@@ -359,10 +421,15 @@ object Vedoms {
         i.res = res
         i.rd = if (res.isEmpty()) "" else date
         val r = rec(b, i) ?: return
-        val note = if (res.isEmpty()) "снова ждём ответа" else "ответ: " + resName(v.kind, res).lowercase()
-        when (v.kind) {
+        val k = kindOf(v, i)
+        val note = if (res.isEmpty()) "снова ждём ответа" else "ответ: " + resName(k, res).lowercase() + if (k != v.kind) " (АН)" else ""
+        when (k) {
             AN -> when (res) {
-                OK -> { set(b, r, TableCol.IGS, IdTables.IGS_CUST, who, v.num, note, now); set(b, r, TableCol.DCUST, date, who, v.num, note, now) }
+                OK -> {
+                    set(b, r, TableCol.IGS, IdTables.IGS_CUST, who, v.num, note, now); set(b, r, TableCol.DCUST, date, who, v.num, note, now)
+                    // Схема «через АН» в ведомости заказчику: АН согласовал — теперь ждём подписи заказчика в этой же ведомости.
+                    if (v.kind == CUST) { i.via = ""; i.res = ""; i.rd = "" }
+                }
                 NO -> set(b, r, TableCol.IGS, IdTables.IGS_AN_NO, who, v.num, note, now)
                 FIX -> set(b, r, TableCol.IGS, IdTables.IGS_BACK, who, v.num, note, now)
                 else -> {
