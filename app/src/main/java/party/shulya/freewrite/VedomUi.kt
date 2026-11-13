@@ -515,7 +515,7 @@ class VedomUi(private val a: BoardActivity) {
                 .setMessage("Таблицы с шифром «$cipher» на доске нет. Создать таблицу рядом с ведомостью и строку «$label»?")
                 .setPositiveButton("Создать") { _, _ ->
                     val r = v.vedomDraw.bounds(b, x, RectF())
-                    createRows(BoardTable(r.right + 40f * x.scale, r.top, x.scale, cipher), works, newTable = true)
+                    createRows(BoardTable(r.right + 40f * x.scale, r.top, x.scale, cipher).apply { kind = TableKinds.KJ_VERT.id }, works, newTable = true)
                 }
                 .setNegativeButton("Отмена", null).show()
             return

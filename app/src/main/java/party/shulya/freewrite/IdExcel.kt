@@ -82,11 +82,17 @@ object IdExcel {
     private fun dataSheet(name: String, b: Board, list: List<Pair<BoardTable, BoardRec>>, only: BoardTable?, custom: Map<String, String>, st: Styles): Sheet {
         val s = Sheet(name)
         // Столбцы: для листа шифра — как в его таблице (видимые, его названия); для «Схемы» — все встроенные + свои.
-        val cols0: List<Pair<String, String>> = if (only != null) only.visibleCols().map { it.k to it.title() }
-        else TableCol.ORDER.map { it to TableCol.defaultName(it) } + custom.map { it.key to it.value }
-        // После объёма — единица (м³, м²…): число остаётся числом, Excel может складывать.
+        // Части объёма (0.24) — «Объём · Стены», «Объём · Колонны»…: на общем листе — части всех видов, что есть среди таблиц.
+        val used = list.map { it.first }.distinct().flatMap { it.parts() }.map { it.key }.toHashSet()
+        val cols0: List<Pair<String, String>> = if (only != null) only.visibleCols().map { it.k to it.longTitle() }
+        else TableCol.ORDER.flatMap { k ->
+            if (k == TableCol.VOL) listOf(k to TableCol.defaultName(k)) + TableKinds.ALL_PARTS.filter { it.key in used }.map { TableKinds.col(it.key) to "Объём · " + it.name }
+            else listOf(k to TableCol.defaultName(k))
+        } + custom.map { it.key to it.value }
+        // После объёма (и его частей) — единица (м³, м²…): число остаётся числом, Excel может складывать.
         val cols = ArrayList<Pair<String, String>>()
-        for (c in cols0) { cols += c; if (c.first == TableCol.VOL) cols += UNIT to "Ед." }
+        fun isVol(k: String) = k == TableCol.VOL || TableKinds.partOf(k) != null
+        for ((i, c) in cols0.withIndex()) { cols += c; if (isVol(c.first) && cols0.getOrNull(i + 1)?.first?.let { isVol(it) } != true) cols += UNIT to "Ед." }
         val head = ArrayList<Cell>()
         if (only == null) head += Cell("Шифр", 1)
         for ((_, n) in cols) head += Cell(n, 1)
@@ -102,12 +108,14 @@ object IdExcel {
                         Cell(sx.name, st.status(sx.color))
                     }
                     TableCol.DATE, TableCol.DCUST, TableCol.DPTO -> IdTables.excelDay(r.get(k))?.let { Cell(it, 2) } ?: Cell(null, 3)
-                    TableCol.VOL -> if (r.vol.isEmpty()) Cell(null, 3) else Cell(IdTables.volNum(r.vol), 4)
-                    UNIT -> Cell(if (r.vol.isEmpty()) null else IdTables.unitFor(t, r.work).ifEmpty { null }, 3)
+                    // У таблицы с частями (и до 0.24 — «Вертикальные элементы») старый общий объём не считается.
+                    TableCol.VOL -> if (r.vol.isEmpty() || t.parts().isNotEmpty()) Cell(null, 3) else Cell(IdTables.volNum(r.vol), 4)
+                    UNIT -> Cell(if (!IdTables.hasVol(t, r)) null else IdTables.unitFor(t, r.work).ifEmpty { null }, 3)
                     // Захватка привязана к заливке на плане — ячейка цветом заливки (0.22).
                     TableCol.ZAH -> colors.getOrPut(t.id) { TablePlan.zahColorsAll(b, t) }[r.zkey()]
                         ?.let { Cell(r.zah.ifEmpty { null }, st.status(it)) } ?: Cell(r.zah.ifEmpty { null }, 3)
-                    else -> Cell(r.get(k).ifEmpty { null }, 3)
+                    else -> if (isVol(k)) r.get(k).let { v -> if (v.isEmpty()) Cell(null, 3) else Cell(IdTables.volNum(v), 4) }
+                    else Cell(r.get(k).ifEmpty { null }, 3)
                 }
             }
             s.rows.add(row)
@@ -117,7 +125,7 @@ object IdExcel {
             when (k) {
                 "cipher" -> 22.0; TableCol.VOL -> 13.0; UNIT -> 6.0; TableCol.UCH -> 12.0; TableCol.ZAH -> 16.0; TableCol.CON -> 24.0; TableCol.WORK -> 16.0
                 TableCol.NSCH, TableCol.AOSR -> 16.0; TableCol.DATE, TableCol.DCUST, TableCol.DPTO -> 14.0; TableCol.CK -> 24.0; TableCol.DWG -> 12.0
-                TableCol.IGS -> 26.0; TableCol.WHO -> 18.0; TableCol.NOTE -> 34.0; else -> 18.0
+                TableCol.IGS -> 26.0; TableCol.WHO -> 18.0; TableCol.NOTE -> 34.0; else -> if (isVol(k)) 15.0 else 18.0
             }
         }
         s.filterCols = head.size
@@ -167,7 +175,7 @@ object IdExcel {
             }
             for ((sec, list) in volT.groupBy { b.sectionOf(it.first) }) {
                 val sn = sec?.title ?: "Вне разделов"
-                for ((t, lines) in list) for (vl in lines) row(sn, t.title, vl.work, vl.unit, vl.fact, vl.plan)
+                for ((t, lines) in list) for (vl in lines) row(sn, t.title, vl.label, vl.unit, vl.fact, vl.plan)
                 if (sec != null) {
                     val works = LinkedHashMap<String, MutableList<IdTables.VolLine>>()
                     for ((_, lines) in list) for (vl in lines) works.getOrPut(IdTables.norm(vl.work)) { ArrayList() } += vl

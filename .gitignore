@@ -12,3 +12,4 @@ captures/
 *.jks
 __pycache__/
 *.pyc
+.kotlin/

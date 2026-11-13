@@ -54,6 +54,206 @@ class TableUi(private val a: BoardActivity) {
     private var penCell: String? = null
     private var penCellTime = 0L
 
+    // ---------------------------------------------------------------- проводник видов (0.24)
+
+    /** Открытое окно-проводник (для проверок). */
+    internal var explorer: AlertDialog? = null
+
+    private fun kindMatches(k: TableKinds.Kind, sec: TableKinds.Section, q: String): Boolean {
+        val hay = (listOf(k.name, sec.code, sec.name) + k.parts.map { it.name } + k.works).joinToString(" ").lowercase()
+        return q.split(' ').filter { it.isNotBlank() }.all { hay.contains(it) }
+    }
+
+    /**
+     * Кнопка «Таблица ИД» (0.24, Владимир): окно вроде проводника — разделы (пока только КЖ) с плюсиком, в раскрытой
+     * ветке — виды таблиц. Выбрали вид — таблица встаёт в раздел, где вы на доске (или где коснулись — [at]), и сразу
+     * форма строки. «Пустая таблица» — как до 0.24: своё название, один объём.
+     */
+    fun chooseKind(at: Pair<Float, Float>? = null) {
+        explorer?.dismiss()
+        val spot = at ?: autoSpot()
+        val sec = b.sectionAt(spot.first, spot.second)?.title?.trim().orEmpty()
+        val prefs = a.getSharedPreferences("igs", Context.MODE_PRIVATE)
+        val open = HashSet(prefs.getStringSet("kindsOpen", emptySet()) ?: emptySet())
+        val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(18f), dp(20f), dp(4f)) }
+        box.addView(Ui.text(a, "Таблица ИД — какую ставим?", 20f, Ui.INK, bold = true))
+        box.addView(Ui.text(a, "Выберите вид — таблица встанет " + (if (sec.isNotEmpty()) "в раздел, где вы на доске (сейчас: $sec)"
+            else "там, где вы на доске (раздела здесь нет — спросим шифр)"), 13f, Ui.MUTED).apply { setPadding(0, dp(4f), 0, dp(10f)) })
+        val search = EditText(a).apply {
+            isSingleLine = true; hint = "Поиск вида таблицы…"; tag = "kind_search"; textSize = 15f
+            background = Ui.rounded(a, Color.WHITE, Ui.RULE, 10f)
+            setPadding(dp(14f), dp(10f), dp(14f), dp(10f))
+        }
+        box.addView(search, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        val list = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(8f), 0, 0) }
+        box.addView(list)
+        var dlg: AlertDialog? = null
+        val blue = Color.rgb(31, 79, 160); val blueBg = Color.rgb(232, 238, 251)
+        fun chip(textS: String, fg: Int, bg: Int) = Ui.text(a, textS, 12.5f, fg, bold = fg == blue).apply {
+            background = Ui.rounded(a, bg, null, 999f); setPadding(dp(9f), dp(3f), dp(9f), dp(3f))
+        }
+        fun render() {
+            list.removeAllViews()
+            val q = search.text.toString().trim().lowercase()
+            var shown = 0
+            for ((si, sct) in TableKinds.SECTIONS.withIndex()) {
+                val kinds = sct.kinds.filter { q.isEmpty() || kindMatches(it, sct, q) }
+                if (kinds.isEmpty()) continue
+                shown += kinds.size
+                val expanded = q.isNotEmpty() || sct.code in open
+                val head = LinearLayout(a).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; tag = "kind_sec_$si"
+                    background = Ui.rounded(a, Color.rgb(243, 245, 249), null, 12f)
+                    setPadding(dp(10f), dp(10f), dp(12f), dp(10f)); isClickable = true
+                }
+                head.addView(Ui.text(a, if (expanded) "−" else "+", 20f, Color.WHITE, bold = true).apply {
+                    gravity = Gravity.CENTER; background = Ui.rounded(a, Ui.INK, null, 8f); tag = "kind_pm_$si"
+                }, LinearLayout.LayoutParams(dp(34f), dp(34f)))
+                head.addView(View(a).apply { background = Ui.rounded(a, Color.rgb(240, 196, 92), null, 4f) },
+                    LinearLayout.LayoutParams(dp(30f), dp(22f)).apply { leftMargin = dp(12f); rightMargin = dp(12f) })
+                head.addView(LinearLayout(a).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(Ui.text(a, sct.code, 18f, Ui.INK, bold = true))
+                    addView(Ui.text(a, "${sct.name} · ${Ui.plural(sct.kinds.size, "вид таблицы", "вида таблиц", "видов таблиц")}", 13f, Ui.MUTED))
+                }, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+                head.setOnClickListener {
+                    if (!open.remove(sct.code)) open += sct.code
+                    prefs.edit().putStringSet("kindsOpen", HashSet(open)).apply()
+                    render()
+                }
+                list.addView(head, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(4f) })
+                if (!expanded) continue
+                val branch = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+                branch.addView(View(a).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(dp(2f), Ui.MATCH).apply { leftMargin = dp(26f); rightMargin = dp(8f) })
+                val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+                branch.addView(col, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+                for (k in kinds) {
+                    val row = LinearLayout(a).apply {
+                        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; tag = "kind_${k.id}"
+                        background = Ui.rounded(a, Color.WHITE, null, 12f); isClickable = true
+                        setPadding(dp(10f), dp(10f), dp(10f), dp(10f))
+                    }
+                    row.addView(android.widget.ImageView(a).apply { setImageResource(R.drawable.ic_table); setColorFilter(Ui.INK2) },
+                        LinearLayout.LayoutParams(dp(28f), dp(28f)).apply { rightMargin = dp(12f) })
+                    val mid = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+                    mid.addView(Ui.text(a, k.name, 16.5f, Ui.INK, bold = true))
+                    val chips = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(4f); setPadding(0, dp(5f), 0, 0) }
+                    chips.addView(chip("объём: " + k.parts.joinToString(" · ") { it.name }, blue, blueBg))
+                    chips.addView(chip(k.works.joinToString(" · "), Ui.INK2, Ui.DESK))
+                    mid.addView(chips)
+                    row.addView(mid, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+                    row.addView(Ui.text(a, "Поставить ›", 14.5f, Ui.ACCENT, bold = true).apply { setPadding(dp(10f), 0, dp(4f), 0) })
+                    row.setOnClickListener {
+                        row.background = Ui.rounded(a, Ui.ACCENT_SOFT, null, 12f)
+                        dlg?.dismiss()
+                        createOfKind(k, spot.first, spot.second)
+                    }
+                    col.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(4f) })
+                }
+                list.addView(branch, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            }
+            if (shown == 0) list.addView(Ui.text(a, "Ничего не нашлось — можно поставить пустую таблицу (ниже)", 13.5f, Ui.MUTED).apply { setPadding(dp(4f), dp(10f), 0, dp(6f)) })
+            list.addView(View(a).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)).apply { topMargin = dp(10f); bottomMargin = dp(6f) })
+            val custom = LinearLayout(a).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; tag = "kind_custom"; isClickable = true
+                setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+            }
+            custom.addView(Ui.text(a, "+", 20f, Ui.INK2, bold = true).apply {
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = Ui.dpf(a, 8f); setStroke(dp(1.5f), Ui.MUTED, Ui.dpf(a, 4f), Ui.dpf(a, 3f)) }
+            }, LinearLayout.LayoutParams(dp(34f), dp(34f)).apply { rightMargin = dp(12f) })
+            custom.addView(Ui.text(a, "Пустая таблица — как сейчас, без вида\nстолбцы и объём настраиваются вручную", 14.5f, Ui.INK2))
+            custom.setOnClickListener { dlg?.dismiss(); create(spot.first, spot.second) }
+            list.addView(custom, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, af: Int) {}
+            override fun onTextChanged(s: CharSequence?, st: Int, bf: Int, c: Int) {}
+            override fun afterTextChanged(e: android.text.Editable?) = render()
+        })
+        render()
+        val d = AlertDialog.Builder(a)
+            .setView(ScrollView(a).apply { addView(box) })
+            .setNegativeButton("Отмена") { _, _ -> a.backToHand() } // телефон: снова «Рука», чтобы касание не открыло окно опять
+            .create()
+        dlg = d
+        explorer = d
+        d.setOnDismissListener { if (explorer === d) explorer = null }
+        d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN)
+        d.show()
+        d.window?.setLayout(min(dp(640f), (a.resources.displayMetrics.widthPixels * 0.94f).toInt()), Ui.WRAP)
+    }
+
+    /**
+     * Место новой таблицы, когда вид выбран с кнопки (0.24): видимая часть доски, левый верх — в разделе посередине экрана;
+     * поверх других таблиц и ведомостей не ставим (ниже, потом правее).
+     */
+    internal fun autoSpot(): Pair<Float, Float> {
+        val z = b.camZ
+        val vw = (if (v.width > 0) v.width else 1200) / z
+        val vh = (if (v.height > 0) v.height else 800) / z
+        val s = IdTables.defaultScale(b, a.resources.displayMetrics.density)
+        var x0 = b.camX + vw * 0.06f
+        var y0 = b.camY + vh * 0.1f
+        b.sectionAt(b.camX + vw / 2f, b.camY + vh / 2f)?.let { f ->
+            x0 = x0.coerceIn(f.x + 30f * s, max(f.x + 30f * s, f.x + f.w - 300f * s))
+            y0 = y0.coerceIn(f.y + 40f * s, max(f.y + 40f * s, f.y + f.h - 200f * s))
+        }
+        val busy = b.tables.map { v.tableDraw.bounds(b, it, RectF()) } + b.vedoms.map { v.vedomDraw.bounds(b, it, RectF()) }
+        var x = x0; var y = y0
+        repeat(80) {
+            val box = RectF(x, y, x + 1100f * s, y + 280f * s)
+            val hit = busy.firstOrNull { RectF.intersects(box, it) } ?: return x to y
+            y = hit.bottom + 40f * s
+            if (y > b.camY + vh * 0.8f) { y = y0; x = max(x + 400f * s, hit.right + 40f * s) }
+        }
+        return x0 to y0
+    }
+
+    /** Новая таблица выбранного вида: в разделе — название вида, без раздела — спросим шифр. Потом сразу форма строки. */
+    internal fun createOfKind(k: TableKinds.Kind, x: Float, y: Float) {
+        val sec = b.sectionAt(x, y)?.title?.trim().orEmpty()
+        fun make(title: String) {
+            a.pushUndo()
+            val t = BoardTable(x, y, IdTables.defaultScale(b, a.resources.displayMetrics.density), title).apply { kind = k.id }
+            b.tables += t
+            a.changed()
+            a.backToHand()
+            reveal(t)
+            addForm(t, next = false)
+        }
+        if (sec.isNotEmpty()) { make(k.name); return }
+        val edit = EditText(a).apply { isSingleLine = true; tag = "table_title"; hint = "например: КЖ 6.1.1" }
+        val box = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20f), dp(8f), dp(20f), 0)
+            addView(Ui.text(a, "Раздела здесь нет — впишите шифр. Пусто — таблица называется «${k.name}».", 13f, Ui.MUTED))
+            addView(edit)
+        }
+        val d = AlertDialog.Builder(a)
+            .setTitle("${k.name} — шифр")
+            .setView(box)
+            .setPositiveButton("Создать") { _, _ -> make(edit.text.toString().trim().ifEmpty { k.name }) }
+            .setNegativeButton("Отмена", null)
+            .create()
+        d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        d.show()
+        edit.requestFocus()
+    }
+
+    /** Новая таблица не видна — сдвинуть доску (масштаб тот же), чтобы её верх был на экране. */
+    private fun reveal(t: BoardTable) {
+        if (v.width == 0) return
+        val r = v.tableDraw.bounds(b, t, RectF())
+        val vw = v.width / b.camZ; val vh = v.height / b.camZ
+        val seen = r.left >= b.camX && r.top >= b.camY && r.left <= b.camX + vw * 0.8f && r.top <= b.camY + vh * 0.8f
+        if (seen) return
+        b.camX = r.left - vw * 0.06f
+        b.camY = r.top - vh * 0.1f
+        a.onCameraChanged()
+        v.invalidate()
+    }
+
     // ---------------------------------------------------------------- создание
 
     /** «Таблица ИД»: касание пустого места — новая таблица с шифром (предложен раздел, где коснулись). */
@@ -77,7 +277,7 @@ class TableUi(private val a: BoardActivity) {
             .setPositiveButton("Создать") { _, _ ->
                 val title = edit.text.toString().trim().ifEmpty { sec }
                 a.pushUndo()
-                val t = BoardTable(x, y, IdTables.defaultScale(b, a.resources.displayMetrics.density), title)
+                val t = BoardTable(x, y, IdTables.defaultScale(b, a.resources.displayMetrics.density), title).apply { kind = TableKinds.CUSTOM }
                 b.tables += t
                 a.changed()
                 a.backToHand()
@@ -100,7 +300,7 @@ class TableUi(private val a: BoardActivity) {
         when (h.part) {
             TableHit.ADD -> addForm(t, next = false)
             TableHit.ADD_NEXT -> addForm(t, next = true)
-            TableHit.VOL -> projectDialog(t, h.col)
+            TableHit.VOL -> projectDialog(t, h.col, h.vpart)
             TableHit.VOL_ADD -> projectDialog(t, null)
             TableHit.VOL_NOTE -> showRows(v.tableDraw.layout(b, t).volMissing)
             TableHit.PLAN_ADD -> a.planUi.addSheet(t)
@@ -121,7 +321,7 @@ class TableUi(private val a: BoardActivity) {
                 // Номер захватки, привязанной к заливке, — показать её на плане (ТЗ, раздел 8).
                 if (col == TableCol.ZAH && IdTables.fillsOf(b, t, r.uch, r.zah).isNotEmpty()) { showFills(t, r.uch, r.zah); return }
                 // Объём (0.23.1, Владимир): касание ячейки и пальцем — сразу ввод числа, без карточки строки.
-                if (col == TableCol.VOL) { volDialog(t, r); return }
+                if (c != null && c.isVol) { volDialog(t, r, col); return }
                 if (!pen || col == null) { rowCard(r); return }
                 cellAction(t, r, col)
             }
@@ -290,7 +490,7 @@ class TableUi(private val a: BoardActivity) {
                 if (d.isEmpty()) { a.hint("Дату — в виде 26.08.26", 1800); return true }
                 put(r, col, d)
                 a.hint("$name: ${IdTables.dateShort(d)}", 1200)
-            } else if (col == TableCol.VOL) {
+            } else if (col == TableCol.VOL || TableKinds.partOf(col) != null) {
                 val vv = IdTables.parseVol(w)
                 if (vv.isEmpty()) { a.hint("Объём — числом, например 42,3", 1800); return true }
                 put(r, col, vv)
@@ -486,7 +686,7 @@ class TableUi(private val a: BoardActivity) {
                 for (c in cols) {
                     if (c.isStatus || c.hidden && !c.isDate) continue
                     val view = if (c.isDate) line(c.title(), IdTables.dateLong(cur.get(c.k)), "card_${c.k}") { datePicker(cur, c.k) { show() } }
-                    else line(c.title(), if (c.isVol) IdTables.cellText(b, cur, c.k) else cur.get(c.k), "card_${c.k}") { textDialog(t, cur, c.k) { show() } }
+                    else line(c.longTitle(), if (c.isVol) IdTables.cellText(b, cur, c.k) else cur.get(c.k), "card_${c.k}") { textDialog(t, cur, c.k) { show() } }
                     body.addView(view, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8f) })
                 }
                 val rows = IdTables.rowsOf(b, t)
@@ -548,7 +748,7 @@ class TableUi(private val a: BoardActivity) {
 
     /** Поле с подсказками из уже введённого в этом столбце (частые — кнопками). */
     fun textDialog(t: BoardTable, r: BoardRec, col: String, done: () -> Unit = {}) {
-        if (col == TableCol.VOL) { volDialog(t, r, done); return }
+        if (col == TableCol.VOL || TableKinds.partOf(col) != null) { volDialog(t, r, col, done); return }
         val name = t.colName(col)
         val edit = EditText(a).apply { setText(r.get(col)); setSelection(text.length); isSingleLine = true; tag = "cell_text" }
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
@@ -583,10 +783,10 @@ class TableUi(private val a: BoardActivity) {
         textSize = 22f
     }
 
-    /** «Объём по схеме» у строки: число; пусто — не указан. */
-    fun volDialog(t: BoardTable, r: BoardRec, done: () -> Unit = {}) {
+    /** «Объём по схеме» (или его часть — «Стены», 0.24) у строки: число; пусто — не указан. */
+    fun volDialog(t: BoardTable, r: BoardRec, col: String = TableCol.VOL, done: () -> Unit = {}) {
         val unit = IdTables.unitFor(t, r.work)
-        val edit = numberField(r.vol, "cell_text")
+        val edit = numberField(r.get(col), "cell_text")
         val row = LinearLayout(a).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(edit, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
@@ -599,15 +799,15 @@ class TableUi(private val a: BoardActivity) {
                 if (Input.stylusSeen(a)) " Можно писать пером прямо в ячейку." else "", 13f, Ui.MUTED).apply { setPadding(0, dp(8f), 0, 0) })
         }
         val d = AlertDialog.Builder(a)
-            .setTitle(t.colName(TableCol.VOL) + " · " + rowTitle(t, r))
+            .setTitle((if (TableKinds.partOf(col) != null) "Объём · " + t.colName(col) else t.colName(col)) + " · " + rowTitle(t, r))
             .setView(box)
             .setPositiveButton("Готово") { _, _ ->
                 val txt = edit.text.toString().trim()
                 val vv = IdTables.parseVol(txt)
                 if (txt.isNotEmpty() && vv.isEmpty()) { a.hint("Объём — числом, например 42,3", 1800); return@setPositiveButton }
-                setCell(r, TableCol.VOL, vv); done()
+                setCell(r, col, vv); done()
             }
-            .setNeutralButton("Без объёма") { _, _ -> setCell(r, TableCol.VOL, ""); done() }
+            .setNeutralButton("Без объёма") { _, _ -> setCell(r, col, ""); done() }
             .setNegativeButton("Отмена", null)
             .create()
         d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
@@ -619,17 +819,27 @@ class TableUi(private val a: BoardActivity) {
      * Проектный объём вида работ в таблице (касание строки «Объёмы» или «+ проект»): число и единица; work = null —
      * сначала выбрать вид работ.
      */
-    fun projectDialog(t: BoardTable, work: String?) {
+    fun projectDialog(t: BoardTable, work: String?, part: String = "") {
         if (work == null) {
             val have = IdTables.volumes(b, t).map { it.work }
-            val works = (have + IdTables.allRows(b, t).map { it.work }.filter { it.isNotBlank() } + IdTables.WORKS)
+            val works = (have + IdTables.allRows(b, t).map { it.work }.filter { it.isNotBlank() } + (t.kindDef()?.works ?: emptyList()) + IdTables.WORKS)
                 .distinctBy { IdTables.norm(it) }
             AlertDialog.Builder(a).setTitle("Проект — какой вид работ? · ${IdTables.fullTitle(b, t)}")
-                .setItems(works.toTypedArray()) { _, i -> projectDialog(t, works[i]) }
+                .setItems(works.toTypedArray()) { _, i -> projectDialog(t, works[i], part) }
                 .setNegativeButton("Отмена", null).show()
             return
         }
-        val key = IdTables.norm(work)
+        val parts = t.parts()
+        if (parts.isNotEmpty() && parts.none { it.key == part }) {
+            // Вид с частями (0.24): проект — у каждой части свой.
+            AlertDialog.Builder(a).setTitle("Проект · $work — какая часть?")
+                .setItems(parts.map { it.name }.toTypedArray()) { _, i -> projectDialog(t, work, parts[i].key) }
+                .setNegativeButton("Отмена", null).show()
+            return
+        }
+        val partName = parts.firstOrNull { it.key == part }?.name.orEmpty()
+        val what = if (partName.isEmpty()) work else "$work · $partName"
+        val key = IdTables.planKey(work, part)
         val cur = t.plan[key]
         var unit = IdTables.unitFor(t, work)
         val edit = numberField(cur?.value.orEmpty(), "proj_value")
@@ -643,18 +853,18 @@ class TableUi(private val a: BoardActivity) {
         for ((i, u) in units.withIndex()) chips += Ui.pill(a, u, Ui.INK, Ui.DESK).apply { tag = "proj_unit_$i"; setOnClickListener { unit = u; paint() } }.also { flow.addView(it) }
         paint()
         box.addView(flow)
-        box.addView(Ui.text(a, "Факт — сумма столбца «${t.colName(TableCol.VOL)}» строк «$work». Разница и процент — внизу таблицы.", 13f, Ui.MUTED)
+        box.addView(Ui.text(a, "Факт — сумма столбца «${if (partName.isEmpty()) t.colName(TableCol.VOL) else "Объём · $partName"}» строк «$work». Разница и процент — внизу таблицы.", 13f, Ui.MUTED)
             .apply { setPadding(0, dp(10f), 0, 0) })
         val d = AlertDialog.Builder(a)
-            .setTitle("Объём по проекту · $work · ${IdTables.fullTitle(b, t)}")
+            .setTitle("Объём по проекту · $what · ${IdTables.fullTitle(b, t)}")
             .setView(box)
             .setPositiveButton("Готово") { _, _ ->
                 val vv = IdTables.parseVol(edit.text.toString())
                 if (vv.isEmpty()) { a.hint("Проект — числом, например 310", 1800); return@setPositiveButton }
                 a.pushUndo()
-                t.plan[key] = VolPlan(cur?.work ?: work, vv, unit)
+                t.plan[key] = VolPlan(cur?.work ?: work, vv, unit, part)
                 a.changed()
-                a.hint("Проект $work: ${IdTables.volText(vv)} $unit", 1500)
+                a.hint("Проект $what: ${IdTables.volText(vv)} $unit", 1500)
             }
             .also { if (cur != null) it.setNeutralButton("Убрать проект") { _, _ -> a.pushUndo(); t.plan.remove(key); a.changed() } }
             .setNegativeButton("Отмена", null)
@@ -694,11 +904,12 @@ class TableUi(private val a: BoardActivity) {
         val other = EditText(a).apply { isSingleLine = true; hint = "другой вид работ"; tag = "add_work_other" }
         val works = LinkedHashSet<String>()
         if (last != null) rows.filter { it.zkey() == last.zkey() && it.work.isNotEmpty() }.forEach { works += it.work }
-        if (works.isEmpty()) { works += "Опалубка"; works += "Бетон" }
+        if (works.isEmpty()) { works.addAll(t.kindDef()?.works ?: listOf("Опалубка", "Бетон")) }
         var date = ""
         if (uchOn) { box.addView(label(t.colName(TableCol.UCH))); box.addView(uch) }
         box.addView(label(t.colName(TableCol.ZAH))); box.addView(zah)
-        box.addView(label(t.colName(TableCol.CON))); box.addView(con)
+        // «Тип конструкции» у видов скрыт (0.24) — в форме тоже не спрашиваем, пока столбец не показан.
+        if (t.visibleCols().any { it.k == TableCol.CON } || rows.any { it.con.isNotBlank() }) { box.addView(label(t.colName(TableCol.CON))); box.addView(con) }
         box.addView(label(t.colName(TableCol.WORK) + " — можно несколько, по строке на каждый"))
         val flow = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(6f) }
         val allWorks = (IdTables.WORKS + IdTables.suggestions(b, TableCol.WORK)).distinct()
@@ -771,7 +982,7 @@ class TableUi(private val a: BoardActivity) {
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16f), dp(8f), dp(16f), 0) }
         val dialog = AlertDialog.Builder(a).setTitle("Столбцы · " + IdTables.fullTitle(b, t)).setView(ScrollView(a).apply { addView(box) })
             .setPositiveButton("Готово", null).create()
-        fun ensureOwn() { if (t.cols.isEmpty()) t.cols.addAll(TableCol.defaults()) }
+        fun ensureOwn() { t.ownCols() }
         lateinit var render: () -> Unit
         render = {
             box.removeAllViews()
@@ -1115,7 +1326,7 @@ class TableUi(private val a: BoardActivity) {
                 val e = EditText(a).apply { setText(sec); setSelection(text.length); isSingleLine = true; hint = "Шифр, например КЖ 6.1.1" }
                 AlertDialog.Builder(a).setTitle("Шифр новой таблицы").setView(LinearLayout(a).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(e, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP)) })
                     .setPositiveButton("Перенести") { _, _ ->
-                        convert(BoardTable(sorted.minOf { it.x }, first.y, IdTables.defaultScale(b, a.resources.displayMetrics.density), e.text.toString().trim()))
+                        convert(BoardTable(sorted.minOf { it.x }, first.y, IdTables.defaultScale(b, a.resources.displayMetrics.density), e.text.toString().trim()).apply { kind = TableKinds.KJ_VERT.id })
                     }.setNegativeButton("Отмена", null).show()
             }.show()
     }
@@ -1247,7 +1458,7 @@ class TableUi(private val a: BoardActivity) {
             var n = 0
             for ((sec, list) in volT.groupBy { b.sectionOf(it.first) }) {
                 box.addView(Ui.text(a, sec?.title ?: "Вне разделов", 14f, Ui.INK2, bold = true).apply { setPadding(0, dp(8f), 0, dp(2f)) })
-                for ((t, lines) in list) for (vl in lines) vline("${t.title.ifEmpty { "таблица" }} · ${vl.work.lowercase()}", vl.fact, vl.plan, vl.unit, "sum_vol_${n++}")
+                for ((t, lines) in list) for (vl in lines) vline("${t.title.ifEmpty { "таблица" }} · ${vl.label.lowercase()}", vl.fact, vl.plan, vl.unit, "sum_vol_${n++}")
                 if (sec != null) {
                     // Всего по шифру: факт — все таблицы раздела, проект — сумма вписанных.
                     val works = LinkedHashMap<String, Triple<String, String, MutableList<IdTables.VolLine>>>()

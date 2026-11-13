@@ -39,11 +39,42 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
     /** Закреплена булавкой (0.23.1): не двигается и не меняет размер — рисунки поверх плана остаются на месте. */
     var locked = false
 
+    /**
+     * Вид таблицы (0.24, [TableKinds]): «kj_vert», «kj_slab»; [TableKinds.CUSTOM] — без вида (один объём). Пусто — таблица
+     * до 0.24, считается «Вертикальными элементами» ([TableKinds.LEGACY]).
+     */
+    var kind = ""
+
+    fun kindDef(): TableKinds.Kind? = TableKinds.of(kind) ?: if (kind.isEmpty()) TableKinds.LEGACY else null
+
+    /** Части «Объёма по схеме» (пусто — один объём). */
+    fun parts(): List<TableKinds.Part> = kindDef()?.parts ?: emptyList()
+
     /** Раскладка (считает [TableDraw]): пересчитывается, когда меняются строки, столбцы, статусы. */
     internal var lay: TableLayout? = null
 
-    /** Все столбцы (со скрытыми) — свои или по умолчанию. */
-    fun allCols(): List<TableCol> = if (cols.isEmpty()) TableCol.defaults() else cols
+    /**
+     * Все столбцы (со скрытыми) — свои или по умолчанию. Свой список до 0.24 у таблицы с частями объёма: вместо «Объёма по
+     * схеме» — части (на его месте, видны так же); сам список не переписывается, пока столбцы не правили ([ownCols]).
+     */
+    fun allCols(): List<TableCol> {
+        if (cols.isEmpty()) return TableCol.defaultsFor(this)
+        val parts = parts()
+        if (parts.isEmpty() || cols.none { it.k == TableCol.VOL }) return cols
+        val out = ArrayList<TableCol>(cols.size + parts.size)
+        for (c in cols) {
+            if (c.k != TableCol.VOL) { out += c; continue }
+            for (p in parts) if (cols.none { it.k == TableKinds.col(p.key) }) out += TableCol(TableKinds.col(p.key), hidden = c.hidden)
+        }
+        return out
+    }
+
+    /** Свой список столбцов для правки (скрыть, переименовать, порядок): по умолчанию или старый — записать как видно. */
+    fun ownCols(): ArrayList<TableCol> {
+        val all = allCols()
+        if (all !== cols) { val copy = all.map { it.copy() }; cols.clear(); cols.addAll(copy) }
+        return cols
+    }
 
     /** Видимые столбцы по порядку. */
     fun visibleCols(): List<TableCol> = allCols().filter { !it.hidden }
@@ -51,17 +82,24 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
     fun colName(k: String): String = allCols().firstOrNull { it.k == k }?.title() ?: TableCol.defaultName(k)
 }
 
-/** Проектный объём вида работ в таблице: work — название как ввели, value — число («170.5»), unit — единица («м³»). */
-class VolPlan(var work: String, var value: String, var unit: String)
+/**
+ * Проектный объём вида работ в таблице: work — название как ввели, value — число («170.5»), unit — единица («м³»),
+ * part — часть объёма (0.24: «w» — стены…; пусто — весь объём).
+ */
+class VolPlan(var work: String, var value: String, var unit: String, var part: String = "")
 
 /** Столбец таблицы: встроенный ([TableCol.ZAH]…) или свой текстовый (ключ «c…»). name — своё название (пусто — обычное). */
 class TableCol(val k: String, var name: String = "", var hidden: Boolean = false) {
     val custom: Boolean get() = k.startsWith("c")
     val isStatus: Boolean get() = k == IGS || k == CK || k == DWG
     val isDate: Boolean get() = k == DATE || k == DCUST || k == DPTO
-    val isVol: Boolean get() = k == VOL
+    val isVol: Boolean get() = k == VOL || k.startsWith("$VOL.")
+    /** Часть объёма этого столбца (0.24; null — не часть). */
+    val part: String? get() = TableKinds.partOf(k)
 
     fun title(): String = name.ifEmpty { defaultName(k) }
+    /** Название для списков и Excel: у части объёма — «Объём · Стены». */
+    fun longTitle(): String = if (part != null) "Объём · " + title() else title()
     fun copy() = TableCol(k, name, hidden)
 
     companion object {
@@ -89,10 +127,26 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
         fun defaultName(k: String): String = when (k) {
             UCH -> "Участок"; ZAH -> "Захватка"; CON -> "Тип конструкции"; WORK -> "Вид работ"; NSCH -> "№ схемы"; AOSR -> "№ АОСР"; VOL -> "Объём по схеме"; DATE -> "Дата работ"
             CK -> "Чек-лист"; DWG -> "DWG"; IGS -> "ИГС"; DCUST -> "Отдал заказчику"; DPTO -> "Сдано в ПТО"
-            WHO -> "Исполнитель"; NOTE -> "Примечание"; else -> "Столбец"
+            WHO -> "Исполнитель"; NOTE -> "Примечание"
+            else -> TableKinds.partOf(k)?.let { TableKinds.partName(it) } ?: "Столбец"
         }
 
         fun defaults(): List<TableCol> = ORDER.map { TableCol(it) }
+
+        /** Порядок столбцов таблицы: у вида с частями объёма вместо «Объём по схеме» — его части (0.24). */
+        fun orderFor(t: BoardTable): List<String> {
+            val parts = t.parts()
+            if (parts.isEmpty()) return ORDER
+            val out = ArrayList<String>()
+            for (k in ORDER) if (k == VOL) parts.forEach { out += TableKinds.col(it.key) } else out += k
+            return out
+        }
+
+        /** Столбцы по умолчанию для таблицы (у вида — свои скрытые: «Тип конструкции»). */
+        fun defaultsFor(t: BoardTable): List<TableCol> {
+            val hidden = t.kindDef()?.hidden ?: emptySet()
+            return orderFor(t).map { TableCol(it, hidden = it in hidden) }
+        }
         fun newCustomKey(): String = "c" + Ids.next().take(6)
     }
 }
@@ -129,6 +183,8 @@ class BoardRec(var t: String, var o: Double) {
     var aosr = ""
     /** Объём по схеме — число с точкой («42.3»), пусто — не указан. */
     var vol = ""
+    /** Объём по частям (0.24, вид таблицы с частями): ключ части → число («w» → «42.3»). */
+    val vp = LinkedHashMap<String, String>()
     /** Даты — «2026-08-26», пусто — нет. */
     var date = ""
     var ck = IdTables.CK_NONE
@@ -142,14 +198,15 @@ class BoardRec(var t: String, var o: Double) {
 
     fun copy(): BoardRec = BoardRec(t, o).also { c ->
         c.uch = uch; c.zah = zah; c.con = con; c.work = work; c.nsch = nsch; c.aosr = aosr; c.vol = vol; c.date = date; c.ck = ck; c.dwg = dwg; c.igs = igs
-        c.dcust = dcust; c.dpto = dpto; c.who = who; c.note = note; c.extra.putAll(extra)
+        c.dcust = dcust; c.dpto = dpto; c.who = who; c.note = note; c.extra.putAll(extra); c.vp.putAll(vp)
     }
 
     /** Значение столбца как текст (статусы — номер статуса, даты — «2026-08-26»). */
     fun get(k: String): String = when (k) {
         TableCol.UCH -> uch; TableCol.ZAH -> zah; TableCol.CON -> con; TableCol.WORK -> work; TableCol.NSCH -> nsch; TableCol.AOSR -> aosr; TableCol.VOL -> vol; TableCol.DATE -> date
         TableCol.CK -> ck; TableCol.DWG -> dwg; TableCol.IGS -> igs; TableCol.DCUST -> dcust; TableCol.DPTO -> dpto
-        TableCol.WHO -> who; TableCol.NOTE -> note; else -> extra[k] ?: ""
+        TableCol.WHO -> who; TableCol.NOTE -> note
+        else -> TableKinds.partOf(k)?.let { vp[it] ?: "" } ?: extra[k] ?: ""
     }
 
     fun set(k: String, v: String) {
@@ -157,7 +214,11 @@ class BoardRec(var t: String, var o: Double) {
             TableCol.UCH -> uch = v; TableCol.ZAH -> zah = v; TableCol.CON -> con = v; TableCol.WORK -> work = v; TableCol.NSCH -> nsch = v; TableCol.AOSR -> aosr = v; TableCol.VOL -> vol = v; TableCol.DATE -> date = v
             TableCol.CK -> ck = v; TableCol.DWG -> dwg = v; TableCol.IGS -> igs = v; TableCol.DCUST -> dcust = v; TableCol.DPTO -> dpto = v
             TableCol.WHO -> who = v; TableCol.NOTE -> note = v
-            else -> if (v.isEmpty()) extra.remove(k) else extra[k] = v
+            else -> {
+                val p = TableKinds.partOf(k)
+                if (p != null) { if (v.isEmpty()) vp.remove(p) else vp[p] = v }
+                else if (v.isEmpty()) extra.remove(k) else extra[k] = v
+            }
         }
     }
 
@@ -273,6 +334,7 @@ object IdTables {
         val sb = StringBuilder(160)
         sb.append("{\"id\":").append(JSONObject.quote(t.id)).append(",\"x\":").append(num(t.x)).append(",\"y\":").append(num(t.y))
         sb.append(",\"scale\":").append(t.scale.toDouble()).append(",\"title\":").append(JSONObject.quote(t.title))
+        if (t.kind.isNotEmpty()) sb.append(",\"kind\":").append(JSONObject.quote(t.kind))
         if (t.cols.isNotEmpty()) {
             sb.append(",\"cols\":[")
             for ((i, c) in t.cols.withIndex()) {
@@ -290,6 +352,7 @@ object IdTables {
                 if (i > 0) sb.append(',')
                 sb.append("{\"w\":").append(JSONObject.quote(p.work)).append(",\"v\":").append(JSONObject.quote(p.value))
                 if (p.unit.isNotEmpty()) sb.append(",\"u\":").append(JSONObject.quote(p.unit))
+                if (p.part.isNotEmpty()) sb.append(",\"p\":").append(JSONObject.quote(p.part))
                 sb.append('}')
             }
             sb.append(']')
@@ -304,26 +367,29 @@ object IdTables {
         val t = BoardTable(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(),
             j.optDouble("scale", 1.0).toFloat().takeIf { it > 0f && it.isFinite() } ?: 1f, j.optString("title"))
         t.id = j.optString("id", "")
+        t.kind = j.optString("kind")
+        val order = TableCol.orderFor(t)
         j.optJSONArray("cols")?.let { a ->
             val seen = HashSet<String>()
             for (i in 0 until a.length()) {
                 val c = a.optJSONObject(i) ?: continue
                 val k = c.optString("k")
-                if (k.isEmpty() || !seen.add(k) || !(k in TableCol.ORDER || k.startsWith("c"))) continue
+                // «Объём по схеме» в списке таблицы с частями (список до 0.24) остаётся: части встают на его место при показе.
+                if (k.isEmpty() || !seen.add(k) || !(k in order || k == TableCol.VOL || (k.startsWith("c") && TableKinds.partOf(k) == null))) continue
                 t.cols += TableCol(k, c.optString("n"), c.optInt("h") == 1)
             }
             // Встроенный столбец, которого нет в списке (список из прошлой версии), — после соседа слева по обычному порядку.
-            if (t.cols.isNotEmpty()) for ((oi, k) in TableCol.ORDER.withIndex()) if (k !in seen) {
+            if (t.cols.isNotEmpty()) for ((oi, k) in order.withIndex()) if (k !in seen && !(TableKinds.partOf(k) != null && TableCol.VOL in seen)) {
                 var at = 0
-                for (pi in oi - 1 downTo 0) { val i = t.cols.indexOfFirst { it.k == TableCol.ORDER[pi] }; if (i >= 0) { at = i + 1; break } }
+                for (pi in oi - 1 downTo 0) { val i = t.cols.indexOfFirst { it.k == order[pi] }; if (i >= 0) { at = i + 1; break } }
                 t.cols.add(at, TableCol(k))
             }
         }
         j.optJSONArray("plan")?.let { a ->
             for (i in 0 until a.length()) {
                 val p = a.optJSONObject(i) ?: continue
-                val w = p.optString("w"); val v = parseVol(p.optString("v"))
-                if (v.isNotEmpty()) t.plan[norm(w)] = VolPlan(w, v, p.optString("u"))
+                val w = p.optString("w"); val v = parseVol(p.optString("v")); val part = p.optString("p")
+                if (v.isNotEmpty()) t.plan[planKey(w, part)] = VolPlan(w, v, p.optString("u"), part)
             }
         }
         TablePlan.parseSheets(j, t)
@@ -338,6 +404,12 @@ object IdTables {
         fun s(k: String, v: String) { if (v.isNotEmpty()) sb.append(",\"").append(k).append("\":").append(JSONObject.quote(v)) }
         s("u", r.uch); s("z", r.zah); s("c", r.con); s("w", r.work); s("ns", r.nsch); s("na", r.aosr); s("v", r.vol); s("d", r.date)
         s("ck", r.ck); s("dwg", r.dwg); s("sid", r.igs); s("dc", r.dcust); s("dp", r.dpto); s("who", r.who); s("n", r.note)
+        if (r.vp.isNotEmpty()) {
+            // Части объёма (0.24) — по алфавиту ключей: строка одна и та же на всех планшетах.
+            sb.append(",\"vp\":{")
+            for ((i, k) in r.vp.keys.sorted().withIndex()) { if (i > 0) sb.append(','); sb.append(JSONObject.quote(k)).append(':').append(JSONObject.quote(r.vp[k])) }
+            sb.append('}')
+        }
         if (r.extra.isNotEmpty()) sb.append(",\"x\":").append(JSONObject(r.extra as Map<*, *>).toString())
         sb.append('}')
         return sb.toString()
@@ -351,6 +423,7 @@ object IdTables {
         r.igs = j.optString("sid", IGS_NONE).ifEmpty { IGS_NONE }
         r.dcust = j.optString("dc"); r.dpto = j.optString("dp"); r.who = j.optString("who"); r.note = j.optString("n")
         j.optJSONObject("x")?.let { x -> for (k in x.keys()) x.optString(k).takeIf { it.isNotEmpty() }?.let { r.extra[k] = it } }
+        j.optJSONObject("vp")?.let { x -> for (k in x.keys().asSequence().toList().sorted()) parseVol(x.optString(k)).takeIf { it.isNotEmpty() }?.let { r.vp[k] = it } }
     }
 
     private fun num(v: Float): String { val sb = StringBuilder(); JsonNum.num(sb, v); return sb.toString() }
@@ -510,8 +583,9 @@ object IdTables {
     fun cellText(b: Board, r: BoardRec, k: String): String = when (k) {
         TableCol.CK, TableCol.DWG, TableCol.IGS -> status(b, groupOf(k), r.get(k)).name
         TableCol.DATE, TableCol.DCUST, TableCol.DPTO -> dateShort(r.get(k))
-        TableCol.VOL -> if (r.vol.isEmpty()) "" else volText(r.vol) + tableOf(b, r)?.let { t -> unitFor(t, r.work).let { u -> if (u.isEmpty()) "" else " $u" } }.orEmpty()
-        else -> r.get(k)
+        TableCol.VOL -> if (r.vol.isEmpty() || tableOf(b, r)?.parts()?.isNotEmpty() == true) "" else volText(r.vol) + tableOf(b, r)?.let { t -> unitFor(t, r.work).let { u -> if (u.isEmpty()) "" else " $u" } }.orEmpty()
+        else -> if (TableKinds.partOf(k) != null) r.get(k).let { v -> if (v.isEmpty()) "" else volText(v) + tableOf(b, r)?.let { t -> unitFor(t, r.work).let { u -> if (u.isEmpty()) "" else " $u" } }.orEmpty() }
+            else r.get(k)
     }
 
     // ---------------------------------------------------------------- захватки на плане (0.22)
@@ -586,7 +660,18 @@ object IdTables {
         }
     }
 
-    fun unitFor(t: BoardTable, work: String): String = t.plan[norm(work)]?.unit?.takeIf { it.isNotEmpty() } ?: defaultUnit(work)
+    fun unitFor(t: BoardTable, work: String): String {
+        val n = norm(work)
+        t.plan[n]?.unit?.takeIf { it.isNotEmpty() }?.let { return it }
+        for (p in t.plan.values) if (p.unit.isNotEmpty() && norm(p.work) == n) return p.unit
+        return defaultUnit(work)
+    }
+
+    /** Ключ проекта: вид работ, у части объёма — «вид|часть». */
+    fun planKey(work: String, part: String): String = if (part.isEmpty()) norm(work) else norm(work) + "|" + part
+
+    /** Объём строки: весь или части (0.24) — есть ли хоть что-то. */
+    fun hasVol(t: BoardTable?, r: BoardRec): Boolean = if (t != null && t.parts().isNotEmpty()) r.vp.isNotEmpty() else r.vol.isNotEmpty()
 
     /** Разобрать объём: «42,3», «1 128,7 м²», «42.3м3» → «42.3»; не число — пусто. */
     fun parseVol(s: String): String {
@@ -621,9 +706,13 @@ object IdTables {
     }
 
     /** Объём одного вида работ в таблице: сколько схем с объёмом, факт (сумма), проект (null — не вписан), без объёма. */
-    class VolLine(val work: String, val unit: String, val n: Int, val fact: Double, val plan: Double?, val missing: List<BoardRec>) {
+    class VolLine(val work: String, val unit: String, val n: Int, val fact: Double, val plan: Double?, val missing: List<BoardRec>,
+                  /** Часть объёма (0.24): ключ и название; пусто — весь объём. */
+                  val part: String = "", val partName: String = "") {
         val over: Boolean get() = plan != null && fact > plan + 1e-9
         val percent: Int get() = if (plan == null || plan <= 0.0) 0 else Math.round(fact / plan * 100).toInt()
+        /** «Бетон» или «Бетон · Стены». */
+        val label: String get() = if (partName.isEmpty()) work else "$work · $partName"
     }
 
     /**
@@ -631,6 +720,25 @@ object IdTables {
      * с объёмом. Строки вида работ без объёма — «без объёма» (в факт не входят).
      */
     fun volumes(b: Board, t: BoardTable, rows: List<BoardRec> = allRows(b, t)): List<VolLine> {
+        val parts = t.parts()
+        if (parts.isNotEmpty()) {
+            // Вид с частями (0.24): по каждому виду работ — каждая часть; схемы без объёма (ни одной части) — у первой части.
+            val keys = LinkedHashMap<String, String>()
+            // Проект без части (таблица до 0.24) не считается: объёмы таких таблиц вписываются заново по частям.
+            for (p in t.plan.values) if (parts.any { it.key == p.part }) keys.getOrPut(norm(p.work)) { p.work }
+            for (r in rows) if (r.vp.isNotEmpty()) keys.getOrPut(norm(r.work)) { r.work }
+            val out = ArrayList<VolLine>()
+            for ((k, w) in keys) {
+                val of = rows.filter { norm(it.work) == k }
+                for ((pi, part) in parts.withIndex()) {
+                    val with = of.filter { !it.vp[part.key].isNullOrEmpty() }
+                    out += VolLine(w.ifBlank { "Без вида работ" }, unitFor(t, w), with.size, with.sumOf { volNum(it.vp[part.key]!!) },
+                        t.plan[planKey(w, part.key)]?.value?.let { volNum(it) }, if (pi == 0) of.filter { it.vp.isEmpty() } else emptyList(),
+                        part.key, part.name)
+                }
+            }
+            return out
+        }
         val keys = LinkedHashMap<String, String>()
         for (p in t.plan.values) keys.getOrPut(norm(p.work)) { p.work }
         for (r in rows) if (r.vol.isNotEmpty()) keys.getOrPut(norm(r.work)) { r.work }

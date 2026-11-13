@@ -57,8 +57,8 @@ class VolumeTest {
     private fun sample(): Board {
         val b = Board.create("ИГС")
         b.frames += BoardFrame(0f, 0f, 3400f, 2600f, "КЖ 6.1.1")
-        val t1 = BoardTable(100f, 100f, 1.5f, "Несущие стены")
-        val t2 = BoardTable(100f, 1300f, 1.5f, "Ненесущие стены")
+        val t1 = BoardTable(100f, 100f, 1.5f, "Несущие стены").apply { kind = TableKinds.CUSTOM }
+        val t2 = BoardTable(100f, 1300f, 1.5f, "Ненесущие стены").apply { kind = TableKinds.CUSTOM }
         b.tables += t1; b.tables += t2
         var o = 1.0
         val v1 = listOf(186.4 to 42.3, 192.1 to 44.1, 178.6 to 40.8, null)
@@ -295,7 +295,9 @@ class VolumeTest {
 
         // Новая таблица в разделе: название подраздела; шифр — у раздела.
         root.findViewWithTag<View>("board_tool_table").performClick()
-        tap(s.view, MotionEvent.TOOL_TYPE_STYLUS, s.sx(2600f), s.sy(400f))
+        idle()
+        s.a.tableUi.explorer!!.window!!.decorView.findViewWithTag<View>("kind_custom").performClick()
+        idle()
         d = latest()
         d.window!!.decorView.findViewWithTag<EditText>("table_title").setText("Колонны")
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()

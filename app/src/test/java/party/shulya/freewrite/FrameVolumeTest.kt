@@ -118,7 +118,7 @@ class FrameVolumeTest {
     @Test
     fun volumeCellTapEntersNumberDirectly() {
         val b = Board.create("Объём")
-        val t = BoardTable(100f, 100f, 1.5f, "КЖ 6.1.1")
+        val t = BoardTable(100f, 100f, 1.5f, "КЖ 6.1.1").apply { kind = TableKinds.CUSTOM }
         b.tables += t
         b.recs += BoardRec(t.id, 1.0).apply { zah = "1"; con = "Стены"; work = "Бетон" }
         val s = open(b)
