@@ -356,6 +356,18 @@ class TablePlanTest {
         s.a.finish()
     }
 
+    /** 0.25.2: листа ещё нет на планшете (скачивается с сервера) — не пустое место, а надпись «загружается». */
+    @Test
+    fun missingSheetSaysLoading() {
+        val b = sample()
+        b.tables[0].sheets += PlanSheet("not-yet-" + java.util.UUID.randomUUID() + ".jpg", 2400, 1600).also { it.name = "План на отм. +3.300" }
+        val s = open(b)
+        fitTable(s)
+        s.view.invalidate()
+        shot(s.view, "table-plan-loading.png")
+        s.a.finish()
+    }
+
     @Test
     fun planOnFarZoomAndSiteFiles() {
         val b = sample(withPlan = true)

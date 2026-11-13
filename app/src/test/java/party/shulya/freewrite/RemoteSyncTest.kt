@@ -196,6 +196,106 @@ class RemoteSyncTest {
         assertEquals(3, t.images[name]!!.first)
     }
 
+    /**
+     * 0.25.2: телефон со старой версией получил с сервера таблицу с листом плана, объёмы по частям и области захваток —
+     * незнакомое выбросил, а правки отметил полученными. После обновления доска один раз перечитывается целиком:
+     * всё возвращается, лист плана скачивается, своя более новая правка остаётся, на сервер ничего лишнего не уходит.
+     */
+    @Test
+    fun oldAppLostPartsComeBackAfterUpdate() {
+        val t = FakeServer()
+        val (va, kb) = twoTablets(t)
+        val a = va.board
+        val dir = File(ctx.filesDir, "note_images").apply { mkdirs() }
+        val sheetFile = "sheet-" + UUID.randomUUID() + ".jpg"
+        val bytes = ByteArray(Remote.CHUNK + 333) { (it * 7 % 253).toByte() }
+        File(dir, sheetFile).writeBytes(bytes)
+        Remote.uploadImage(t, a.id, a.sync.remoteKey, File(dir, sheetFile))
+        val tb = BoardTable(100f, 100f, 1.2f, "Несущие стены").apply { kind = TableKinds.KJ_VERT.id }
+        val sh = PlanSheet(sheetFile, 1200, 800).also { it.name = "План на отм. +3.300" }
+        tb.sheets += sh
+        a.tables += tb
+        a.recs += BoardRec(tb.id, 1.0).apply { zah = "1"; work = "Опалубка"; vp["w"] = "12.5" }
+        val zone = BoardZone(tb.id, sh.id, "", "1", MagicFill.rect(0.1f, 0.1f, 0.5f, 0.5f), TablePlan.PALETTE[0])
+        a.zones += zone
+        // Картинка, которая у телефона никак не скачивается (обрыв связи), — стоит в очереди раньше листа плана.
+        val broken = "broken-" + UUID.randomUUID() + ".jpg"
+        File(dir, broken).writeBytes(ByteArray(100) { 1 })
+        Remote.uploadImage(t, a.id, a.sync.remoteKey, File(dir, broken))
+        a.images += BoardImage(broken, 0f, 0f, 100f, 100f, 10, 10)
+        cycle(t, va, 3000)
+        cycle(t, kb, 3100)
+        val b = kb.board
+        sameBoards(a, b)
+
+        // Так это сделала старая версия: незнакомые поля (листы плана, объёмы по частям) выброшены, незнакомый вид
+        // (области захваток) пропущен, правки отмечены полученными; доска сохранена без отметки «прочитана целиком».
+        b.tables[0].sheets.clear()
+        b.recs[0].vp.clear()
+        b.zones.clear()
+        for ((id, h) in b.entryHashes()) b.sync.objs[id]?.let { b.sync.objs[id] = BoardSync.Entry(h, it.rev) }
+        b.sync.objs.remove(zone.id)
+        b.sync.readBy = 0
+        File(dir, sheetFile).delete() // на телефоне листа нет
+        File(dir, broken).delete()
+        assertEquals("обычный круг это не чинит", 0, cycle(t, kb, 3200))
+        assertTrue(b.tables[0].sheets.isEmpty())
+        // Своя правка, сделанная уже после обновления, — новее серверной, остаётся.
+        val textId = b.texts[0].id
+        b.texts[0].text = "Правка с телефона"
+        b.stamp(kb.device, 3300)
+
+        // Обновлённое приложение открыло доску.
+        var applied = 0
+        var images = 0
+        val flaky = object : SyncTransport {
+            override fun call(req: org.json.JSONObject): org.json.JSONObject {
+                if (req.optString("op") == "img_get" && req.optString("file") == broken) throw java.io.IOException("обрыв связи")
+                return t.call(req)
+            }
+        }
+        val rs = RemoteSync(ctx, flaky, object : RemoteSync.Host {
+            override fun board() = b
+            override fun canApply() = true
+            override fun saveBoard() { b.stamp(kb.device) }
+            override fun onRemoteApplied(changed: Int, authors: Map<String, Int>) { applied += changed }
+            override fun onImagesArrived() { images++ }
+            override fun onSyncState(state: RemoteSync.State) {}
+        })
+        fun idle() = org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        fun waitFor(what: String, cond: () -> Boolean) {
+            val end = System.currentTimeMillis() + 8000
+            while (System.currentTimeMillis() < end) { idle(); if (cond()) return; Thread.sleep(20) }
+            idle(); assertTrue("не дождался: $what", cond())
+        }
+        val serverBefore = t.boards[b.id]!!.objs.mapValues { it.value.rev }
+        rs.syncNow()
+        waitFor("доска перечитана") { b.sync.readBy == Remote.appVersion }
+        assertEquals("лист плана вернулся", listOf(sh.id), b.tables[0].sheets.map { it.id })
+        assertEquals("12.5", b.recs[0].vp["w"])
+        assertEquals("область захватки вернулась", listOf(zone.id), b.zones.map { it.id })
+        assertEquals("Правка с телефона", b.texts.first { it.id == textId }.text)
+        assertEquals("вернулись таблица, строка и область", 3, applied)
+        waitFor("лист плана скачан") { images > 0 && File(dir, sheetFile).isFile }
+        assertArrayEquals(bytes, File(dir, sheetFile).readBytes())
+        assertFalse("сломанная картинка — в другой раз", File(dir, broken).exists())
+        assertEquals("перечитанное — не свои правки", 0, b.stamp(kb.device))
+
+        // Следующий круг: уходит только своя правка надписи.
+        rs.syncNow()
+        waitFor("своя правка на сервере") { t.boards[b.id]!!.objs[textId]?.body?.contains("Правка с телефона") == true }
+        val changed = t.boards[b.id]!!.objs.filter { serverBefore[it.key] != it.value.rev }.keys
+        assertEquals(setOf(textId), changed)
+        rs.close()
+        cycle(t, va, 9000)
+        assertEquals(1, a.tables[0].sheets.size)
+        assertEquals("12.5", a.recs[0].vp["w"])
+        sameBoards(a, b)
+
+        // Отметка «прочитана целиком» сохраняется с доской.
+        assertEquals(Remote.appVersion, Board.fromJson(org.json.JSONObject(b.toJsonString())).sync.readBy)
+    }
+
     @Test
     fun publishAgainFromSameTabletReturnsSameCode() {
         val t = FakeServer()

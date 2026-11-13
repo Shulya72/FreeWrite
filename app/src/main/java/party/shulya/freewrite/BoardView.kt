@@ -472,6 +472,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private val painter = InkPainter()
     private val gridPaint = Paint().apply { color = Ui.LINE; strokeWidth = 0f; style = Paint.Style.STROKE }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    /** Надпись «…загружается» на месте картинки, которой ещё нет (скачивается с сервера или читается с диска). */
+    private val waitText = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Ui.INK2; textAlign = Paint.Align.CENTER }
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val dashPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Ui.ACCENT }
@@ -2141,7 +2143,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         val sh = TablePlan.current(t) ?: return
         val r = RectF(m.x, m.y, m.x + m.w, m.y + m.h)
         if (!visible(r.left, r.top, r.right, r.bottom)) return
-        drawImage(canvas, m, z, frameAround = false) // лист — внутри таблицы, без своей рамки
+        drawImage(canvas, m, z, frameAround = false, wait = "Лист плана загружается…") // лист — внутри таблицы, без своей рамки
         canvas.save()
         canvas.clipRect(r)
         val pe = planEdit?.takeIf { it.t === t && it.sheet.id == sh.id }
@@ -2240,7 +2242,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
     }
 
-    private fun drawImage(canvas: Canvas, m: BoardImage, z: Float, frameAround: Boolean = true) {
+    private fun drawImage(canvas: Canvas, m: BoardImage, z: Float, frameAround: Boolean = true, wait: String = "Картинка загружается…") {
         val fullScreenW = m.fullW() * z
         val bmp = if (m.w * z < 3f) null else images?.get(m, fullScreenW)
         // Обрезают — картинка видна целиком, скрытое бледно.
@@ -2271,6 +2273,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         } else {
             fillPaint.color = Ui.DESK
             canvas.drawRect(rect, fillPaint)
+            // Не пустое место, а понятно, что картинка ещё будет (у общей доски — пока скачивается с сервера).
+            val size = Ui.dpf(context, 14f)
+            if (m.w * z > size * 14 && m.h * z > size * 3) {
+                waitText.textSize = size / z
+                canvas.drawText(wait, rect.centerX(), rect.centerY() + size / z / 3, waitText)
+            }
         }
         // Чёткий кусок оригинала поверх (если картинку сильно приблизили); у обрезанной — только в видимой части.
         val d = images?.detail(m)
