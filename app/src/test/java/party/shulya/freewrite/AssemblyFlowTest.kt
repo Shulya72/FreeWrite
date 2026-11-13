@@ -116,6 +116,23 @@ class AssemblyFlowTest {
         FileOutputStream(File(dir, name)).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
+    private fun drag(v: View, x0: Float, y0: Float, x1: Float, y1: Float) {
+        val d = SystemClock.uptimeMillis()
+        v.dispatchTouchEvent(event(d, d, MotionEvent.ACTION_DOWN, x0, y0, MotionEvent.TOOL_TYPE_FINGER))
+        for (i in 1..6) v.dispatchTouchEvent(event(d, d + i * 30L, MotionEvent.ACTION_MOVE, x0 + (x1 - x0) * i / 6, y0 + (y1 - y0) * i / 6, MotionEvent.TOOL_TYPE_FINGER))
+        v.dispatchTouchEvent(event(d, d + 220, MotionEvent.ACTION_UP, x1, y1, MotionEvent.TOOL_TYPE_FINGER))
+        idle()
+    }
+
+    /** Подержать палец на месте (дольше, чем [BoardView.PLACE_MS]). */
+    private fun hold(v: View, x: Float, y: Float) {
+        val d = SystemClock.uptimeMillis()
+        v.dispatchTouchEvent(event(d, d, MotionEvent.ACTION_DOWN, x, y, MotionEvent.TOOL_TYPE_FINGER))
+        pause(700)
+        v.dispatchTouchEvent(event(d, d + 700, MotionEvent.ACTION_UP, x, y, MotionEvent.TOOL_TYPE_FINGER))
+        idle()
+    }
+
     private class Screen(val a: BoardActivity, val view: BoardView) {
         val b get() = a.board()
         fun sx(x: Float) = (x - b.camX) * b.camZ
@@ -155,7 +172,30 @@ class AssemblyFlowTest {
         assertTrue(ask.isShowing)
         ask.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick() // «Заказчику»
         idle()
+        // Место — выбираем сами (как на компьютере: двигаем доску, «правой» — «Вставить»): пока ведомости нет.
+        assertTrue(s.a.placingNow)
+        assertTrue(s.b.vedoms.isEmpty())
+        assertEquals(View.VISIBLE, s.a.window.decorView.findViewWithTag<View>("mode_bar").visibility)
+        // Палец двигает доску (и ничего не вставляет).
+        val cam0 = s.b.camX
+        drag(s.view, s.view.width * 0.7f, s.view.height * 0.5f, s.view.width * 0.5f, s.view.height * 0.5f)
+        assertTrue("доска сдвинулась", s.b.camX > cam0 + 10f)
+        assertEquals(null, s.a.placePopup)
+        // Подержали — контур и меню; «Не сюда» — ищем дальше.
+        hold(s.view, s.view.width * 0.5f, s.view.height * 0.6f)
+        assertNotNull(s.view.placeGhost)
+        s.a.placePopup!!.contentView.findViewWithTag<View>("place_no").performClick(); idle()
+        assertEquals(null, s.view.placeGhost)
+        assertTrue(s.a.placingNow)
+        // Справа от таблицы — «Вставить ведомость сюда».
+        val tr = s.view.tableDraw.bounds(s.b, s.b.tables[0], RectF())
+        val px = s.sx(tr.right + 300f); val py = s.sy(tr.top)
+        hold(s.view, px, py)
+        shot(s.view, "assembly-place.png")
+        s.a.placePopup!!.contentView.findViewWithTag<View>("place_here").performClick(); idle()
+        assertFalse(s.a.placingNow)
         var v = s.b.vedoms.single()
+        assertEquals(tr.right + 300f, v.x, 1f); assertEquals(tr.top, v.y, 1f)
         assertEquals(Vedoms.CUST, v.kind); assertEquals(today, v.made); assertTrue(v.isDraft)
         assertEquals(listOf(s.rec(0).id), Vedoms.items(s.b, v).map { it.r })
         assertEquals("Сборка от ${IdTables.dateShort(today)} ▾", Vedoms.stateChip(s.b, v))

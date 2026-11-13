@@ -297,6 +297,19 @@ class VedomTest {
         FileOutputStream(File(dir, name)).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
+    /** Ищут место для новой ведомости (0.25): подержать палец (sx, sy) → «Вставить ведомость сюда». */
+    private fun placeHere(s: Screen, sx: Float = s.view.width * 0.6f, sy: Float = s.view.height * 0.3f) {
+        assertTrue("ищут место для ведомости", s.a.placingNow)
+        pause(1000) // перо рядом недавно — палец был бы ладонью
+        val d = SystemClock.uptimeMillis()
+        s.view.dispatchTouchEvent(event(d, d, MotionEvent.ACTION_DOWN, sx, sy, MotionEvent.TOOL_TYPE_FINGER))
+        pause(700)
+        s.view.dispatchTouchEvent(event(d, d + 700, MotionEvent.ACTION_UP, sx, sy, MotionEvent.TOOL_TYPE_FINGER))
+        idle()
+        s.a.placePopup!!.contentView.findViewWithTag<View>("place_here").performClick()
+        idle()
+    }
+
     private class Screen(val a: BoardActivity, val view: BoardView) {
         val b get() = a.board()
         fun sx(x: Float) = (x - b.camX) * b.camZ
@@ -336,7 +349,11 @@ class VedomTest {
         det.window!!.decorView.findViewWithTag<EditText>("vnew_to").setText("Технадзор заказчика")
         det.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()
+        // Место ведомости (0.25): подержать палец там, где поставить → «Вставить ведомость сюда».
+        assertTrue(s.b.vedoms.isEmpty())
+        placeHere(s, s.view.width * 0.75f, s.view.height * 0.2f)
         val v = s.b.vedoms.single()
+        assertEquals(s.view.wx(s.view.width * 0.75f), v.x, 0.5f)
         assertEquals(Vedoms.CUST, v.kind)
         // Сбор: отбор «В работе» и «Возврат» уже выбран — 15 схем, все отмечены.
         val col = latest()
@@ -437,6 +454,7 @@ class VedomTest {
         idle()
         latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()
+        placeHere(s, s.view.width * 0.4f, s.view.height * 0.8f)
         val list = s.b.vedoms.first { it.kind == Vedoms.LIST }
         assertEquals(1, Vedoms.items(s.b, list).size)
         s.view.select(listOf(list))
@@ -503,6 +521,7 @@ class VedomTest {
         assertTrue(Vedoms.isClosed(s.b, v))
         latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick() // «Собрать»
         idle()
+        placeHere(s)
         val cust = s.b.vedoms.first { it.kind == Vedoms.CUST }
         assertEquals(4, Vedoms.items(s.b, cust).size)
         assertTrue(cust.isDraft)

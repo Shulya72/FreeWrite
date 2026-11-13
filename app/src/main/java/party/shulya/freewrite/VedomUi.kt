@@ -149,24 +149,34 @@ class VedomUi(private val a: BoardActivity) {
         AlertDialog.Builder(a).setTitle(Vedoms.kindName(kind))
             .setView(box)
             .setPositiveButton("Создать") { _, _ ->
-                a.pushUndo()
-                val (x, y, s) = place(recs)
-                val nv = BoardVedom(x, y, s, kind, num.text.toString().trim().ifEmpty { Vedoms.nextNum(b, kind) })
-                nv.made = IdTables.today()
-                nv.to = to.text.toString().trim()
-                b.vedoms += nv
-                val n = if (recs.isNullOrEmpty()) 0 else Vedoms.add(b, nv, recs, who())
-                a.changed()
-                v.clearSelection()
-                goTo(nv)
-                if (recs.isNullOrEmpty()) collectDialog(nv)
-                else {
-                    a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} — «Сборка». Унесёте — «${Vedoms.giveLabel(kind)} →»", 2500)
-                    warnWaiting(nv, recs)
-                }
+                val numS = num.text.toString().trim().ifEmpty { Vedoms.nextNum(b, kind) }
+                val toS = to.text.toString().trim()
+                val s = newScale()
+                val (w, h) = ghost(s, recs?.size ?: 6)
+                // Место выбирает Владимир (0.25): двигает доску, держит палец или перо → «Вставить ведомость сюда».
+                a.startPlacing("Ведомость $numS: двигайте доску, подержите палец или перо там, где поставить", w, h,
+                    onPlace = { x, y -> makeVedom(kind, numS, toS, recs, x, y, s) })
             }
             .setNegativeButton("Отмена", null)
             .show()
+    }
+
+    private fun makeVedom(kind: String, numS: String, toS: String, recs: List<BoardRec>?, x: Float, y: Float, s: Float) {
+        a.pushUndo()
+        val nv = BoardVedom(x, y, s, kind, numS)
+        nv.made = IdTables.today()
+        nv.to = toS
+        b.vedoms += nv
+        // Схемы — по номеру (пока искали место, доска могла смениться: отмена, правки коллег).
+        val now = recs.orEmpty().mapNotNull { r -> b.recs.firstOrNull { it.id == r.id } }
+        val n = if (now.isEmpty()) 0 else Vedoms.add(b, nv, now, who())
+        a.changed()
+        v.clearSelection()
+        if (recs.isNullOrEmpty()) collectDialog(nv)
+        else {
+            a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} — «Сборка». Унесёте — «${Vedoms.giveLabel(kind)} →»", 2500)
+            warnWaiting(nv, now)
+        }
     }
 
     // ---------------------------------------------------------------- сборка из таблицы (0.25)
@@ -203,8 +213,8 @@ class VedomUi(private val a: BoardActivity) {
             .setMessage("Первая «Сборка» сегодня. Завести ведомость от сегодняшнего дня и положить в неё " +
                 (if (more > 0) "все схемы в «Сборке» без ведомости — ${loose.size}" else Ui.plural(loose.size, "схему", "схемы", "схем")) +
                 "? Дальше сегодня «Сборка» в таблице — схема сама ляжет в эту ведомость. Унесли — смените состояние ведомости, у всех её схем поменяется статус.")
-            .setPositiveButton("Заказчику") { _, _ -> createAssembly(Vedoms.CUST, today, list.firstOrNull()) }
-            .setNeutralButton("На АН") { _, _ -> createAssembly(Vedoms.AN, today, list.firstOrNull()) }
+            .setPositiveButton("Заказчику") { _, _ -> placeAssembly(Vedoms.CUST, today) }
+            .setNeutralButton("На АН") { _, _ -> placeAssembly(Vedoms.AN, today) }
             .setNegativeButton("Не сегодня") { _, _ ->
                 a.getSharedPreferences("igs", Context.MODE_PRIVATE).edit().putString(declinedKey(), today).apply()
                 a.hint("Сегодня не спрашиваю. Ведомость можно собрать кнопкой «Ведомости»", 2200)
@@ -214,17 +224,32 @@ class VedomUi(private val a: BoardActivity) {
         d.show()
     }
 
-    /** Ведомость сегодняшней сборки: рядом с таблицей, где поставили «Сборку»; в неё — все схемы в «Сборке» без ведомости. */
-    private fun createAssembly(kind: String, today: String, near: BoardRec?) {
-        val loose = Vedoms.looseAssembly(b)
-        if (loose.isEmpty()) return
-        a.pushUndo()
+    /** Размер новой ведомости — как у таблиц и ведомостей доски. */
+    private fun newScale(): Float {
         val sizes = (b.tables.map { it.scale } + b.vedoms.map { it.scale }).sorted()
-        val s = if (sizes.isNotEmpty()) sizes[sizes.size / 2] else a.resources.displayMetrics.density / b.camZ
-        val tb = near?.let { IdTables.tableOf(b, it) }?.let { v.tableDraw.bounds(b, it, RectF()) }
-        // Справа от таблицы с запасом: после передачи статусы длиннее («… от 13.11.26») — таблица станет шире.
-        val (x, y) = if (tb != null) freeSpot(tb.right + 240f * s, tb.top, s)
-        else freeSpot(v.wx(v.width / 2f) - 300f * s, v.wy(v.height / 2f) - 120f * s, s)
+        return if (sizes.isNotEmpty()) sizes[sizes.size / 2] else a.resources.displayMetrics.density / b.camZ
+    }
+
+    /** Контур новой ведомости при выборе места: примерная ширина и высота (шапка + n строк). */
+    private fun ghost(s: Float, rows: Int) = (900f * s) to ((58f + 26f + 30f * rows.coerceIn(1, 8) + 30f) * s)
+
+    /**
+     * Ведомость сегодняшней сборки (0.25): место — выбирает Владимир («схемы из разных таблиц — ведомость туда, где удобно»):
+     * двигает доску, держит палец или перо → «Вставить ведомость сюда». В неё — все схемы в «Сборке» без ведомости.
+     */
+    private fun placeAssembly(kind: String, today: String) {
+        val s = newScale()
+        val n = Vedoms.looseAssembly(b).size
+        val (w, h) = ghost(s, n)
+        a.startPlacing("Ведомость ${Vedoms.nextNum(b, kind)} от ${IdTables.dateShort(today)}: двигайте доску, подержите палец или перо там, где поставить",
+            w, h, onPlace = { x, y -> createAssembly(kind, today, x, y, s) },
+            onCancel = { a.hint("Ведомость не создана — схемы остались в «Сборке». Следующая «Сборка» предложит снова", 2600) })
+    }
+
+    private fun createAssembly(kind: String, today: String, x: Float, y: Float, s: Float) {
+        val loose = Vedoms.looseAssembly(b)
+        if (loose.isEmpty()) { a.hint("Схем в «Сборке» без ведомости уже нет", 1800); return }
+        a.pushUndo()
         val nv = BoardVedom(x, y, s, kind, Vedoms.nextNum(b, kind))
         nv.made = today
         nv.to = b.vedoms.lastOrNull { it.kind == kind && it.to.isNotBlank() }?.to.orEmpty()
@@ -233,28 +258,6 @@ class VedomUi(private val a: BoardActivity) {
         a.changed()
         a.hint("Ведомость ${nv.num} от ${IdTables.dateShort(today)}: ${Ui.plural(n, "схема", "схемы", "схем")}. Сегодняшние «Сборки» лягут в неё сами; " +
             "унесли — нажмите «Сборка от …» в шапке ведомости → «${Vedoms.giveLabel(kind)}»", 5000)
-    }
-
-    /** Где поставить новую ведомость: справа от выделенного или посреди экрана; размер — как у таблиц и ведомостей доски. */
-    private fun place(recs: List<BoardRec>?): Triple<Float, Float, Float> {
-        val sizes = (b.tables.map { it.scale } + b.vedoms.map { it.scale }).sorted()
-        val s = if (sizes.isNotEmpty()) sizes[sizes.size / 2] else a.resources.displayMetrics.density / b.camZ
-        val sel = if (!recs.isNullOrEmpty()) v.selectionBounds() else null
-        val (x, y) = if (sel != null) freeSpot(sel.right + 40f * s, sel.top, s)
-        else freeSpot(v.wx(v.width / 2f) - 300f * s, v.wy(v.height / 2f) - 120f * s, s)
-        return Triple(x, y, s)
-    }
-
-    /** Свободное место для ведомости: не поверх таблиц и других ведомостей (занято — правее занятого). */
-    private fun freeSpot(x0: Float, y: Float, s: Float): Pair<Float, Float> {
-        var x = x0
-        repeat(20) {
-            val box = RectF(x, y, x + 640f * s, y + 300f * s)
-            val hit = b.tables.map { v.tableDraw.bounds(b, it, RectF()) }.plus(b.vedoms.map { v.vedomDraw.bounds(b, it, RectF()) })
-                .firstOrNull { RectF.intersects(box, it) } ?: return x to y
-            x = hit.right + 40f * s
-        }
-        return x to y
     }
 
     // ---------------------------------------------------------------- касания
@@ -713,17 +716,23 @@ class VedomUi(private val a: BoardActivity) {
     fun toCustomer(x: BoardVedom) {
         val ok = Vedoms.approvedForCustomer(b, x)
         if (ok.isEmpty()) { a.hint("Согласованных схем, ещё не собранных заказчику, нет", 1800); return }
-        a.pushUndo()
-        val r = v.vedomDraw.bounds(b, x, RectF())
-        val (nx, ny) = freeSpot(r.left, r.bottom + 40f * x.scale, x.scale)
-        val nv = BoardVedom(nx, ny, x.scale, Vedoms.CUST, Vedoms.nextNum(b, Vedoms.CUST))
-        nv.made = IdTables.today()
-        nv.to = b.vedoms.lastOrNull { it.kind == Vedoms.CUST && it.to.isNotBlank() }?.to.orEmpty()
-        b.vedoms += nv
-        val n = Vedoms.add(b, nv, ok, who())
-        a.changed()
-        goTo(nv)
-        a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} из ${x.num}. Унесёте заказчику — «На подписи у заказчика →»", 3000)
+        val (w, h) = ghost(x.scale, ok.size)
+        val xid = x.id; val xnum = x.num; val sc = x.scale
+        // Место выбирает Владимир (0.25): двигает доску, держит палец или перо → «Вставить ведомость сюда».
+        a.startPlacing("Ведомость ${Vedoms.nextNum(b, Vedoms.CUST)} заказчику — ${Ui.plural(ok.size, "схема", "схемы", "схем")} из $xnum: " +
+            "двигайте доску, подержите палец или перо там, где поставить", w, h, onPlace = { nx, ny ->
+            val src = Vedoms.vedom(b, xid)
+            val now = if (src == null) emptyList() else Vedoms.approvedForCustomer(b, src)
+            if (now.isEmpty()) { a.hint("Согласованных схем, ещё не собранных заказчику, нет", 1800); return@startPlacing }
+            a.pushUndo()
+            val nv = BoardVedom(nx, ny, sc, Vedoms.CUST, Vedoms.nextNum(b, Vedoms.CUST))
+            nv.made = IdTables.today()
+            nv.to = b.vedoms.lastOrNull { it.kind == Vedoms.CUST && it.to.isNotBlank() }?.to.orEmpty()
+            b.vedoms += nv
+            val n = Vedoms.add(b, nv, now, who())
+            a.changed()
+            a.hint("Ведомость ${nv.num}: ${Ui.plural(n, "схема", "схемы", "схем")} из $xnum. Унесёте заказчику — «На подписи у заказчика →»", 3000)
+        })
     }
 
     private fun resButton(x: BoardVedom, res: String, current: String?, tag: String, pick: () -> Unit): TextView {
