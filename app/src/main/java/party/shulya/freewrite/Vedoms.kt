@@ -273,7 +273,7 @@ object Vedoms {
         val old = r.get(k)
         if (old == value) return false
         r.set(k, value)
-        if (k in HIST_KEYS) b.events += BoardEvent(r.id, now, who, k, old, value, vn, note)
+        if (k in HIST_KEYS || TableKinds.partOf(k) != null) b.events += BoardEvent(r.id, now, who, k, old, value, vn, note)
         return true
     }
 
@@ -399,14 +399,14 @@ object Vedoms {
 
     fun valueText(b: Board, k: String, value: String): String = when {
         value.isEmpty() -> "—"
-        k == TableCol.VOL -> IdTables.volText(value)
+        k == TableCol.VOL || TableKinds.partOf(k) != null -> IdTables.volText(value)
         k == TableCol.IGS || k == TableCol.CK || k == TableCol.DWG -> b.statuses(IdTables.groupOf(k)).firstOrNull { it.id == value }?.name ?: value
         else -> IdTables.dateLong(value)
     }
 
     /** «ИГС: В работе → На подписи у заказчика». */
     fun eventText(b: Board, e: BoardEvent, colName: (String) -> String = { TableCol.defaultName(it) }): String {
-        val base = if (e.k.isEmpty()) e.note else colName(e.k) + ": " + valueText(b, e.k, e.from) + " → " + valueText(b, e.k, e.to)
+        val base = if (e.k.isEmpty()) e.note else (if (TableKinds.partOf(e.k) != null) "Объём · " else "") + colName(e.k) + ": " + valueText(b, e.k, e.from) + " → " + valueText(b, e.k, e.to)
         return base + if (e.vn.isNotEmpty()) " · ведомость ${e.vn}" else ""
     }
 

@@ -57,7 +57,7 @@ class TablesTest {
     private fun sample(): Board {
         val b = Board.create("ИГС")
         b.frames += BoardFrame(0f, 0f, 3000f, 1600f, "КЖ 6.1.1")
-        val t = BoardTable(100f, 100f, 1.5f, "КЖ 6.1.1")
+        val t = BoardTable(100f, 100f, 1.5f, "КЖ 6.1.1").apply { kind = TableKinds.CUSTOM }
         b.tables += t
         var o = 1.0
         for (z in listOf("1", "2", "2.1", "3")) for (w in listOf("Опалубка", "Бетон")) b.recs += BoardRec(t.id, o++).apply {
@@ -238,9 +238,11 @@ class TablesTest {
         s.view.fitRect(0f, 0f, 1600f, 900f)
         idle()
 
-        // «Таблица ИД»: касание в разделе — название подраздела (пусто — таблица на весь шифр раздела) → сразу форма строки.
+        // «Таблица ИД» → проводник (0.24) → «Пустая таблица»: название подраздела (пусто — таблица на весь шифр раздела) → форма строки.
         root.findViewWithTag<View>("board_tool_table").performClick()
-        tap(s.view, MotionEvent.TOOL_TYPE_STYLUS, s.sx(200f), s.sy(150f))
+        idle()
+        s.a.tableUi.explorer!!.window!!.decorView.findViewWithTag<View>("kind_custom").performClick()
+        idle()
         var dlg = latest()
         assertEquals("", dlg.window!!.decorView.findViewWithTag<EditText>("table_title").text.toString())
         dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
@@ -394,7 +396,7 @@ class TablesTest {
             BoardStatus("i3", "Передано в ПТО", 4))
         b.statuses += Board.conStatuses()
         b.stickers += BoardSticker(1f, 2f, "i4", 1f)
-        val t = BoardTable(0f, 0f, 1f, "КЖ")
+        val t = BoardTable(0f, 0f, 1f, "КЖ").apply { kind = TableKinds.CUSTOM }
         b.tables += t
         b.recs += BoardRec(t.id, 1.0).apply { igs = "i4" }
         val u = Board.fromJson(JSONObject(b.toJsonString()))

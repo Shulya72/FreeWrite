@@ -18,7 +18,11 @@ class TableLayout(val key: Long, val cols: List<TableCol>, val colX: FloatArray,
                   /** План под таблицей (0.23); null — листов нет. */
                   val plan: PlanLayout? = null,
                   /** Без листов: где в нижней строке начинается «+ план». */
-                  val planSplit: Float = Float.MAX_VALUE)
+                  val planSplit: Float = Float.MAX_VALUE,
+                  /** Высота шапки столбцов: у вида с частями объёма — в два этажа («Объём по схеме» над «Стены | Колонны»). */
+                  val headH: Float = TableDraw.HEAD_H,
+                  /** Итоги объёмов сеткой: вид работ × часть + «Всего» (0.24). */
+                  val volParts: List<TableKinds.Part> = emptyList())
 
 /**
  * Раскладка плана под таблицей (0.23), в единицах таблицы: шапка с кнопками, вкладки листов, лист, легенда.
@@ -48,6 +52,9 @@ class TableHit(val part: Int, val rec: BoardRec?, val col: String?) {
         const val PLAN_TAB = 11
         const val PLAN_SHEET = 12
     }
+
+    /** VOL у вида с частями (0.24): ключ части. */
+    var vpart = ""
 
     /** PLAN_SHEET: точка в долях картинки листа целиком. */
     var fx = 0f
@@ -98,9 +105,22 @@ class TableDraw {
         const val PLAN_LEG = 36f
         const val PLAN_MIN_W = 900f
         private val PLAN_BG = Color.rgb(243, 246, 250)
+        /** Шапка в два этажа (части объёма, 0.24). */
+        const val HEAD2_H = 42f
+        /** Сетка итогов по частям: строка заголовков и строка вида работ. */
+        const val VOLP_HEAD = 26f
+        const val VOLP_ROW = 80f
+        const val VOLP_WORK = 150f
+        const val VOLP_TOTAL = 210f
+        private val GRP_BG = Color.rgb(232, 238, 251)
+        private val GRP_FG = Color.rgb(31, 79, 160)
     }
 
     fun rowsTop() = TITLE_H + HEAD_H
+    fun rowsTop(l: TableLayout) = TITLE_H + l.headH
+
+    /** Плашка вида у названия таблицы (0.24); у таблицы без вида — пусто. */
+    fun kindChip(t: BoardTable): String = t.kindDef()?.let { "вид: ${it.section} · ${it.name.lowercase()}" }.orEmpty()
 
     /**
      * Ширина текста при размере size — мерим крупно и уменьшаем, с запасом 6 %: на экране шрифт другого размера,
@@ -132,10 +152,11 @@ class TableDraw {
         }
         h = 31 * h + t.title.hashCode()
         h = 31 * h + prefix.hashCode()
+        h = 31 * h + t.kind.hashCode()
         for ((zk, c) in swatch) { h = 31 * h + zk.hashCode(); h = 31 * h + c }
         if (volOn) {
-            for (r in all) { h = 31 * h + r.vol.hashCode(); h = 31 * h + r.work.hashCode() }
-            for (p in t.plan.values) { h = 31 * h + p.work.hashCode(); h = 31 * h + p.value.hashCode(); h = 31 * h + p.unit.hashCode() }
+            for (r in all) { h = 31 * h + r.vol.hashCode(); h = 31 * h + r.work.hashCode(); h = 31 * h + r.vp.hashCode() }
+            for (p in t.plan.values) { h = 31 * h + p.work.hashCode(); h = 31 * h + p.value.hashCode(); h = 31 * h + p.unit.hashCode(); h = 31 * h + p.part.hashCode() }
         }
         for (c in cols) { h = 31 * h + c.k.hashCode(); h = 31 * h + c.name.hashCode() }
         for (s in b.statuses) { h = 31 * h + s.id.hashCode(); h = 31 * h + s.name.hashCode(); h = 31 * h + (if (s.done) 1 else 0) }
@@ -167,8 +188,19 @@ class TableDraw {
             }
             widths[ci] = w
         }
+        // Части объёма (0.24): над ними — общая шапка «Объём по схеме»; вместе не уже её.
+        val partIdx = cols.indices.filter { cols[it].part != null }
+        val headH = if (partIdx.isNotEmpty()) HEAD2_H else HEAD_H
+        if (partIdx.isNotEmpty()) {
+            for (i in partIdx) widths[i] = max(widths[i], 70f)
+            val grpW = tw("Объём по схеме", HEAD_FONT, true) + 2 * PAD
+            val sum = partIdx.sumOf { widths[it].toDouble() }.toFloat()
+            if (sum < grpW) widths[partIdx.last()] += grpW - sum
+        }
         var total = widths.sum()
-        val titleW = tw(t.title.ifEmpty { "Без шифра" }, TITLE_FONT, true) + if (prefix.isEmpty()) 0f else tw("$prefix ·", 14f, false) + 8f
+        val chip = kindChip(t)
+        val titleW = tw(t.title.ifEmpty { "Без шифра" }, TITLE_FONT, true) + (if (prefix.isEmpty()) 0f else tw("$prefix ·", 14f, false) + 8f) +
+            (if (chip.isEmpty()) 0f else tw(chip, 12f, true) + 32f)
         val need = PAD * 2 + titleW + 24f + tw(info, 12f, false) + PAD
         val addW = PAD + tw("+ строка", FONT, true) + PAD * 2
         val need2 = addW + tw("+ следующая захватка", FONT, true) + PAD * 2
@@ -183,9 +215,14 @@ class TableDraw {
         if (cols.isEmpty()) total = needAll
         val colX = FloatArray(cols.size + 1)
         for (i in cols.indices) colX[i + 1] = colX[i] + widths[i]
-        val volTop = rowsTop() + max(1, rows.size) * ROW_H
+        val volTop = TITLE_H + headH + max(1, rows.size) * ROW_H
         val missing = vol?.flatMap { it.missing } ?: emptyList()
-        val volH = if (vol == null) 0f else VOL_HEAD + max(1, vol.size) * VOL_ROW + (if (missing.isNotEmpty()) VOL_NOTE else 0f) + VOL_PAD
+        val vparts = t.parts()
+        val volH = when {
+            vol == null -> 0f
+            vparts.isNotEmpty() -> VOL_HEAD + VOLP_HEAD + max(1, vol.map { IdTables.norm(it.work) }.distinct().size) * VOLP_ROW + (if (missing.isNotEmpty()) VOL_NOTE else 0f) + VOL_PAD
+            else -> VOL_HEAD + max(1, vol.size) * VOL_ROW + (if (missing.isNotEmpty()) VOL_NOTE else 0f) + VOL_PAD
+        }
         var height = volTop + volH + FOOT_H
         var plan: PlanLayout? = null
         if (hasPlan) {
@@ -207,7 +244,8 @@ class TableDraw {
             height += ph
         }
         val planSplit = if (hasPlan) Float.MAX_VALUE else total - planAddW
-        return TableLayout(h, cols, colX, rows, total, height, info, addW, prefix, vol, volTop, volH, missing, swatch, plan, planSplit).also { t.lay = it }
+        return TableLayout(h, cols, colX, rows, total, height, info, addW, prefix, vol, volTop, volH, missing, swatch, plan, planSplit, headH,
+            if (vol != null) vparts else emptyList()).also { t.lay = it }
     }
 
     fun sheetName(t: BoardTable, i: Int): String = t.sheets.getOrNull(i)?.name?.ifEmpty { null } ?: "Лист ${i + 1}"
@@ -246,11 +284,22 @@ class TableDraw {
         if (v < TITLE_H) return TableHit(TableHit.TITLE, null, null)
         var col: String? = l.cols.lastOrNull()?.k
         for (i in l.cols.indices) if (u < l.colX[i + 1]) { col = l.cols[i].k; break }
-        if (v < rowsTop()) return TableHit(TableHit.HEAD, null, col)
-        val ri = ((v - rowsTop()) / ROW_H).toInt()
+        if (v < rowsTop(l)) return TableHit(TableHit.HEAD, null, col)
+        val ri = ((v - rowsTop(l)) / ROW_H).toInt()
         if (ri < l.rows.size) return TableHit(TableHit.CELL, l.rows[ri], col)
-        if (v < rowsTop() + max(1, l.rows.size) * ROW_H) return TableHit(TableHit.ADD, null, col) // пустая таблица — «+ строка»
+        if (v < rowsTop(l) + max(1, l.rows.size) * ROW_H) return TableHit(TableHit.ADD, null, col) // пустая таблица — «+ строка»
         val vol = l.vol
+        if (vol != null && v < l.volTop + l.volH && l.volParts.isNotEmpty()) {
+            // Сетка по частям (0.24): ячейка вид работ × часть — проект этой части.
+            val dv = v - l.volTop
+            if (dv < VOL_HEAD + VOLP_HEAD) return TableHit(TableHit.VOL_ADD, null, null)
+            val works = vol.map { it.work }.distinctBy { IdTables.norm(it) }
+            val i = ((dv - VOL_HEAD - VOLP_HEAD) / VOLP_ROW).toInt()
+            if (i >= works.size) return TableHit(if (l.volMissing.isNotEmpty()) TableHit.VOL_NOTE else TableHit.VOL_ADD, null, null)
+            val pw = (l.w - VOLP_WORK - VOLP_TOTAL) / l.volParts.size
+            val pi = ((u - VOLP_WORK) / pw).toInt()
+            return TableHit(TableHit.VOL, null, works[i]).also { it.vpart = l.volParts.getOrNull(pi)?.key.orEmpty() }
+        }
         if (vol != null && v < l.volTop + l.volH) {
             val dv = v - l.volTop
             if (dv < VOL_HEAD) return TableHit(TableHit.VOL_ADD, null, null)
@@ -290,7 +339,7 @@ class TableDraw {
         val i = l.rows.indexOfFirst { it === rec }
         if (i < 0) return null
         val k = t.scale
-        out.set(t.x, t.y + (rowsTop() + i * ROW_H) * k, t.x + l.w * k, t.y + (rowsTop() + (i + 1) * ROW_H) * k)
+        out.set(t.x, t.y + (rowsTop(l) + i * ROW_H) * k, t.x + l.w * k, t.y + (rowsTop(l) + (i + 1) * ROW_H) * k)
         return out
     }
 
@@ -301,7 +350,7 @@ class TableDraw {
         val ci = l.cols.indexOfFirst { it.k == col }
         if (i < 0 || ci < 0) return null
         val k = t.scale
-        out.set(t.x + l.colX[ci] * k, t.y + (rowsTop() + i * ROW_H) * k, t.x + l.colX[ci + 1] * k, t.y + (rowsTop() + (i + 1) * ROW_H) * k)
+        out.set(t.x + l.colX[ci] * k, t.y + (rowsTop(l) + i * ROW_H) * k, t.x + l.colX[ci + 1] * k, t.y + (rowsTop(l) + (i + 1) * ROW_H) * k)
         return out
     }
 
@@ -324,7 +373,7 @@ class TableDraw {
         canvas.drawRoundRect(rect, 8f * k, 8f * k, fill)
         canvas.restore()
         val far = FONT * k * z < 4f
-        val top = y0 + rowsTop() * k
+        val top = y0 + rowsTop(l) * k
         val first = max(0, ((vis.top - top) / (ROW_H * k)).toInt())
         val last = min(l.rows.size - 1, ((vis.bottom - top) / (ROW_H * k)).toInt())
         val igsI = l.cols.indexOfFirst { it.k == TableCol.IGS }
@@ -374,9 +423,29 @@ class TableDraw {
         text.textSize = HEAD_FONT * k
         text.isFakeBoldText = true
         text.color = Ui.INK2
+        val pIdx = l.cols.indices.filter { l.cols[it].part != null }
+        if (pIdx.isNotEmpty()) {
+            // Два этажа: «Объём по схеме» над частями (0.24).
+            val gl = x0 + l.colX[pIdx.first()] * k; val gr = x0 + l.colX[pIdx.last() + 1] * k
+            val half = TITLE_H + l.headH / 2f
+            fill.color = GRP_BG
+            canvas.drawRect(gl, y0 + TITLE_H * k, gr, y0 + l.headH * k + TITLE_H * k, fill)
+            line.color = Color.rgb(201, 214, 242); line.strokeWidth = 1f * k
+            canvas.drawLine(gl, y0 + half * k, gr, y0 + half * k, line)
+            text.color = GRP_FG
+            val g = "Объём по схеме"
+            canvas.drawText(fit(g, gr - gl - 2 * PAD * k), (gl + gr) / 2f - min(text.measureText(g), gr - gl - 2 * PAD * k) / 2f, y0 + (TITLE_H + l.headH / 4f) * k + text.textSize * 0.36f, text)
+        }
         for ((ci, c) in l.cols.withIndex()) {
             val cw = (l.colX[ci + 1] - l.colX[ci]) * k
-            canvas.drawText(fit(c.title(), cw - 2 * PAD * k), x0 + (l.colX[ci] + PAD) * k, y0 + (TITLE_H + HEAD_H / 2f) * k + text.textSize * 0.36f, text)
+            if (c.part != null) {
+                text.color = GRP_FG
+                val tt = fit(c.title(), cw - 2 * PAD * k)
+                canvas.drawText(tt, x0 + l.colX[ci + 1] * k - PAD * k - text.measureText(tt), y0 + (TITLE_H + l.headH * 0.75f) * k + text.textSize * 0.36f, text)
+                text.color = Ui.INK2
+                continue
+            }
+            canvas.drawText(fit(c.title(), cw - 2 * PAD * k), x0 + (l.colX[ci] + PAD) * k, y0 + (TITLE_H + l.headH / 2f) * k + text.textSize * 0.36f, text)
         }
         // Шифр раздела, название таблицы (подраздел) и сводка.
         var tx = x0 + PAD * 1.4f * k
@@ -391,7 +460,21 @@ class TableDraw {
         }
         text.textSize = TITLE_FONT * k
         text.color = Ui.INK
-        canvas.drawText(t.title.ifEmpty { "Без шифра" }, tx, y0 + TITLE_H / 2f * k + text.textSize * 0.36f, text)
+        val ttl = t.title.ifEmpty { "Без шифра" }
+        canvas.drawText(ttl, tx, y0 + TITLE_H / 2f * k + text.textSize * 0.36f, text)
+        val chip = kindChip(t)
+        if (chip.isNotEmpty()) {
+            // Вид таблицы (0.24) — плашкой после названия: «вид: КЖ · вертикальные элементы».
+            val cx = tx + text.measureText(ttl) + 14f * k
+            text.isFakeBoldText = true
+            text.textSize = 12f * k
+            val cw = text.measureText(chip)
+            rect.set(cx, y0 + (TITLE_H / 2f - 10f) * k, cx + cw + 16f * k, y0 + (TITLE_H / 2f + 10f) * k)
+            fill.color = GRP_BG
+            canvas.drawRoundRect(rect, 7f * k, 7f * k, fill)
+            text.color = GRP_FG
+            canvas.drawText(chip, cx + 8f * k, y0 + TITLE_H / 2f * k + text.textSize * 0.36f, text)
+        }
         text.isFakeBoldText = false
         text.textSize = 12f * k
         text.color = if (t.filter?.isEmpty == false) Ui.ACCENT else Ui.INK2
@@ -403,7 +486,10 @@ class TableDraw {
             val msg = if (t.filter?.isEmpty == false) "По отбору строк нет" else "Строк пока нет — нажмите «+ строка»"
             canvas.drawText(msg, x0 + PAD * k, top + ROW_H / 2f * k + text.textSize * 0.36f, text)
         }
-        if (l.vol != null) drawVolumes(canvas, b, t, l, x0, y0 + l.volTop * k, w, k)
+        if (l.vol != null) {
+            if (l.volParts.isNotEmpty()) drawVolumeGrid(canvas, t, l, x0, y0 + l.volTop * k, w, k)
+            else drawVolumes(canvas, b, t, l, x0, y0 + l.volTop * k, w, k)
+        }
         text.textSize = FONT * k
         text.isFakeBoldText = true
         text.color = Ui.ACCENT
@@ -517,19 +603,22 @@ class TableDraw {
         }
         if (c.isVol) {
             text.isFakeBoldText = false
-            if (r.vol.isEmpty()) {
+            // Часть объёма (0.24) — своё поле строки; у таблицы с частями общий «Объём по схеме» не считается.
+            val tb = IdTables.tableOf(b, r)
+            val raw = if (c.part != null) r.get(c.k) else if (tb != null && tb.parts().isNotEmpty()) "" else r.vol
+            if (raw.isEmpty()) {
                 text.textSize = FONT * k; text.color = Ui.MUTED
                 val dash = "—"
                 canvas.drawText(dash, cx + cw - PAD * k - text.measureText(dash), cy + text.textSize * 0.36f, text)
                 return
             }
-            val u = IdTables.tableOf(b, r)?.let { IdTables.unitFor(it, r.work) }.orEmpty()
+            val u = tb?.let { IdTables.unitFor(it, r.work) }.orEmpty()
             text.textSize = 11.5f * k
             val uw = if (u.isEmpty()) 0f else text.measureText(u) + 3f * k
             val right = cx + cw - PAD * k
             if (u.isNotEmpty()) { text.color = Ui.MUTED; canvas.drawText(u, right - uw + 3f * k, cy + FONT * k * 0.36f, text) }
             text.textSize = FONT * k; text.color = Ui.INK
-            val n = IdTables.volText(r.vol)
+            val n = IdTables.volText(raw)
             canvas.drawText(n, right - uw - text.measureText(n), cy + text.textSize * 0.36f, text)
             return
         }
@@ -569,6 +658,111 @@ class TableDraw {
      * «Объём по схеме»), проект (рамка ✎ — вписать), разница: «осталось …» синим или «перебор +… · +… %» красным,
      * полоска выполнения и процент.
      */
+    /**
+     * Итоги объёмов сеткой (0.24, вид с частями): строки — виды работ, столбцы — части («Стены», «Колонны») и «Всего».
+     * В ячейке: факт, проект (рамка ✎ — вписать), полоска, «осталось …» или «перебор …», процент.
+     */
+    private fun drawVolumeGrid(canvas: Canvas, t: BoardTable, l: TableLayout, x0: Float, top: Float, w: Float, k: Float) {
+        val vol = l.vol ?: return
+        val parts = l.volParts
+        fill.color = VOL_BG
+        canvas.drawRect(x0, top, x0 + w, top + l.volH * k, fill)
+        line.color = Color.rgb(170, 182, 204); line.strokeWidth = 1.2f * k
+        canvas.drawLine(x0, top + 1f * k, x0 + w, top + 1f * k, line)
+        canvas.drawLine(x0, top + 4f * k, x0 + w, top + 4f * k, line)
+        fun txt(s: String, x: Float, y: Float, size: Float, color: Int, bold: Boolean = false): Float {
+            text.textSize = size * k; text.color = color; text.isFakeBoldText = bold
+            canvas.drawText(s, x, y, text)
+            val ww = text.measureText(s)
+            text.isFakeBoldText = false
+            return ww
+        }
+        val L = x0 + 14f * k
+        val hy = top + (VOL_HEAD / 2f + 3f) * k + 5f * k
+        val hw = txt("Объёмы · ${t.title.ifEmpty { "таблица" }}", L, hy, 15f, Ui.INK, bold = true)
+        txt("факт — сумма по схемам; проект — для каждой части (рамка ✎)", L + hw + 12f * k, hy, 12.5f, Ui.MUTED)
+        val plus = "+ проект"
+        text.textSize = 13.5f * k; text.isFakeBoldText = true
+        val pw0 = text.measureText(plus)
+        txt(plus, x0 + w - 14f * k - pw0, hy, 13.5f, Ui.ACCENT, bold = true)
+        val partW = (l.w - VOLP_WORK - VOLP_TOTAL) / parts.size
+        fun colL(i: Int) = x0 + (VOLP_WORK + i * partW) * k
+        val totL = x0 + (l.w - VOLP_TOTAL) * k
+        val gy = top + (VOL_HEAD + VOLP_HEAD * 0.65f) * k
+        for ((i, p) in parts.withIndex()) txt(p.name, colL(i) + 10f * k, gy, 12.5f, GRP_FG, bold = true)
+        txt("Всего", totL + 10f * k, gy, 12.5f, GRP_FG, bold = true)
+        val works = vol.map { it.work }.distinctBy { IdTables.norm(it) }
+        if (works.isEmpty()) {
+            txt("Впишите объёмы в столбцах ${parts.joinToString(" и ") { "«${it.name}»" }} — здесь появятся итоги; проект — «+ проект»", L,
+                top + (VOL_HEAD + VOLP_HEAD + VOLP_ROW / 2f) * k, 13.5f, Ui.MUTED)
+        }
+        for ((wi, wk) in works.withIndex()) {
+            val ry = top + (VOL_HEAD + VOLP_HEAD + wi * VOLP_ROW) * k
+            line.color = Color.rgb(227, 232, 239); line.strokeWidth = 1f * k
+            canvas.drawLine(x0 + 10f * k, ry, x0 + w - 10f * k, ry, line)
+            txt(wk, L + 6f * k, ry + 26f * k, 15f, Ui.INK, bold = true)
+            var sumF = 0.0; var sumP = 0.0; var allP = true; var unit = ""
+            for ((pi, p) in parts.withIndex()) {
+                val v = vol.firstOrNull { IdTables.norm(it.work) == IdTables.norm(wk) && it.part == p.key } ?: continue
+                unit = v.unit
+                sumF += v.fact
+                if (v.plan != null) sumP += v.plan else allP = false
+                val cx = colL(pi) + 10f * k
+                val cwid = partW * k - 20f * k
+                var x = cx
+                x += txt(IdTables.volFmt(v.fact), x, ry + 26f * k, 16f, Ui.INK, bold = true) + 4f * k
+                if (v.unit.isNotEmpty()) x += txt(v.unit, x, ry + 26f * k, 11.5f, Ui.MUTED) + 6f * k
+                x += txt("из", x, ry + 26f * k, 11.5f, Ui.MUTED) + 12f * k
+                val pt = if (v.plan == null) "вписать" else IdTables.volFmt(v.plan) + if (v.unit.isNotEmpty()) " " + v.unit else ""
+                text.textSize = 13.5f * k; text.isFakeBoldText = v.plan != null
+                val ptw = text.measureText(pt)
+                text.isFakeBoldText = false
+                rect.set(x - 5f * k, ry + 11f * k, x + ptw + 22f * k, ry + 32f * k)
+                fill.color = Color.WHITE
+                canvas.drawRoundRect(rect, 6f * k, 6f * k, fill)
+                line.color = Color.rgb(150, 165, 190); line.strokeWidth = 1.2f * k
+                line.pathEffect = android.graphics.DashPathEffect(floatArrayOf(4f * k, 3f * k), 0f)
+                canvas.drawRoundRect(rect, 6f * k, 6f * k, line)
+                line.pathEffect = null
+                txt(pt, x, ry + 26f * k, 13.5f, if (v.plan == null) Ui.MUTED else Ui.INK, bold = v.plan != null)
+                txt("✎", x + ptw + 6f * k, ry + 26f * k, 12f, Ui.ACCENT)
+                if (v.plan == null) continue
+                // Полоска выполнения и «осталось»/«перебор».
+                val frac = if (v.over) 1f else (v.fact / v.plan).toFloat().coerceIn(0f, 1f)
+                val bw = min(cwid, 260f * k)
+                rect.set(cx, ry + 40f * k, cx + bw, ry + 49f * k)
+                fill.color = BAR_BG
+                canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, fill)
+                rect.set(cx, ry + 40f * k, cx + bw * frac, ry + 49f * k)
+                fill.color = if (v.over) Ui.BAD else BAR
+                if (frac > 0f) canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, fill)
+                val diff = kotlin.math.abs(v.fact - v.plan)
+                val chip = if (v.over) "перебор +${IdTables.volFmt(diff)} ${v.unit}".trimEnd() else "осталось ${IdTables.volFmt(diff)} ${v.unit}".trimEnd()
+                text.textSize = 12f * k; text.isFakeBoldText = true
+                val chw = text.measureText(chip) + 18f * k
+                text.isFakeBoldText = false
+                rect.set(cx, ry + 55f * k, cx + chw, ry + 73f * k)
+                fill.color = if (v.over) Ui.BAD else LEFT_BG
+                canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, fill)
+                txt(chip, cx + 9f * k, ry + 68f * k, 12f, if (v.over) Color.WHITE else LEFT_FG, bold = true)
+                txt("${v.percent} %", cx + chw + 8f * k, ry + 68f * k, 12.5f, if (v.over) Ui.BAD else Ui.INK, bold = true)
+            }
+            // Всего — сумма частей.
+            val tx0 = totL + 10f * k
+            var x = tx0
+            x += txt(IdTables.volFmt(sumF), x, ry + 26f * k, 16f, Ui.INK, bold = true) + 4f * k
+            if (allP && sumP > 0.0) txt("из ${IdTables.volFmt(sumP)} $unit".trimEnd(), x, ry + 26f * k, 12f, Ui.MUTED)
+            else if (unit.isNotEmpty()) txt(unit, x, ry + 26f * k, 11.5f, Ui.MUTED)
+            txt(if (allP && sumP > 0.0) "сумма частей · ${Math.round(sumF / sumP * 100)} %" else "сумма частей", tx0, ry + 46f * k, 12f, Ui.MUTED)
+        }
+        if (l.volMissing.isNotEmpty()) {
+            val ny = top + (VOL_HEAD + VOLP_HEAD + max(1, works.size) * VOLP_ROW + VOL_NOTE / 2f) * k + 4f * k
+            val n = l.volMissing.size
+            val ww = txt("⚠ Объём не указан у ${Ui.plural(n, "схемы", "схем", "схем")}", L, ny, 13f, Ui.WARN, bold = true)
+            txt(" — в факт не вошли. Касание — показать эти строки.", L + ww, ny, 13f, Ui.INK2)
+        }
+    }
+
     private fun drawVolumes(canvas: Canvas, b: Board, t: BoardTable, l: TableLayout, x0: Float, top: Float, w: Float, k: Float) {
         val vol = l.vol ?: return
         fill.color = VOL_BG
