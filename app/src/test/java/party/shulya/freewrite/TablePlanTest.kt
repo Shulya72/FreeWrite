@@ -365,4 +365,119 @@ class TablePlanTest {
         assertTrue(pkg.files.contains(t.sheets[0].file))
         s.a.finish()
     }
+
+    private fun views(v: View, tag: String, out: MutableList<View> = ArrayList()): List<View> {
+        if (v.tag == tag) out += v
+        if (v is android.view.ViewGroup) for (i in 0 until v.childCount) views(v.getChildAt(i), tag, out)
+        return out
+    }
+
+    /**
+     * 0.23.1 (Владимир после проверки 0.23.0): рисунок пером поверх плана виден (таблица под штрихами), таблицу можно
+     * закрепить булавкой; незакреплённая таблица переносится вместе с рисунками на своём плане; «Кисть по стенам»;
+     * цвет захватки — палитра и пипетка; пальцем «По точкам» — лупа.
+     */
+    @Test
+    fun drawOverPlanPinMoveBrushColor() {
+        val b = sample(withPlan = true)
+        val s = open(b)
+        val root = s.a.window.decorView
+        val t = s.b.tables[0]
+        fitTable(s)
+        // Перо рисует по плану (инструмент «Ручка») — штрих поверх листа.
+        root.findViewWithTag<View>("board_tool_pen")?.performClick()
+        val (p0x, p0y) = s.onSheet(t, 200f / 1200f, 200f / 800f)
+        val (p1x, p1y) = s.onSheet(t, 350f / 1200f, 260f / 800f)
+        drag(s.view, p0x, p0y, p1x, p1y, MotionEvent.TOOL_TYPE_STYLUS)
+        pause(1200)
+        val stroke = s.b.strokes.single()
+        val sr = s.view.tableDraw.sheetRect(s.b, t, RectF())!!
+        assertTrue(sr.contains(stroke.bounds().centerX(), stroke.bounds().centerY()))
+        assertTrue(s.view.planContents(t).contains(stroke))
+        // Рисунок виден поверх таблицы: пиксель на штрихе — цвета штриха, а не белый лист.
+        val bmp = Bitmap.createBitmap(s.view.width, s.view.height, Bitmap.Config.ARGB_8888)
+        repeat(20) { s.view.draw(Canvas(bmp)); idle(); Thread.sleep(20) }
+        s.view.draw(Canvas(bmp))
+        val mx = ((p0x + p1x) / 2).toInt(); val my = ((p0y + p1y) / 2).toInt()
+        var dark = false
+        for (dy in -4..4) for (dx in -4..4) { val c = bmp.getPixel(mx + dx, my + dy); if (Color.red(c) + Color.green(c) + Color.blue(c) < 300) dark = true }
+        assertTrue("штрих виден поверх плана", dark)
+
+        // Закрепить таблицу: панель таблицы → «Закрепить»; переносить нельзя.
+        s.view.select(listOf(t)); idle()
+        root.findViewWithTag<View>("sel_tpin").performClick(); idle()
+        assertTrue(t.locked)
+        assertTrue(IdTables.tableJson(t).contains("\"lk\":1"))
+        val x0 = t.x
+        s.view.select(listOf(t)); idle()
+        val (tx, ty) = s.sx(t.x + 60f * t.scale) to s.sy(t.y + 20f * t.scale)
+        tap(s.view, tx, ty) // «взвести» палец
+        drag(s.view, tx, ty, tx + 200f, ty + 80f)
+        assertEquals(x0, t.x, 0.01f)
+        // Открепить — переносится вместе со своим рисунком.
+        s.view.select(listOf(t)); idle()
+        root.findViewWithTag<View>("sel_tpin").performClick(); idle()
+        assertFalse(t.locked)
+        val sx0 = stroke.bounds().left
+        // (у закреплённой палец двигал доску — заново находим таблицу на экране)
+        val (ux, uy) = s.sx(t.x + 60f * t.scale) to s.sy(t.y + 20f * t.scale)
+        s.view.select(listOf(t)); idle()
+        tap(s.view, ux, uy)
+        drag(s.view, ux, uy, ux + 200f, uy + 80f)
+        assertTrue("таблица сдвинулась", t.x > x0 + 50f)
+        assertEquals("рисунок на плане — вместе с ней", t.x - x0, stroke.bounds().left - sx0, 2f)
+        s.view.clearSelection(); idle()
+        fitTable(s)
+
+        // Кисть по стенам: вдоль части нижней стены здания (y = 597 px) — кусок стены.
+        s.a.planUi.startOutline(t, "", "1"); idle()
+        root.findViewWithTag<View>("pt_brush").performClick()
+        val pe = s.view.planEdit!!
+        val (bx0, by0) = s.onSheet(t, 150f / 1200f, 597f / 800f)
+        val (bx1, by1) = s.onSheet(t, 350f / 1200f, 597f / 800f)
+        waitFor("подготовка листа") { drag(s.view, bx0, by0, bx1, by1); pe.pieces.isNotEmpty() || pe.busy }
+        waitFor("кисть") { !pe.busy && pe.pieces.isNotEmpty() }
+        val bb = BoardZone("", "", "", "", pe.pieces[0], 0).box()
+        assertTrue("кусок нижней стены: ${bb.joinToString()}", bb[1] > 590f / 800f && bb[3] < 604f / 800f && bb[0] > 0.1f && bb[2] < 0.32f)
+
+        // Цвет: «● Цвет» → палитра → цвет; у таблицы «по ИГС» → стал «свой».
+        root.findViewWithTag<View>("pt_color").performClick(); idle()
+        val swatches = views(latest().window!!.decorView, "palette_color")
+        swatches[3].performClick(); idle()
+        assertEquals(ColorKit.PALETTE[3], pe.color)
+        assertEquals(TablePlan.OWN, s.a.board().tables[0].zoneColor)
+        root.findViewWithTag<View>("pt_done").performClick(); idle()
+        val z1 = s.a.board().zones.single()
+        assertEquals(ColorKit.PALETTE[3], z1.color)
+
+        // «● Цвет» у обведённой захватки → пипетка → касание области — тот же цвет; касание листа — цвет пикселя.
+        root.findViewWithTag<View>("zone_color").performClick(); idle()
+        views(latest().window!!.decorView, "palette_pipette")[0].performClick(); idle()
+        assertEquals(BoardActivity.Tool.PIPETTE, s.a.activeTool)
+        val zb = z1.box()
+        val (zx, zy) = s.onSheet(t, (zb[0] + zb[2]) / 2, (zb[1] + zb[3]) / 2)
+        tap(s.view, zx, zy)
+        assertEquals(ColorKit.PALETTE[3], s.a.board().zones.single().color)
+        assertTrue(s.a.activeTool != BoardActivity.Tool.PIPETTE)
+
+        // Пальцем «По точкам» — лупа (снимок).
+        s.a.planUi.startOutline(s.a.board().tables[0], "", "2"); idle()
+        root.findViewWithTag<View>("pt_points").performClick()
+        val (qx, qy) = s.onSheet(s.a.board().tables[0], 450f / 1200f, 200f / 800f)
+        val d = SystemClock.uptimeMillis()
+        s.view.dispatchTouchEvent(event(d, d, MotionEvent.ACTION_DOWN, qx, qy, MotionEvent.TOOL_TYPE_FINGER))
+        s.view.dispatchTouchEvent(event(d, d + 60, MotionEvent.ACTION_MOVE, qx + 6f, qy + 4f, MotionEvent.TOOL_TYPE_FINGER))
+        idle()
+        val lb = Bitmap.createBitmap(s.view.width, s.view.height, Bitmap.Config.ARGB_8888)
+        s.view.draw(Canvas(lb))
+        val dir = File("build/screenshots").apply { mkdirs() }
+        FileOutputStream(File(dir, "table-plan-loupe.png")).use { lb.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        s.view.dispatchTouchEvent(event(d, d + 120, MotionEvent.ACTION_UP, qx + 6f, qy + 4f, MotionEvent.TOOL_TYPE_FINGER))
+        idle()
+        assertEquals(2, s.view.planEdit!!.points.size)
+        root.findViewWithTag<View>("pt_cancel").performClick(); idle()
+        fitTable(s)
+        shot(s.view, "table-plan-draw.png")
+        s.a.finish()
+    }
 }

@@ -120,6 +120,8 @@ class TableUi(private val a: BoardActivity) {
                 }
                 // Номер захватки, привязанной к заливке, — показать её на плане (ТЗ, раздел 8).
                 if (col == TableCol.ZAH && IdTables.fillsOf(b, t, r.uch, r.zah).isNotEmpty()) { showFills(t, r.uch, r.zah); return }
+                // Объём (0.23.1, Владимир): касание ячейки и пальцем — сразу ввод числа, без карточки строки.
+                if (col == TableCol.VOL) { volDialog(t, r); return }
                 if (!pen || col == null) { rowCard(r); return }
                 cellAction(t, r, col)
             }
@@ -1024,6 +1026,10 @@ class TableUi(private val a: BoardActivity) {
             out += pill("+ строка", "sel_add") { addForm(t, next = true) }
             out += pill("Столбцы", "sel_cols") { columnsDialog(t) }
             out += pill(if (t.sheets.isEmpty()) "+ план" else "План", "sel_plan") { if (t.sheets.isEmpty()) a.planUi.addSheet(t) else a.planUi.sheetMenu(t) }
+            out += pill(if (t.locked) "Открепить" else "Закрепить", "sel_tpin") {
+                a.pushUndo(); t.locked = !t.locked; a.changed(); a.buildSelectionBar()
+                a.hint(if (t.locked) "Таблица закреплена: не сдвинется — рисуйте поверх плана. Открепить — булавка в углу" else "Таблицу снова можно двигать", 3000)
+            }
             out += if (t.filter == null) pill("Отбор", "sel_filter") { filterDialog(t) }
             else pill("Показать всё", "sel_filter") { t.filter = null; v.invalidate(); a.buildSelectionBar() }
             out += pill("Сводка", "sel_summary") { summaryDialog(only = t) }

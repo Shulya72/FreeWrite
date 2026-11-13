@@ -14,14 +14,20 @@ import kotlin.math.min
  */
 object MagicFill {
 
-    /** Что получилось: контур (x, y в пикселях), площадь, вытекло наружу; [error] — почему не вышло. */
-    class Result(val pts: FloatArray, val area: Int, val leaked: Boolean, val onInk: Boolean, val error: String = "") {
+    /**
+     * Что получилось: контур (x, y в пикселях), площадь, вытекло наружу; [kind] — помещение, колонна или стены;
+     * [error] — почему не вышло.
+     */
+    class Result(val pts: FloatArray, val area: Int, val leaked: Boolean, val onInk: Boolean, val error: String = "", val kind: Int = ROOM) {
         val ok: Boolean get() = error.isEmpty() && pts.size >= 6
     }
 
     const val ERR_LINE = "line"
     const val ERR_WALL = "wall"
     const val ERR_EMPTY = "empty"
+    const val ROOM = 0
+    const val COLUMN = 1
+    const val WALL = 2
 
     /** Порог «линия чертежа»: темнее 78 % яркости бумаги (бумага — 90-й процентиль яркости). */
     fun threshold(lum: ByteArray): Int {
@@ -37,16 +43,31 @@ object MagicFill {
     fun inkMask(lum: ByteArray, t: Int = threshold(lum)): BooleanArray = BooleanArray(lum.size) { (lum[it].toInt() and 0xFF) < t }
 
     /**
-     * Найти область под точкой (x, y). [ink] — маска линий ([inkMask]), [closed] — она же с закрытым зазором
-     * ([dilate] на gap; при gap = 0 — сама [ink]): их удобно считать один раз на лист и зазор.
+     * «Толстое» на чертеже (0.23.1): стены, колонны, пилоны — сплошные или заштрихованные. Штриховку закрываем
+     * (щели до 6 px), тонкие линии, размеры и текст убираем (уже 5 px). Считается один раз на лист.
      */
-    fun find(ink: BooleanArray, closed: BooleanArray, w: Int, h: Int, x: Int, y: Int, gap: Int): Result {
+    fun solidMask(ink: BooleanArray, w: Int, h: Int): BooleanArray {
+        val closed = erode(dilate(ink, w, h, 3), w, h, 3)
+        return dilate(erode(closed, w, h, 2), w, h, 2)
+    }
+
+    /**
+     * Найти область под точкой (x, y). [ink] — маска линий ([inkMask]), [closed] — она же с закрытым зазором
+     * ([dilate] на gap), [solid] — толстое ([solidMask]; null — посчитать в окне вокруг касания).
+     *
+     * Что под пальцем, решает сама линия (без зазора): касание рядом с текстом или размерами — всё равно помещение.
+     * По толстому — колонна (небольшое пятно) или стены (всё соединённое); по тонкой линии или тексту — помещение рядом.
+     */
+    fun find(ink: BooleanArray, closed: BooleanArray, w: Int, h: Int, x: Int, y: Int, gap: Int, solid: BooleanArray? = null): Result {
         if (x !in 0 until w || y !in 0 until h) return Result(FloatArray(0), 0, false, false, ERR_EMPTY)
-        val i0 = y * w + x
-        if (closed[i0]) return findInk(ink, w, h, x, y, gap)
-        // Помещение: заливка по «бумаге» до линий (с закрытыми щелями).
+        if (inkNear(ink, w, h, x, y, 1)) {
+            val r = findSolid(ink, solid, w, h, x, y)
+            if (r != null) return r
+        }
+        // Помещение: заливка по «бумаге» до линий (с закрытыми щелями). Палец у самой линии — шаг в сторону от неё.
+        val seed = nearest(w, h, x, y, gap + 8) { !closed[it] } ?: return Result(FloatArray(0), 0, false, true, ERR_LINE)
         val region = BooleanArray(w * h)
-        val res = flood(w, h, i0, region) { !closed[it] }
+        val res = flood(w, h, seed, region) { !closed[it] }
         // Дошла до края листа — помещение не замкнуто (или кликнули снаружи здания).
         val leaked = res.border
         // Вернуть отступ от линий: на зазор + 1 пиксель — контур ложится на линии чертежа.
@@ -55,41 +76,138 @@ object MagicFill {
         return Result(simplify(pts, 1.2f), res.area, leaked, false)
     }
 
-    /** Касание по линии: колонна/пилон (толстое тёмное или заштрихованное пятно) — само пятно; тонкая линия — нет. */
-    private fun findInk(ink: BooleanArray, w: Int, h: Int, x: Int, y: Int, gap: Int): Result {
-        // Окно вокруг касания: колонны небольшие, а считать весь лист для них не нужно.
-        val half = 320
-        val wx0 = max(0, x - half); val wy0 = max(0, y - half)
-        val wx1 = min(w, x + half); val wy1 = min(h, y + half)
-        val ww = wx1 - wx0; val wh = wy1 - wy0
-        val m = BooleanArray(ww * wh)
-        for (yy in 0 until wh) System.arraycopy(ink, (wy0 + yy) * w + wx0, m, yy * ww, ww)
-        // Штриховку — в сплошное (закрыть), тонкие линии — убрать (открыть): остаются толстые пятна.
-        val rc = max(2, gap)
-        val solid = erode(dilate(m, ww, wh, rc), ww, wh, rc)
-        val e = 2
-        val opened = dilate(erode(solid, ww, wh, e), ww, wh, e)
-        var lx = x - wx0; var ly = y - wy0
-        if (!opened[ly * ww + lx]) {
-            // Палец чуть мимо — ближайшее пятно в 6 пикселях.
-            var best = -1; var bd = Int.MAX_VALUE
-            for (dy in -6..6) for (dx in -6..6) {
-                val xx = lx + dx; val yy = ly + dy
-                if (xx !in 0 until ww || yy !in 0 until wh || !opened[yy * ww + xx]) continue
-                val d = dx * dx + dy * dy
-                if (d < bd) { bd = d; best = yy * ww + xx }
-            }
-            if (best < 0) return Result(FloatArray(0), 0, false, true, ERR_LINE)
-            lx = best % ww; ly = best / ww
+    private fun inkNear(ink: BooleanArray, w: Int, h: Int, x: Int, y: Int, r: Int): Boolean {
+        for (dy in -r..r) for (dx in -r..r) {
+            val xx = x + dx; val yy = y + dy
+            if (xx in 0 until w && yy in 0 until h && ink[yy * w + xx]) return true
         }
+        return false
+    }
+
+    /** Ближайший пиксель (по расстоянию) в радиусе r, где ok. */
+    private inline fun nearest(w: Int, h: Int, x: Int, y: Int, r: Int, ok: (Int) -> Boolean): Int? {
+        var best = -1; var bd = Int.MAX_VALUE
+        for (dy in -r..r) for (dx in -r..r) {
+            val d = dx * dx + dy * dy
+            if (d >= bd || d > r * r) continue
+            val xx = x + dx; val yy = y + dy
+            if (xx !in 0 until w || yy !in 0 until h || !ok(yy * w + xx)) continue
+            bd = d; best = yy * w + xx
+        }
+        return if (best >= 0) best else null
+    }
+
+    /**
+     * Касание по линии: толстое пятно под пальцем — колонна (небольшое) или стены (соединённое — целиком).
+     * null — под пальцем тонкая линия или текст (тогда заливаем помещение рядом).
+     */
+    private fun findSolid(ink: BooleanArray, solid0: BooleanArray?, w: Int, h: Int, x: Int, y: Int): Result? {
+        // Без готовой маски — считаем в окне вокруг касания (проверки, маленькие картинки).
+        val half = 320
+        val full = solid0 != null
+        val wx0 = if (full) 0 else max(0, x - half); val wy0 = if (full) 0 else max(0, y - half)
+        val wx1 = if (full) w else min(w, x + half); val wy1 = if (full) h else min(h, y + half)
+        val ww = wx1 - wx0; val wh = wy1 - wy0
+        val solid = solid0 ?: run {
+            val m = BooleanArray(ww * wh)
+            for (yy in 0 until wh) System.arraycopy(ink, (wy0 + yy) * w + wx0, m, yy * ww, ww)
+            solidMask(m, ww, wh)
+        }
+        val start = nearest(ww, wh, x - wx0, y - wy0, 4) { solid[it] } ?: return null
         val region = BooleanArray(ww * wh)
-        val res = flood(ww, wh, ly * ww + lx, region) { opened[it] }
-        // Пятно упёрлось в край окна или огромное — это стены, а не колонна.
-        if (res.border && (wx0 > 0 || wy0 > 0 || wx1 < w || wy1 < h) || res.area > w * h * 0.03) return Result(FloatArray(0), res.area, false, true, ERR_WALL)
-        val pts = contour(region, ww, wh) ?: return Result(FloatArray(0), 0, false, true, ERR_EMPTY)
+        val res = flood(ww, wh, start, region) { solid[it] }
+        val box = bbox(region, ww, wh)
+        val bw = box[2] - box[0] + 1; val bh = box[3] - box[1] + 1
+        // Мелкое и тонкое (слово, цифра размера) — не колонна. Залитый пилон (почти сплошной) — колонна при любой форме.
+        if (min(bw, bh) < 6 || res.area < 50) return null
+        if (min(bw, bh) < 10 && max(bw, bh) >= 2.2f * min(bw, bh) && density(ink, w, region, ww, wh, wx0, wy0) < 0.6f) return null
+        val small = res.area <= w * h * 0.03 && !(res.border && !full)
+        val pts = contourIn(region, ww, wh, box) ?: return null
         val s = simplify(pts, 1.0f)
         for (k in s.indices step 2) { s[k] += wx0.toFloat(); s[k + 1] += wy0.toFloat() }
-        return Result(s, res.area, false, true)
+        return Result(s, res.area, false, true, kind = if (small) COLUMN else WALL)
+    }
+
+    /** Доля пикселей линий (без закрытия) внутри пятна: залитое — около 1, текст и штриховка — меньше. */
+    private fun density(ink: BooleanArray, w: Int, region: BooleanArray, ww: Int, wh: Int, wx0: Int, wy0: Int): Float {
+        var n = 0; var k = 0
+        for (yy in 0 until wh) for (xx in 0 until ww) if (region[yy * ww + xx]) { n++; if (ink[(wy0 + yy) * w + wx0 + xx]) k++ }
+        return if (n == 0) 0f else k.toFloat() / n
+    }
+
+    private fun bbox(m: BooleanArray, w: Int, h: Int): IntArray {
+        var l = w; var t = h; var r = -1; var b = -1
+        for (y in 0 until h) { val o = y * w; for (x in 0 until w) if (m[o + x]) { if (x < l) l = x; if (x > r) r = x; if (y < t) t = y; if (y > b) b = y } }
+        return intArrayOf(l, t, max(l, r), max(t, b))
+    }
+
+    /** Контур маски внутри рамки box (без копии всего листа) — в координатах маски. */
+    private fun contourIn(m: BooleanArray, w: Int, h: Int, box: IntArray): FloatArray? {
+        val l = max(0, box[0] - 1); val t = max(0, box[1] - 1)
+        val r = min(w - 1, box[2] + 1); val b = min(h - 1, box[3] + 1)
+        val sw = r - l + 1; val sh = b - t + 1
+        val sub = BooleanArray(sw * sh)
+        for (yy in 0 until sh) System.arraycopy(m, (t + yy) * w + l, sub, yy * sw, sw)
+        val c = contour(sub, sw, sh) ?: return null
+        for (k in c.indices step 2) { c[k] += l.toFloat(); c[k + 1] += t.toFloat() }
+        return c
+    }
+
+    /**
+     * «Кисть по стенам» (0.23.1): провели пальцем вдоль стен — берутся толстые места чертежа под кистью (стены,
+     * колонны) — каждое своим куском; если под кистью толстого почти нет — просто след кисти.
+     * [path] — точки x, y в пикселях, [radius] — полуширина кисти.
+     */
+    fun brush(solid: BooleanArray, w: Int, h: Int, path: FloatArray, radius: Float): List<FloatArray> {
+        if (path.size < 2) return emptyList()
+        val r = max(2f, radius)
+        var l = w; var t = h; var rr = 0; var bt = 0
+        for (k in path.indices step 2) {
+            l = min(l, (path[k] - r).toInt()); rr = max(rr, (path[k] + r).toInt() + 1)
+            t = min(t, (path[k + 1] - r).toInt()); bt = max(bt, (path[k + 1] + r).toInt() + 1)
+        }
+        l = max(0, l); t = max(0, t); rr = min(w, rr); bt = min(h, bt)
+        if (rr <= l || bt <= t) return emptyList()
+        val sw = rr - l; val sh = bt - t
+        val stroke = BooleanArray(sw * sh)
+        // След кисти: кружки вдоль пути с шагом в полрадиуса.
+        val step = max(1f, r / 2f)
+        fun stamp(cx: Float, cy: Float) {
+            val x0 = max(l, (cx - r).toInt()); val x1 = min(rr - 1, (cx + r).toInt())
+            val y0 = max(t, (cy - r).toInt()); val y1 = min(bt - 1, (cy + r).toInt())
+            for (yy in y0..y1) for (xx in x0..x1) if ((xx - cx) * (xx - cx) + (yy - cy) * (yy - cy) <= r * r) stroke[(yy - t) * sw + (xx - l)] = true
+        }
+        stamp(path[0], path[1])
+        for (k in 2 until path.size step 2) {
+            val ax = path[k - 2]; val ay = path[k - 1]; val bx = path[k]; val by = path[k + 1]
+            val len = kotlin.math.hypot(bx - ax, by - ay)
+            val n = max(1, (len / step).toInt())
+            for (i in 1..n) stamp(ax + (bx - ax) * i / n, ay + (by - ay) * i / n)
+        }
+        var strokeArea = 0; var hit = 0
+        val m = BooleanArray(sw * sh)
+        for (yy in 0 until sh) for (xx in 0 until sw) {
+            val i = yy * sw + xx
+            if (!stroke[i]) continue
+            strokeArea++
+            if (solid[(t + yy) * w + l + xx]) { m[i] = true; hit++ }
+        }
+        // Под кистью почти нет стен — красим след кисти.
+        val mask = if (hit < strokeArea * 0.12f) stroke else m
+        val out = ArrayList<FloatArray>()
+        val seen = BooleanArray(sw * sh)
+        for (i in mask.indices) {
+            if (!mask[i] || seen[i]) continue
+            val comp = BooleanArray(sw * sh)
+            val f = flood(sw, sh, i, comp) { mask[it] && !seen[it] }
+            for (j in comp.indices) if (comp[j]) seen[j] = true
+            if (f.area < 30) continue // крошки
+            val c = contourIn(comp, sw, sh, bbox(comp, sw, sh)) ?: continue
+            val sp = simplify(c, 1.0f)
+            for (k in sp.indices step 2) { sp[k] += l.toFloat(); sp[k + 1] += t.toFloat() }
+            out += sp
+        }
+        return out
     }
 
     private class Flood(val area: Int, val border: Boolean)
