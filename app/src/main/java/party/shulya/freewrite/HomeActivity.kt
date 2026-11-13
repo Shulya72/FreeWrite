@@ -415,8 +415,10 @@ class HomeActivity : Activity() {
                     b.sync.remoteInvite = j.invite
                     b.sync.remoteSeq = 0
                     b.sync.pushedRev = ""
-                    Remote.apply(b, pulled.rows)
+                    // Доска могла уже быть на планшете (подключались раньше, старой версией) — перечитать целиком.
+                    Remote.apply(b, pulled.rows, refresh = true)
                     b.sync.remoteSeq = pulled.next
+                    b.sync.readBy = Remote.appVersion
                     boards.save(b)
                     renderList()
                     Toast.makeText(this, "Подключено: «${b.title}»", Toast.LENGTH_LONG).show()

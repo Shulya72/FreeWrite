@@ -49,6 +49,11 @@ class BoardSync {
     var remoteSeq = 0L
     /** Все свои правки с отметкой не позже этой уже на сервере. */
     var pushedRev = ""
+    /**
+     * Какая версия приложения (versionCode) последней прочитала доску с сервера целиком (0 — до 0.25.2).
+     * Меньше [Remote.appVersion] — при следующей синхронизации доска перечитывается целиком.
+     */
+    var readBy = 0
     /** Картинки, которые уже есть на сервере. */
     val uploadedImages: HashSet<String> = LinkedHashSet()
     /** Участники общей доски: номер планшета → имя (из правок с сервера). */
@@ -122,6 +127,7 @@ class BoardSync {
             sb.append(",\"i\":").append(JSONObject.quote(remoteInvite))
             sb.append(",\"s\":").append(remoteSeq)
             sb.append(",\"p\":").append(JSONObject.quote(pushedRev))
+            if (readBy > 0) sb.append(",\"v\":").append(readBy)
             sb.append(",\"u\":[")
             first = true
             for (f in uploadedImages) {
@@ -164,6 +170,7 @@ class BoardSync {
                 s.remoteInvite = r.optString("i", "")
                 s.remoteSeq = r.optLong("s")
                 s.pushedRev = r.optString("p", "")
+                s.readBy = r.optInt("v")
                 r.optJSONArray("u")?.let { a -> for (i in 0 until a.length()) s.uploadedImages += a.optString(i) }
             }
             return s

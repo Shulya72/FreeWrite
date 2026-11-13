@@ -92,10 +92,13 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         host.saveBoard()
         val board = host.board()
         val s = board.sync
-        val changes = Remote.pending(board)
+        // Первая синхронизация после обновления приложения: сначала перечитать доску целиком (старая версия
+        // могла потерять незнакомое), своё отправить следующим кругом — уже поверх полной доски.
+        val refresh = s.readBy < Remote.appVersion
+        val changes = if (refresh) emptyList() else Remote.pending(board)
         val boardId = board.id
         val key = s.remoteKey
-        val since = s.remoteSeq
+        val since = if (refresh) 0L else s.remoteSeq
         if (changes.isNotEmpty()) host.onSyncState(State("отправляю…", busy = true))
         net.execute {
             // Отметка последней дошедшей пачки: если связь оборвётся посреди большой выгрузки,
@@ -105,10 +108,10 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
                 Remote.push(transport, boardId, key, device, changes, Profile.name(appContext)) { pushedTo = it }
                 val pulled = Remote.pull(transport, boardId, key, since)
                 val done = pushedTo
-                main.post { finish(boardId, done, pulled, null) }
+                main.post { finish(boardId, done, pulled, null, refresh) }
             } catch (t: Throwable) {
                 val done = pushedTo
-                main.post { finish(boardId, done, null, t) }
+                main.post { finish(boardId, done, null, t, refresh) }
             }
         }
     }
@@ -121,7 +124,7 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         if (Remote.pending(b).isNotEmpty() || running) syncNow()
     }
 
-    private fun finish(boardId: String, pushedTo: String?, pulled: Remote.Pulled?, error: Throwable?) {
+    private fun finish(boardId: String, pushedTo: String?, pulled: Remote.Pulled?, error: Throwable?, refresh: Boolean = false) {
         if (closed) return
         val b = host.board()
         if (b.id != boardId) { running = false; return }
@@ -143,20 +146,24 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
             kick(500)
             return
         }
-        applyWhenIdle(pulled, 0)
+        applyWhenIdle(pulled, 0, refresh)
     }
 
-    private fun applyWhenIdle(pulled: Remote.Pulled, tries: Int) {
+    private fun applyWhenIdle(pulled: Remote.Pulled, tries: Int, refresh: Boolean = false) {
         if (closed) return
         if (pulled.rows.isNotEmpty() && !host.canApply() && tries < 40) {
-            main.postDelayed({ applyWhenIdle(pulled, tries + 1) }, 500)
+            main.postDelayed({ applyWhenIdle(pulled, tries + 1, refresh) }, 500)
             return
         }
         val b = host.board()
         val s = b.sync
         val authors = HashMap<String, Int>()
-        val n = if (pulled.rows.isEmpty()) 0 else Remote.apply(b, pulled.rows, authors)
+        val n = if (pulled.rows.isEmpty()) 0 else Remote.apply(b, pulled.rows, authors, refresh)
         s.remoteSeq = maxOf(s.remoteSeq, pulled.next)
+        if (refresh) {
+            s.readBy = Remote.appVersion
+            again = true // своё — следующим кругом
+        }
         host.saveBoard()
         if (n > 0) host.onRemoteApplied(n, authors)
         lastOk = System.currentTimeMillis()
@@ -192,32 +199,40 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         val key = s.remoteKey
         img.execute {
             val uploaded = HashSet<String>()
-            var downloaded = 0
             var error: Throwable? = null
-            try {
-                if (toUpload.isNotEmpty()) {
+            // Сначала получить недостающее (его ждут на экране: листы планов, картинки коллег), потом отправить своё.
+            // Ошибка с одной картинкой не останавливает остальные (раньше одна неудача — и лист плана в конце
+            // очереди не приходил никогда); неудавшиеся — в следующий раз.
+            for (f in toDownload) {
+                if (closed) break
+                if (!BoardShare.isSafeImageName(f)) continue
+                main.post { host.onSyncState(State("получаю картинку…", busy = true)) }
+                try {
+                    Remote.downloadImage(transport, boardId, key, f, File(imageDir, f))
+                    if (!closed) main.post { host.onImagesArrived() } // большие листы — показывать по одному
+                } catch (e: SyncException) {
+                    if (e.code != "no_image") error = error ?: e // «нет картинки» — её ещё не выгрузили, в другой раз
+                } catch (t: Throwable) {
+                    error = error ?: t
+                }
+            }
+            if (toUpload.isNotEmpty() && !closed) {
+                try {
                     val have = Remote.imagesOnServer(transport, boardId, key, toUpload)
                     uploaded += have
                     for (f in toUpload) {
                         if (f in have || closed) continue
                         main.post { host.onSyncState(State("отправляю картинку…", busy = true)) }
-                        Remote.uploadImage(transport, boardId, key, File(imageDir, f))
-                        uploaded += f
+                        try {
+                            Remote.uploadImage(transport, boardId, key, File(imageDir, f))
+                            uploaded += f
+                        } catch (t: Throwable) {
+                            error = error ?: t
+                        }
                     }
+                } catch (t: Throwable) {
+                    error = error ?: t
                 }
-                for (f in toDownload) {
-                    if (closed) break
-                    if (!BoardShare.isSafeImageName(f)) continue
-                    main.post { host.onSyncState(State("получаю картинку…", busy = true)) }
-                    try {
-                        Remote.downloadImage(transport, boardId, key, f, File(imageDir, f))
-                        downloaded++
-                    } catch (e: SyncException) {
-                        if (e.code != "no_image") throw e // картинку ещё не выгрузили — в другой раз
-                    }
-                }
-            } catch (t: Throwable) {
-                error = t
             }
             main.post {
                 imagesRunning = false
@@ -228,7 +243,6 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
                     cur.sync.peerImages += uploaded
                     host.saveBoard()
                 }
-                if (downloaded > 0) host.onImagesArrived()
                 host.onSyncState(if (error != null) errorState(error) else State("✓ " + Ui.time(System.currentTimeMillis())))
             }
         }
@@ -256,6 +270,7 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
                     if (cur.id != boardId) return@onSuccess
                     cur.sync.remoteKey = key
                     cur.sync.remoteInvite = invite
+                    cur.sync.readBy = Remote.appVersion // доска своя — перечитывать нечего
                     cur.sync.remoteSeq = 0
                     cur.sync.pushedRev = ""
                     host.saveBoard()

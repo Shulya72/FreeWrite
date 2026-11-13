@@ -56,6 +56,13 @@ object Remote {
     const val MAX_BATCH_BYTES = 1_500_000
     private const val MAX_PULL_PAGES = 200
 
+    /**
+     * Версия приложения (versionCode). Доска, которую с сервера последней читала более старая версия
+     * ([BoardSync.readBy] меньше), один раз перечитывается целиком: старая версия выбрасывала незнакомые ей
+     * поля и виды предметов (листы плана, области захваток, объёмы по частям…), но правку отмечала полученной.
+     */
+    var appVersion: Int = BuildConfig.VERSION_CODE
+
     /** Правка для сервера: data = null — удаление. */
     class Change(val id: String, val rev: String, val kind: String, val data: String?)
 
@@ -145,22 +152,30 @@ object Remote {
      * Влить правки с сервера в доску (в главном потоке). Свои правки новее — остаются (уйдут на сервер).
      * Возвращает, сколько предметов изменилось.
      */
-    fun apply(board: Board, rows: List<Row>, authors: MutableMap<String, Int>? = null): Int {
+    fun apply(board: Board, rows: List<Row>, authors: MutableMap<String, Int>? = null, refresh: Boolean = false): Int {
         val s = board.sync
         val take = LinkedHashMap<String, Row>()
+        // Перечитывание (refresh): правку, которая уже была получена, берём ещё раз, если своя копия предмета
+        // отличается от присланной — её получала старая версия и потеряла незнакомое. Свои более новые правки
+        // (отметка позже) не трогаем.
+        val mine = if (refresh) board.entryHashes() else null
         for (r in rows) {
             s.observe(r.rev)
             if (r.author.isNotBlank()) deviceOf(r.rev).takeIf { it.isNotEmpty() }?.let { s.members[it] = r.author }
             val lr = s.rev(r.id)
             if (lr != null && r.rev <= lr) {
-                if (r.rev == lr) s.seenRemote[r.id] = r.rev
-                continue
+                val again = mine != null && r.rev == lr && r.data != null && !r.id.startsWith("~") &&
+                    mine[r.id] != Board.fingerprint(r.data)
+                if (!again) {
+                    if (r.rev == lr) s.seenRemote[r.id] = r.rev
+                    continue
+                }
             }
             val prev = take[r.id]
             if (prev == null || r.rev > prev.rev) take[r.id] = r
         }
         if (take.isEmpty()) return 0
-        val before = board.entryHashes()
+        val before = mine ?: board.entryHashes()
         for (r in take.values) runCatching { applyOne(board, r) }.onFailure {
             android.util.Log.w("FreeWrite", "remote row ${r.kind}", it)
         }
