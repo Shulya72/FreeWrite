@@ -65,6 +65,13 @@ class HomeActivity : Activity() {
     override fun onResume() {
         super.onResume()
         renderList()
+        // Прошлый раз приложение закрылось с ошибкой — предложить отчёт (0.26.2), один раз за запуск.
+        if (!crashOffered) {
+            crashOffered = true
+            window.decorView.postDelayed({
+                if (!isFinishing) CrashReport.pending(this)?.let { CrashReport.offer(this, it) }
+            }, 400)
+        }
     }
 
     /**
@@ -208,7 +215,8 @@ class HomeActivity : Activity() {
         m.menu.add(0, MENU_UPDATES, 1, "Проверить обновления")
         m.menu.add(0, MENU_CHECK, 2, if (phone) "Проверка устройства" else "Проверка планшета")
         m.menu.add(0, MENU_PROFILE, 3, Profile.name(this).ifEmpty { "Как вас зовут?" })
-        m.menu.add(0, 0, 4, "Версия ${BuildConfig.VERSION_NAME}").isEnabled = false
+        m.menu.add(0, MENU_REPORT, 4, "Отправить отчёт о работе")
+        m.menu.add(0, 0, 5, "Версия ${BuildConfig.VERSION_NAME}").isEnabled = false
         m.setOnMenuItemClickListener { onMenu(it.itemId); true }
         m.show()
     }
@@ -219,6 +227,7 @@ class HomeActivity : Activity() {
             MENU_UPDATES -> checkUpdates(silent = false)
             MENU_CHECK -> startActivity(Intent(this, DiagnosticsActivity::class.java))
             MENU_PROFILE -> Profile.ask(this, required = false) { refreshProfile() }
+            MENU_REPORT -> { CrashReport.markSeen(this); CrashReport.share(this, CrashReport.build(this)) }
         }
     }
 
@@ -640,5 +649,8 @@ class HomeActivity : Activity() {
         private const val MENU_UPDATES = 2
         private const val MENU_CHECK = 3
         private const val MENU_PROFILE = 4
+        private const val MENU_REPORT = 5
+        /** Окно «закрылся с ошибкой» уже показывали в этом запуске. */
+        internal var crashOffered = false
     }
 }

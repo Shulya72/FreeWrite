@@ -15,6 +15,7 @@ import android.graphics.RectF
 import android.graphics.drawable.ColorDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -242,7 +243,7 @@ class PlanUi(private val a: BoardActivity) {
             .setNegativeButton("Отмена", null).show()
     }
 
-    /** Меню листа (кнопка «План» на панели таблицы): обрезать, название, убрать. */
+    /** Меню листа (кнопка «План» на панели таблицы, касание «План захваток ▾» или открытой вкладки): обрезать, название, убрать. */
     fun sheetMenu(t: BoardTable) {
         val sh = TablePlan.current(t) ?: run { addSheet(t); return }
         val name = v.tableDraw.sheetName(t, t.sheets.indexOf(sh))
@@ -253,22 +254,31 @@ class PlanUi(private val a: BoardActivity) {
                         a.pushUndo(); sh.setCrop(copy.cl, copy.ct, copy.cr, copy.cb); t.lay = null; a.changed() } } }
                     1 -> renameSheet(t, sh)
                     2 -> addSheet(t)
-                    3 -> {
-                        val n = b.zones.count { it.t == t.id && it.s == sh.id }
-                        AlertDialog.Builder(a).setMessage("Убрать лист «$name»" + (if (n > 0) " и ${Ui.plural(n, "область", "области", "областей")} захваток на нём" else "") + "? «Отменить» вернёт.")
-                            .setPositiveButton("Убрать") { _, _ ->
-                                endOutline(save = false)
-                                a.pushUndo()
-                                t.sheets.remove(sh)
-                                b.zones.removeAll { it.t == t.id && it.s == sh.id }
-                                t.tab = t.tab.coerceIn(0, max(0, t.sheets.size - 1))
-                                a.changed()
-                            }
-                            .setNegativeButton("Отмена", null).show()
-                    }
+                    3 -> removeSheet(t, sh)
                 }
             }
             .setNegativeButton("Закрыть", null).show()
+    }
+
+    /** Убрать лист из таблицы вместе с областями и разметкой на нём (с подтверждением; «Отменить» вернёт). */
+    internal var removeDlg: AlertDialog? = null
+    fun removeSheet(t: BoardTable, sh: PlanSheet) {
+        val name = v.tableDraw.sheetName(t, t.sheets.indexOf(sh))
+        val n = b.zones.count { it.t == t.id && it.s == sh.id }
+        removeDlg = AlertDialog.Builder(a).setTitle("Убрать лист «$name»?")
+            .setMessage((if (n > 0) "Вместе с ним уйдут ${Ui.plural(n, "область", "области", "областей")} захваток и разметка на нём. " else "") +
+                "Строки таблицы останутся. «Отменить» вернёт лист.")
+            .setPositiveButton("Убрать") { _, _ ->
+                endOutline(save = false)
+                a.pushUndo()
+                t.sheets.remove(sh)
+                b.zones.removeAll { it.t == t.id && it.s == sh.id }
+                t.tab = t.tab.coerceIn(0, max(0, t.sheets.size - 1))
+                t.lay = null
+                a.changed()
+                a.hint("Лист «$name» убран. «Отменить» — вернуть", 2500)
+            }
+            .setNegativeButton("Отмена", null).show()
     }
 
     private fun renameSheet(t: BoardTable, sh: PlanSheet) {
@@ -686,7 +696,9 @@ class PlanUi(private val a: BoardActivity) {
     private fun loadVector(sh: PlanSheet): PdfVector.Page {
         val key = sh.pdf + "#" + sh.page
         synchronized(this) { if (key == vecKey) vec?.let { return it } }
+        val t0 = SystemClock.uptimeMillis()
         val p = PdfVector.read(File(imageDir, sh.pdf), sh.page)
+        Trail.add("PDF листа прочитан: путей ${p.paths.size}, ${File(imageDir, sh.pdf).length() / 1024} КБ, ${SystemClock.uptimeMillis() - t0} мс")
         synchronized(this) { vecKey = key; vec = p }
         return p
     }
@@ -703,7 +715,8 @@ class PlanUi(private val a: BoardActivity) {
         val key = sh.pdf + "#" + sh.page
         snapIndex?.takeIf { snapKey == key }?.let { pe.snap = it; return }
         exec.execute {
-            val s = runCatching { PlanSnap(loadVector(sh)) }.getOrNull() ?: return@execute
+            val s = runCatching { PlanSnap(loadVector(sh)) }.onFailure { Trail.add("Привязка не готова: $it") }.getOrNull() ?: return@execute
+            Trail.add("Привязка готова: линий ${s.size}")
             main.post {
                 snapKey = key; snapIndex = s
                 if (v.planEdit === pe) pe.snap = s
@@ -736,6 +749,7 @@ class PlanUi(private val a: BoardActivity) {
         val n = TablePlan.elements(b, t, sh.id).size
         val items = arrayListOf("Найти элементы на листе…", "Ножницы / шов — разрезать элемент", "Добавить элемент вручную", "Убрать элементы касанием")
         if (n > 0) items += "Убрать всю разметку листа ($n)"
+        items += "Убрать этот лист из таблицы…"
         AlertDialog.Builder(a).setTitle("Элементы · ${v.tableDraw.sheetName(t, t.sheets.indexOf(sh))}")
             .setItems(items.toTypedArray()) { _, w ->
                 when (w) {
@@ -743,7 +757,7 @@ class PlanUi(private val a: BoardActivity) {
                     1 -> startElements(t, PlanEdit.SCISSORS)
                     2 -> startElements(t, PlanEdit.MAGIC)
                     3 -> startElements(t, PlanEdit.ERASE)
-                    4 -> clearElements(t, sh)
+                    else -> if (w == items.size - 1) removeSheet(t, sh) else clearElements(t, sh)
                 }
             }
             .setNegativeButton("Закрыть", null).show()
@@ -842,8 +856,11 @@ class PlanUi(private val a: BoardActivity) {
         finding = true
         val crop = floatArrayOf(sh.cl, sh.ct, sh.cr, sh.cb)
         val use = layerUse()
+        Trail.add("Поиск элементов: режим $mode, лист ${sh.pxW}×${sh.pxH}")
         exec.execute {
+            val t0 = SystemClock.uptimeMillis()
             val r = runCatching { PlanElements.find(loadVector(sh), mode, crop, use) }
+            Trail.add("Поиск элементов: " + r.fold({ "найдено ${it.elements.size}" }, { "ошибка $it" }) + " за ${SystemClock.uptimeMillis() - t0} мс")
             main.post {
                 finding = false
                 runCatching { wait.dismiss() }

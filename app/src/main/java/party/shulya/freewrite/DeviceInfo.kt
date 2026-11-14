@@ -67,7 +67,7 @@ object DeviceInfo {
         return if (validated) "есть ($kind)" else "$kind без доступа в интернет"
     }
 
-    private fun osLine(): String {
+    internal fun osLine(): String {
         val harmony = sysProp("hw_sc.build.platform.version")
         val brand = osBrand()
         val emui = sysProp("ro.build.version.emui")
@@ -82,7 +82,7 @@ object DeviceInfo {
         return parts.joinToString(" · ")
     }
 
-    private fun cpuLine(): String {
+    internal fun cpuLine(): String {
         val soc = if (Build.VERSION.SDK_INT >= 31) "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}".trim() else ""
         val abis = Build.SUPPORTED_ABIS.joinToString(", ")
         return listOf(soc, Build.HARDWARE, abis)
@@ -90,7 +90,7 @@ object DeviceInfo {
             .joinToString(" · ")
     }
 
-    private fun memoryLine(ctx: Context): String {
+    internal fun memoryLine(ctx: Context): String {
         val am = ctx.getSystemService(ActivityManager::class.java) ?: return "?"
         val mi = ActivityManager.MemoryInfo()
         am.getMemoryInfo(mi)

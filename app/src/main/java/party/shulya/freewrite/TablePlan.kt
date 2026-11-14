@@ -1,6 +1,7 @@
 package party.shulya.freewrite
 
 import android.graphics.Color
+import android.graphics.Path
 import org.json.JSONObject
 
 /**
@@ -63,6 +64,33 @@ class BoardZone(var t: String, var s: String, var uch: String, var zah: String, 
 
     fun zkey(): String = IdTables.zkey(uch, zah)
     fun label(): String = IdTables.zahLabel(uch, zah)
+
+    // Контур в пикселях картинки листа (0.26.2): строится один раз, на кадре доска его только переносит и масштабирует.
+    private var pathCache: Path? = null
+    private var pathPts: FloatArray? = null
+    private var pathHoles: List<FloatArray>? = null
+    private var pathW = 0
+    private var pathH = 0
+
+    /** Контур (с дырами — чёт-нечет) в пикселях картинки листа [pxW]×[pxH]. Новый, если точки или дыры заменили. */
+    fun path(pxW: Int, pxH: Int): Path {
+        pathCache?.let { if (pathPts === pts && pathHoles === holes && pathW == pxW && pathH == pxH) return it }
+        val p = Path()
+        fun ring(r: FloatArray) {
+            var i = 0
+            while (i + 1 < r.size) {
+                val x = r[i] * pxW; val y = r[i + 1] * pxH
+                if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
+                i += 2
+            }
+            p.close()
+        }
+        ring(pts)
+        for (h in holes) ring(h)
+        if (holes.isNotEmpty()) p.fillType = Path.FillType.EVEN_ODD
+        pathCache = p; pathPts = pts; pathHoles = holes; pathW = pxW; pathH = pxH
+        return p
+    }
     fun copy(): BoardZone = BoardZone(t, s, uch, zah, pts.copyOf(), color).also { it.id = id; it.e = e; it.holes = holes.map { h -> h.copyOf() } }
 
     /** Элемент разметки без захватки. */
@@ -235,17 +263,29 @@ object TablePlan {
      * Самый отстающий статус ИГС захватки (по порядку списка ИГС доски): зелёная — только когда все её схемы сданы.
      * null — строк у захватки нет.
      */
-    fun zahStatus(b: Board, t: BoardTable, uch: String, zah: String): BoardStatus? {
-        val rows = IdTables.zahRows(b, t, uch, zah)
-        if (rows.isEmpty()) return null
+    fun zahStatus(b: Board, t: BoardTable, uch: String, zah: String): BoardStatus? = zahStatuses(b, t)[IdTables.zkey(uch, zah)]
+
+    /**
+     * Статусы всех захваток таблицы за один проход по строкам (0.26.2): ключ захватки ([IdTables.zkey]) → самый отстающий
+     * статус ИГС. Раньше статус каждой области считался перебором всех строк доски — с разметкой 0.26 (сотни областей)
+     * это тормозило каждый кадр.
+     */
+    fun zahStatuses(b: Board, t: BoardTable): Map<String, BoardStatus> {
         val list = b.statuses(BoardStatus.ID)
-        var best: BoardStatus? = null
-        var bi = Int.MAX_VALUE
-        for (r in rows) {
-            val i = list.indexOfFirst { it.id == r.igs }.let { if (it < 0) 0 else it }
-            if (i < bi) { bi = i; best = list.getOrNull(i) ?: IdTables.status(b, BoardStatus.ID, r.igs) }
+        val index = HashMap<String, Int>(list.size * 2)
+        for ((i, s) in list.withIndex()) index.putIfAbsent(s.id, i)
+        val best = HashMap<String, Int>()
+        val igsOf = HashMap<String, String>()
+        for (r in b.recs) {
+            if (r.t != t.id) continue
+            val k = r.zkey()
+            val i = index[r.igs] ?: 0 // статус не из списка ИГС — как первый в списке (как раньше)
+            val was = best[k]
+            if (was == null || i < was) { best[k] = i; igsOf[k] = r.igs }
         }
-        return best
+        val out = HashMap<String, BoardStatus>(best.size * 2)
+        for ((k, i) in best) out[k] = list.getOrNull(i) ?: IdTables.status(b, BoardStatus.ID, igsOf[k] ?: "")
+        return out
     }
 
     /** Цвет области на плане: по ИГС или свой; захватка без строк — серый. */
@@ -253,6 +293,13 @@ object TablePlan {
         z.free -> FREE
         t.zoneColor == OWN -> z.color
         else -> zahStatus(b, t, z.uch, z.zah)?.color ?: NO_ROWS
+    }
+
+    /** То же по готовым статусам [zahStatuses] (на кадре — один раз на таблицу). */
+    fun zoneColor(t: BoardTable, z: BoardZone, statuses: Map<String, BoardStatus>): Int = when {
+        z.free -> FREE
+        t.zoneColor == OWN -> z.color
+        else -> statuses[z.zkey()]?.color ?: NO_ROWS
     }
 
     val NO_ROWS = Color.rgb(160, 168, 182)
@@ -325,9 +372,10 @@ object TablePlan {
         val seen = HashSet<String>()
         val counts = LinkedHashMap<String, Int>()
         var none = 0
+        val sts = zahStatuses(b, t)
         for (z in zonesOf(b, t)) {
             if (z.free || sheet(t, z.s) == null || !seen.add(z.zkey())) continue
-            val st = zahStatus(b, t, z.uch, z.zah)
+            val st = sts[z.zkey()]
             if (st == null) none++ else counts[st.id] = (counts[st.id] ?: 0) + 1
         }
         val out = ArrayList<Pair<BoardStatus?, Int>>()
@@ -342,7 +390,10 @@ object TablePlan {
     /** Цвет захватки (участок + захватка → цвет): заливки на доске и области на плане (область главнее). */
     fun zahColorsAll(b: Board, t: BoardTable): Map<String, Int> {
         val m = HashMap(IdTables.zahColors(b, t))
-        for (z in b.zones) if (z.t == t.id && !z.free && sheet(t, z.s) != null) m[z.zkey()] = zoneColor(b, t, z)
+        var sts: Map<String, BoardStatus>? = null
+        for (z in b.zones) if (z.t == t.id && !z.free && sheet(t, z.s) != null) {
+            m[z.zkey()] = zoneColor(t, z, sts ?: zahStatuses(b, t).also { sts = it })
+        }
         return m
     }
 

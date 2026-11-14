@@ -144,6 +144,9 @@ class BoardActivity : Activity(), BoardView.Host {
         if ((board.isEmpty && board.camX == 0f && board.camY == 0f) || intent.getBooleanExtra(EXTRA_FIT, false)) view.post { view.fitAll() }
         // Прислали PDF или картинки через «Поделиться → FreeWrite» и выбрали эту доску.
         intent.getStringArrayListExtra(EXTRA_INSERT)?.let { paths -> view.post { insertFiles(paths) } }
+        Trail.add("Открыта доска: штрихов ${board.strokes.size}, надписей ${board.texts.size}, картинок ${board.images.size}, " +
+            "таблиц ${board.tables.size}, строк ${board.recs.size}, листов плана ${board.tables.sumOf { it.sheets.size }}, " +
+            "областей ${board.zones.size}, ведомостей ${board.vedoms.size}" + if (board.sync.isShared) ", общая" else "")
         if (intent.getBooleanExtra(EXTRA_SHOW_SPEED, false)) {
             showFrameMs = true
             view.post { view.fitAll(); handler.post(frameTicker) }
@@ -155,11 +158,14 @@ class BoardActivity : Activity(), BoardView.Host {
         saveNow(sync = true)
         remote?.flush()
         remote?.stop()
+        Trail.stopWatch()
+        Trail.flush()
         super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
+        Trail.startWatch("доска")
         if (BoardStore.importCount(board.id) != loadedImports) reloadAfterImport()
         remote?.start()
     }
