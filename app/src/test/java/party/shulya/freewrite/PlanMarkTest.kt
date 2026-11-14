@@ -230,6 +230,63 @@ class PlanMarkTest {
         assertTrue(TablePlan.files(back).any { it.endsWith(".pdf") })
     }
 
+    /** Меню листа (0.26.2, Владимир: «как удалить лист с PDF из таблицы?»): шапка «План захваток ▾», открытая вкладка, «Элементы ▾». */
+    @Test
+    fun sheetMenuFromHeaderTabAndElements() {
+        val s = open(sample())
+        var t = s.b.tables[0]
+        val first = t.sheets[0]
+        // Второй лист — появляются вкладки.
+        val white = Bitmap.createBitmap(900, 600, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        val (f2, w2, h2) = BoardImages.importBitmap(ctx, white)
+        s.a.pushUndo(); t.sheets += PlanSheet(f2, w2, h2).also { it.name = "Отм. +3.300" }; t.lay = null; s.a.changed(); idle()
+        s.view.fitAll(); idle()
+        fun headerPoint(): Pair<Float, Float> {
+            val tt = s.b.tables[0]
+            val p = s.view.tableDraw.layout(s.b, tt).plan!!
+            return s.sx(tt.x + 40f * tt.scale) to s.sy(tt.y + (p.top + TableDraw.PLAN_HEAD / 2f) * tt.scale)
+        }
+        fun tabPoint(i: Int): Pair<Float, Float> {
+            val tt = s.b.tables[0]
+            val p = s.view.tableDraw.layout(s.b, tt).plan!!
+            return s.sx(tt.x + (p.tabX[i] + 20f) * tt.scale) to s.sy(tt.y + (p.top + TableDraw.PLAN_HEAD + p.tabsH / 2f + 2f) * tt.scale)
+        }
+        // Касание шапки — меню листа.
+        tap(s.view, headerPoint())
+        assertTrue(latest()!!.isShowing)
+        assertEquals("Убрать этот лист", latest()!!.listView.adapter.getItem(3))
+        latest()!!.dismiss(); idle()
+        // Другая вкладка — открывается; уже открытая — меню листа.
+        tap(s.view, tabPoint(1))
+        t = s.b.tables[0]
+        assertEquals(1, t.tab)
+        tap(s.view, tabPoint(1))
+        val menu = latest()!!
+        assertTrue(menu.isShowing)
+        menu.listView.performItemClick(menu.listView.getChildAt(3) ?: menu.listView, 3, 3)
+        idle()
+        s.a.planUi.removeDlg!!.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        idle()
+        t = s.b.tables[0]
+        assertEquals(listOf(first.id), t.sheets.map { it.id })
+        assertEquals(0, t.tab)
+        // «Отменить» — лист вернулся.
+        s.a.undo(); idle()
+        assertEquals(2, s.b.tables[0].sheets.size)
+        // «Элементы ▾» → последний пункт — убрать лист (открыт первый).
+        s.a.planUi.setTab(s.b.tables[0], 0); idle()
+        s.a.planUi.elementsMenu(s.b.tables[0])
+        val em = latest()!!
+        val last = em.listView.adapter.count - 1
+        assertEquals("Убрать этот лист из таблицы…", em.listView.adapter.getItem(last))
+        em.listView.performItemClick(em.listView.getChildAt(last) ?: em.listView, last, last.toLong())
+        idle()
+        s.a.planUi.removeDlg!!.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        idle()
+        assertEquals(listOf("Отм. +3.300"), s.b.tables[0].sheets.map { it.name })
+        shot(s.view, "plan-sheet-menu.png")
+    }
+
     /** Ручная обводка по точкам (0.26.1): касание рядом с углом пилона — точка ровно в угол чертежа. */
     @Test
     fun pointsSnapToDrawingCorners() {

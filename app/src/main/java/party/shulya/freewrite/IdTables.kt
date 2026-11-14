@@ -52,6 +52,8 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
 
     /** Раскладка (считает [TableDraw]): пересчитывается, когда меняются строки, столбцы, статусы. */
     internal var lay: TableLayout? = null
+    /** Номер кадра, на котором [lay] уже сверена с данными (0.26.2). */
+    internal var layFrame = 0L
 
     /**
      * Все столбцы (со скрытыми) — свои или по умолчанию. Свой список до 0.24 у таблицы с частями объёма: вместо «Объёма по

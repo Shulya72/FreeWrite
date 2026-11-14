@@ -1883,7 +1883,28 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     /** Плитки ещё рисуются (для проверок — дождаться). */
     val tilesBusy: Boolean get() = tiles.busy
 
+    private var frameNo = 0L
+
     override fun onDraw(canvas: Canvas) {
+        // Раскладка таблиц на кадре считается один раз (0.26.2): на кадре она нужна несколько раз на каждую таблицу.
+        val outer = tableDraw.frame
+        tableDraw.frame = ++frameNo
+        val t0 = System.nanoTime()
+        try { drawFrame(canvas) } finally { tableDraw.frame = outer }
+        // Долгий кадр — в журнал для отчёта (0.26.2), не чаще раза в 3 с.
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        if (ms >= 250 && !capturing && !plain) {
+            val now = SystemClock.uptimeMillis()
+            if (now - lastSlowLog > 3000) {
+                lastSlowLog = now
+                Trail.add("Долгий кадр $ms мс (режим $mode, масштаб ${(b.camZ * 100).toInt()} %, таблиц ${b.tables.size}, областей ${b.zones.size})")
+            }
+        }
+    }
+
+    private var lastSlowLog = 0L
+
+    private fun drawFrame(canvas: Canvas) {
         val t0 = System.nanoTime()
         val z = b.camZ
         if (mode == Mode.POINT && !plain && !capturing && (sceneValid || renderScene())) {
@@ -2170,60 +2191,67 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         canvas.save()
         canvas.clipRect(r)
         val pe = planEdit?.takeIf { it.t === t && it.sheet.id == sh.id }
-        for (zn in b.zones) {
-            if (zn.t != t.id || zn.s != sh.id) continue
-            zonePath(zn, sh, r)
-            val c = TablePlan.zoneColor(b, t, zn)
-            if (zn.free) {
-                // Элемент без захватки — бледно-серый: «ещё не залито», в глаза не бросается.
-                fillPaint.color = c; fillPaint.alpha = 60
-                canvas.drawPath(zonePath, fillPaint)
-                linePaint.color = c; linePaint.alpha = 140
-                linePaint.strokeWidth = Ui.dpf(context, 1f) / z
-                canvas.drawPath(zonePath, linePaint)
-                fillPaint.alpha = 255; linePaint.alpha = 255
-                continue
+        // Области — готовыми контурами в пикселях листа (0.26.2): на кадре только перенос и масштаб, статусы захваток —
+        // одним проходом по строкам таблицы.
+        val ps = r.width() / max(1e-6f, (sh.cr - sh.cl) * sh.pxW)
+        val psy = r.height() / max(1e-6f, (sh.cb - sh.ct) * sh.pxH)
+        fun inSheet(draw: () -> Unit) {
+            canvas.save()
+            canvas.translate(r.left, r.top)
+            canvas.scale(ps, psy)
+            canvas.translate(-sh.cl * sh.pxW, -sh.ct * sh.pxH)
+            draw()
+            canvas.restore()
+        }
+        val sts = if (t.zoneColor == TablePlan.OWN) emptyMap() else TablePlan.zahStatuses(b, t)
+        val px = 1f / (z * ps) // один экранный пиксель в пикселях листа
+        val dk = pe?.takeIf { !it.elements }?.let { IdTables.zkey(it.uch, it.zah) }
+        inSheet {
+            for (zn in b.zones) {
+                if (zn.t != t.id || zn.s != sh.id) continue
+                val path = zn.path(sh.pxW, sh.pxH)
+                val c = TablePlan.zoneColor(t, zn, sts)
+                if (zn.free) {
+                    // Элемент без захватки — бледно-серый: «ещё не залито», в глаза не бросается.
+                    fillPaint.color = c; fillPaint.alpha = 60
+                    canvas.drawPath(path, fillPaint)
+                    linePaint.color = c; linePaint.alpha = 140
+                    linePaint.strokeWidth = Ui.dpf(context, 1f) * px
+                    canvas.drawPath(path, linePaint)
+                    fillPaint.alpha = 255; linePaint.alpha = 255
+                    continue
+                }
+                val dim = dk != null && zn.zkey() != dk
+                fillPaint.color = c; fillPaint.alpha = if (dim) 45 else 110
+                canvas.drawPath(path, fillPaint)
+                fillPaint.alpha = 255
+                linePaint.color = c; linePaint.alpha = if (dim) 110 else 230
+                linePaint.strokeWidth = Ui.dpf(context, 1.5f) * px
+                canvas.drawPath(path, linePaint)
+                linePaint.alpha = 255
             }
-            val dim = pe != null && !pe.elements && zn.zkey() != IdTables.zkey(pe.uch, pe.zah)
-            fillPaint.color = c; fillPaint.alpha = if (dim) 45 else 110
-            canvas.drawPath(zonePath, fillPaint)
-            fillPaint.alpha = 255
-            linePaint.color = c; linePaint.alpha = if (dim) 110 else 230
-            linePaint.strokeWidth = Ui.dpf(context, 1.5f) / z
-            canvas.drawPath(zonePath, linePaint)
-            linePaint.alpha = 255
         }
         // Швы (ножницы и швы чертежа) — красным зигзагом, как на чертежах.
         for (sm in sh.seams) drawSeam(canvas, sh, r, sm[0], sm[1], sm[2], sm[3], z)
-        planHover?.let { hz ->
-            if (hz.t == t.id && hz.s == sh.id && b.zones.any { it === hz }) {
-                zonePath(hz, sh, r)
-                linePaint.color = Ui.ACCENT
-                linePaint.strokeWidth = Ui.dpf(context, 3f) / z
-                canvas.drawPath(zonePath, linePaint)
+        inSheet {
+            planHover?.let { hz ->
+                if (hz.t == t.id && hz.s == sh.id && b.zones.any { it === hz }) {
+                    linePaint.color = Ui.ACCENT
+                    linePaint.strokeWidth = Ui.dpf(context, 3f) * px
+                    canvas.drawPath(hz.path(sh.pxW, sh.pxH), linePaint)
+                }
             }
-        }
-        markedZones?.let { mz ->
-            for (zn in mz) {
-                if (zn.t != t.id || zn.s != sh.id || b.zones.none { it === zn }) continue
-                zonePath(zn, sh, r)
-                linePaint.color = Ui.ACCENT
-                linePaint.strokeWidth = Ui.dpf(context, 4f) / z
-                canvas.drawPath(zonePath, linePaint)
+            markedZones?.let { mz ->
+                for (zn in mz) {
+                    if (zn.t != t.id || zn.s != sh.id || b.zones.none { it === zn }) continue
+                    linePaint.color = Ui.ACCENT
+                    linePaint.strokeWidth = Ui.dpf(context, 4f) * px
+                    canvas.drawPath(zn.path(sh.pxW, sh.pxH), linePaint)
+                }
             }
         }
         if (pe != null) drawPlanDraft(canvas, pe, sh, r, z)
         canvas.restore()
-    }
-
-    /** Контур области с дырами (чёт-нечет). */
-    private fun zonePath(zn: BoardZone, sh: PlanSheet, r: RectF) {
-        zonePath(zn.pts, sh, r)
-        if (zn.holes.isEmpty()) return
-        val keep = Path(zonePath)
-        for (hole in zn.holes) { zonePath(hole, sh, r); keep.addPath(zonePath) }
-        keep.fillType = Path.FillType.EVEN_ODD
-        zonePath.set(keep)
     }
 
     /** Шов: отрезок (доли листа) зигзагом постоянного на экране размера. */

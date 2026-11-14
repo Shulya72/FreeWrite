@@ -336,7 +336,11 @@ class TableUi(private val a: BoardActivity) {
             TableHit.PLAN_COLOR -> a.planUi.colorMenu(t)
             TableHit.PLAN_OUTLINE -> a.planUi.chooseZah(t)
             TableHit.PLAN_ELEM -> a.planUi.elementsMenu(t)
-            TableHit.PLAN_TAB -> h.col?.toIntOrNull()?.let { a.planUi.setTab(t, it) }
+            // Вкладка: другая — открыть её, уже открытая — меню листа (0.26.2).
+            TableHit.PLAN_TAB -> h.col?.toIntOrNull()?.let { i ->
+                if (i == t.tab.coerceIn(0, maxOf(0, t.sheets.size - 1))) a.planUi.sheetMenu(t) else a.planUi.setTab(t, i)
+            }
+            TableHit.PLAN_MENU -> a.planUi.sheetMenu(t)
             TableHit.PLAN_SHEET -> a.planUi.onSheetTap(t, h.fx, h.fy)
             TableHit.CELL -> {
                 val r = h.rec ?: return
