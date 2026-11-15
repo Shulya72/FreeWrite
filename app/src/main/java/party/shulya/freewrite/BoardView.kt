@@ -936,6 +936,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     // Исходное положение выделенного в начале жеста: от него считаем сдвиг и масштаб без накопления ошибок.
     private class Orig(val obj: Any, val a: FloatArray, val w: Float)
+
+    /** Масштаб таблицы до жеста переноса/размера (для склейки, 0.26.3); null — таблица в жесте не участвовала. */
+    fun origScale(t: BoardTable): Float? = origs.firstOrNull { it.obj === t }?.a?.getOrNull(2)
     private val origs = ArrayList<Orig>()
     private val origBounds = RectF()
     private var editStarted = false
@@ -962,6 +965,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             for (t in selection.filterIsInstance<BoardTable>()) {
                 if (t.locked) continue
                 for (o in planContents(t)) if (seen.add(o)) objs += o
+                // Приклеенные справа (0.26.3) едут и масштабируются вместе, со своими рисунками на плане.
+                for (f in TableDock.followers(b, t)) {
+                    if (f.locked || !seen.add(f)) continue
+                    objs += f
+                    for (o in planContents(f)) if (seen.add(o)) objs += o
+                }
             }
         }
         for (o in objs) {
@@ -1266,7 +1275,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 parent?.requestDisallowInterceptTouchEvent(true)
                 mode = Mode.PLAN
                 // Лупа с перекрестием (0.26 — пальцем и пером, во всех режимах, кроме кисти): палец или рука закрывают место.
-                planAim = tool != MotionEvent.TOOL_TYPE_MOUSE && pe.tool != PlanEdit.BRUSH
+                planAim = tool != MotionEvent.TOOL_TYPE_MOUSE && !PlanEdit.brushTool(pe.tool)
                 if (planAim) { updateAim(downX, downY, planSnap()); sceneValid = false }
                 if (pe.tool == PlanEdit.ASSIGN || pe.tool == PlanEdit.ERASE) host.onPlanHover(if (planAim) aim.x else x, if (planAim) aim.y else y)
                 val p0 = if (planAim) PointF(aim.x, aim.y) else PointF(x, y)
@@ -1370,6 +1379,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         if (tool == MotionEvent.TOOL_TYPE_ERASER || t == BoardActivity.Tool.ERASER) {
             mode = Mode.ERASE
+            eraseX = x; eraseY = y
             host.onErase(x, y, true)
             return
         }
@@ -1513,8 +1523,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 invalidate()
             }
             Mode.ERASE -> {
-                for (h in 0 until ev.historySize) host.onErase(wx(ev.getHistoricalX(idx, h)), wy(ev.getHistoricalY(idx, h)), false)
-                host.onErase(wx(sxp), wy(syp), false)
+                // Ластик (0.26.2): точки движения — не чаще чем через 4 dp (ластик 14 dp, ничего не пропустит); раскладка
+                // таблиц на одно движение сверяется один раз (раньше — на каждой точке, над таблицей доска подвисала).
+                val outer = tableDraw.frame
+                tableDraw.frame = ++frameNo
+                try {
+                    for (h in 0 until ev.historySize) eraseStep(wx(ev.getHistoricalX(idx, h)), wy(ev.getHistoricalY(idx, h)))
+                    eraseStep(wx(sxp), wy(syp))
+                } finally { tableDraw.frame = outer }
             }
             Mode.INK -> {
                 val s = live ?: return
@@ -1883,7 +1899,39 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     /** Плитки ещё рисуются (для проверок — дождаться). */
     val tilesBusy: Boolean get() = tiles.busy
 
+    private var frameNo = 0L
+
     override fun onDraw(canvas: Canvas) {
+        // Раскладка таблиц на кадре считается один раз (0.26.2): на кадре она нужна несколько раз на каждую таблицу.
+        val outer = tableDraw.frame
+        tableDraw.frame = ++frameNo
+        val t0 = System.nanoTime()
+        try { drawFrame(canvas) } finally { tableDraw.frame = outer }
+        // Долгий кадр — в журнал для отчёта (0.26.2), не чаще раза в 3 с.
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        if (ms >= 250 && !capturing && !plain) {
+            val now = SystemClock.uptimeMillis()
+            if (now - lastSlowLog > 3000) {
+                lastSlowLog = now
+                Trail.add("Долгий кадр $ms мс (режим $mode, масштаб ${(b.camZ * 100).toInt()} %, таблиц ${b.tables.size}, областей ${b.zones.size})")
+            }
+        }
+    }
+
+    private var lastSlowLog = 0L
+
+    private var eraseX = 0f
+    private var eraseY = 0f
+
+    private fun eraseStep(x: Float, y: Float) {
+        val step = Ui.dpf(context, 4f) / b.camZ
+        val dx = x - eraseX; val dy = y - eraseY
+        if (dx * dx + dy * dy < step * step) return
+        eraseX = x; eraseY = y
+        host.onErase(x, y, false)
+    }
+
+    private fun drawFrame(canvas: Canvas) {
         val t0 = System.nanoTime()
         val z = b.camZ
         if (mode == Mode.POINT && !plain && !capturing && (sceneValid || renderScene())) {
@@ -2018,6 +2066,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawLine(calloutDown.x, calloutDown.y, calloutNow.x, calloutNow.y, dashPaint)
         }
         if (!plain) drawSelection(canvas, z)
+        if (!plain) drawDockHint(canvas, z)
         if (!plain) cropping?.let { if (exists(it)) drawCropFrame(canvas, it, z) }
         if (!plain && mode == Mode.FRAME_DRAG) {
             dashPaint.strokeWidth = Ui.dpf(context, 1.5f) / z
@@ -2170,60 +2219,67 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         canvas.save()
         canvas.clipRect(r)
         val pe = planEdit?.takeIf { it.t === t && it.sheet.id == sh.id }
-        for (zn in b.zones) {
-            if (zn.t != t.id || zn.s != sh.id) continue
-            zonePath(zn, sh, r)
-            val c = TablePlan.zoneColor(b, t, zn)
-            if (zn.free) {
-                // Элемент без захватки — бледно-серый: «ещё не залито», в глаза не бросается.
-                fillPaint.color = c; fillPaint.alpha = 60
-                canvas.drawPath(zonePath, fillPaint)
-                linePaint.color = c; linePaint.alpha = 140
-                linePaint.strokeWidth = Ui.dpf(context, 1f) / z
-                canvas.drawPath(zonePath, linePaint)
-                fillPaint.alpha = 255; linePaint.alpha = 255
-                continue
+        // Области — готовыми контурами в пикселях листа (0.26.2): на кадре только перенос и масштаб, статусы захваток —
+        // одним проходом по строкам таблицы.
+        val ps = r.width() / max(1e-6f, (sh.cr - sh.cl) * sh.pxW)
+        val psy = r.height() / max(1e-6f, (sh.cb - sh.ct) * sh.pxH)
+        fun inSheet(draw: () -> Unit) {
+            canvas.save()
+            canvas.translate(r.left, r.top)
+            canvas.scale(ps, psy)
+            canvas.translate(-sh.cl * sh.pxW, -sh.ct * sh.pxH)
+            draw()
+            canvas.restore()
+        }
+        val sts = if (t.zoneColor == TablePlan.OWN) emptyMap() else TablePlan.zahStatuses(b, t)
+        val px = 1f / (z * ps) // один экранный пиксель в пикселях листа
+        val dk = pe?.takeIf { !it.elements }?.let { IdTables.zkey(it.uch, it.zah) }
+        inSheet {
+            for (zn in b.zones) {
+                if (zn.t != t.id || zn.s != sh.id) continue
+                val path = zn.path(sh.pxW, sh.pxH)
+                val c = TablePlan.zoneColor(t, zn, sts)
+                if (zn.free) {
+                    // Элемент без захватки — бледно-серый: «ещё не залито», в глаза не бросается.
+                    fillPaint.color = c; fillPaint.alpha = 60
+                    canvas.drawPath(path, fillPaint)
+                    linePaint.color = c; linePaint.alpha = 140
+                    linePaint.strokeWidth = Ui.dpf(context, 1f) * px
+                    canvas.drawPath(path, linePaint)
+                    fillPaint.alpha = 255; linePaint.alpha = 255
+                    continue
+                }
+                val dim = dk != null && zn.zkey() != dk
+                fillPaint.color = c; fillPaint.alpha = if (dim) 45 else 110
+                canvas.drawPath(path, fillPaint)
+                fillPaint.alpha = 255
+                linePaint.color = c; linePaint.alpha = if (dim) 110 else 230
+                linePaint.strokeWidth = Ui.dpf(context, 1.5f) * px
+                canvas.drawPath(path, linePaint)
+                linePaint.alpha = 255
             }
-            val dim = pe != null && !pe.elements && zn.zkey() != IdTables.zkey(pe.uch, pe.zah)
-            fillPaint.color = c; fillPaint.alpha = if (dim) 45 else 110
-            canvas.drawPath(zonePath, fillPaint)
-            fillPaint.alpha = 255
-            linePaint.color = c; linePaint.alpha = if (dim) 110 else 230
-            linePaint.strokeWidth = Ui.dpf(context, 1.5f) / z
-            canvas.drawPath(zonePath, linePaint)
-            linePaint.alpha = 255
         }
         // Швы (ножницы и швы чертежа) — красным зигзагом, как на чертежах.
         for (sm in sh.seams) drawSeam(canvas, sh, r, sm[0], sm[1], sm[2], sm[3], z)
-        planHover?.let { hz ->
-            if (hz.t == t.id && hz.s == sh.id && b.zones.any { it === hz }) {
-                zonePath(hz, sh, r)
-                linePaint.color = Ui.ACCENT
-                linePaint.strokeWidth = Ui.dpf(context, 3f) / z
-                canvas.drawPath(zonePath, linePaint)
+        inSheet {
+            planHover?.let { hz ->
+                if (hz.t == t.id && hz.s == sh.id && b.zones.any { it === hz }) {
+                    linePaint.color = Ui.ACCENT
+                    linePaint.strokeWidth = Ui.dpf(context, 3f) * px
+                    canvas.drawPath(hz.path(sh.pxW, sh.pxH), linePaint)
+                }
             }
-        }
-        markedZones?.let { mz ->
-            for (zn in mz) {
-                if (zn.t != t.id || zn.s != sh.id || b.zones.none { it === zn }) continue
-                zonePath(zn, sh, r)
-                linePaint.color = Ui.ACCENT
-                linePaint.strokeWidth = Ui.dpf(context, 4f) / z
-                canvas.drawPath(zonePath, linePaint)
+            markedZones?.let { mz ->
+                for (zn in mz) {
+                    if (zn.t != t.id || zn.s != sh.id || b.zones.none { it === zn }) continue
+                    linePaint.color = Ui.ACCENT
+                    linePaint.strokeWidth = Ui.dpf(context, 4f) * px
+                    canvas.drawPath(zn.path(sh.pxW, sh.pxH), linePaint)
+                }
             }
         }
         if (pe != null) drawPlanDraft(canvas, pe, sh, r, z)
         canvas.restore()
-    }
-
-    /** Контур области с дырами (чёт-нечет). */
-    private fun zonePath(zn: BoardZone, sh: PlanSheet, r: RectF) {
-        zonePath(zn.pts, sh, r)
-        if (zn.holes.isEmpty()) return
-        val keep = Path(zonePath)
-        for (hole in zn.holes) { zonePath(hole, sh, r); keep.addPath(zonePath) }
-        keep.fillType = Path.FillType.EVEN_ODD
-        zonePath.set(keep)
     }
 
     /** Шов: отрезок (доли листа) зигзагом постоянного на экране размера. */
@@ -2278,7 +2334,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             linePaint.color = acc; linePaint.strokeWidth = Ui.dpf(context, 2.5f) / z
             canvas.drawPath(zonePath, linePaint)
         }
-        if (pe.tool == PlanEdit.BRUSH && pe.path.size >= 4) {
+        if (PlanEdit.brushTool(pe.tool) && pe.path.size >= 4) {
             // След кисти — полупрозрачной широкой линией.
             val p = Path()
             p.moveTo(pe.path[0], pe.path[1])
@@ -2286,7 +2342,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             while (i + 1 < pe.path.size) { p.lineTo(pe.path[i], pe.path[i + 1]); i += 2 }
             val bp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
-                color = acc; alpha = 80; strokeWidth = Ui.dpf(context, PlanEdit.BRUSH_DP) * 2f / z
+                color = if (pe.tool == PlanEdit.CUT) Ui.INK2 else acc; alpha = 80; strokeWidth = Ui.dpf(context, PlanEdit.BRUSH_DP) * 2f / z
             }
             canvas.drawPath(p, bp)
         }
@@ -2578,6 +2634,19 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     }
 
     /** Рамка выделения и уголки, за которые меняют размер; при нескольких объектах — тонкие рамки каждого. */
+    /** Тянут таблицу у правого края другой — полоса «приклеится сюда» (0.26.3). */
+    private fun drawDockHint(canvas: Canvas, z: Float) {
+        if (mode != Mode.MOVE_SEL || !editStarted) return
+        val t = selection.singleOrNull() as? BoardTable ?: return
+        val a = TableDock.candidate(b, tableDraw, t, Ui.dpf(context, 40f) / z) ?: return
+        tableDraw.bounds(b, a, rect2)
+        val x = rect2.right + TableDock.GAP / 2f * a.scale
+        linePaint.color = Ui.ACCENT; linePaint.alpha = 220
+        linePaint.strokeWidth = Ui.dpf(context, 5f) / z
+        canvas.drawLine(x, rect2.top, x, rect2.bottom, linePaint)
+        linePaint.alpha = 255
+    }
+
     private fun drawSelection(canvas: Canvas, z: Float) {
         val bb = selectionBounds() ?: return
         if (selection.size > 1) {

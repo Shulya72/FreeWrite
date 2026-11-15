@@ -336,7 +336,11 @@ class TableUi(private val a: BoardActivity) {
             TableHit.PLAN_COLOR -> a.planUi.colorMenu(t)
             TableHit.PLAN_OUTLINE -> a.planUi.chooseZah(t)
             TableHit.PLAN_ELEM -> a.planUi.elementsMenu(t)
-            TableHit.PLAN_TAB -> h.col?.toIntOrNull()?.let { a.planUi.setTab(t, it) }
+            // Вкладка: другая — открыть её, уже открытая — меню листа (0.26.2).
+            TableHit.PLAN_TAB -> h.col?.toIntOrNull()?.let { i ->
+                if (i == t.tab.coerceIn(0, maxOf(0, t.sheets.size - 1))) a.planUi.sheetMenu(t) else a.planUi.setTab(t, i)
+            }
+            TableHit.PLAN_MENU -> a.planUi.sheetMenu(t)
             TableHit.PLAN_SHEET -> a.planUi.onSheetTap(t, h.fx, h.fy)
             TableHit.CELL -> {
                 val r = h.rec ?: return
@@ -1300,6 +1304,11 @@ class TableUi(private val a: BoardActivity) {
             out += pill("+ строка", "sel_add") { addForm(t, next = true) }
             out += pill("Столбцы", "sel_cols") { columnsDialog(t) }
             out += pill(if (t.sheets.isEmpty()) "+ план" else "План", "sel_plan") { if (t.sheets.isEmpty()) a.planUi.addSheet(t) else a.planUi.sheetMenu(t) }
+            // Склейка (0.26.3): приклеенную — отклеить (останется на месте, дальше двигается сама по себе).
+            if (t.dock.isNotEmpty()) out += pill("Отклеить", "sel_undock") {
+                a.pushUndo(); t.dock = ""; a.changed(); a.buildSelectionBar()
+                a.hint("Таблица отклеена. Приклеить снова — поставить вплотную справа к другой", 2500)
+            }
             out += pill(if (t.locked) "Открепить" else "Закрепить", "sel_tpin") {
                 a.pushUndo(); t.locked = !t.locked; a.changed(); a.buildSelectionBar()
                 a.hint(if (t.locked) "Таблица закреплена: не сдвинется — рисуйте поверх плана. Открепить — булавка в углу" else "Таблицу снова можно двигать", 3000)

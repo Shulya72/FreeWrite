@@ -57,6 +57,10 @@ class TableHit(val part: Int, val rec: BoardRec?, val col: String?) {
         const val PLAN_SHEET = 12
         /** «Элементы ▾» (0.26): найти, ножницы, убрать. */
         const val PLAN_ELEM = 13
+        /** «План захваток ▾» (0.26.2): меню листа — обрезать, название, ещё лист, убрать лист. */
+        const val PLAN_MENU = 14
+        /** Подпись шапки плана — с «▾»: касание открывает меню листа. */
+        const val PLAN_TITLE = "План захваток ▾"
     }
 
     /** VOL у вида с частями (0.24): ключ части. */
@@ -140,7 +144,14 @@ class TableDraw {
         return w
     }
 
+    /**
+     * Номер кадра доски, пока она рисуется (0.26.2), иначе 0: на одном кадре раскладка таблицы сверяется с данными один
+     * раз — за кадр данные не меняются. Вне кадра (касания, окна) — сверка всегда.
+     */
+    var frame = 0L
+
     fun layout(b: Board, t: BoardTable): TableLayout {
+        if (frame != 0L && t.layFrame == frame) t.lay?.let { return it }
         val rows = IdTables.rowsOf(b, t)
         val cols = t.visibleCols()
         val prefix = IdTables.sectionPrefix(b, t)
@@ -174,7 +185,7 @@ class TableDraw {
             h = 31 * h + r.dcust.hashCode() // «На подписи у заказчика от …» (0.25)
         }
         h = 31 * h + b.events.size
-        t.lay?.let { if (it.key == h) return it }
+        t.lay?.let { if (it.key == h) { t.layFrame = frame; return it } }
 
         val allN = if (f == null || f.isEmpty) rows.size else IdTables.allRows(b, t).size
         val done = rows.count { IdTables.status(b, BoardStatus.ID, it.igs).done }
@@ -218,7 +229,7 @@ class TableDraw {
         val chipW = chipText.map { tw(it, 13f, true) + 24f }
         val pct = if (hasPlan) TablePlan.percent(b, t) else null
         val pctText = pct?.let { "выполнено ≈ $it %" } ?: ""
-        val planHeadNeed = PAD * 2 + tw("План захваток", 16f, true) + 30f + chipW.sum() + 8f * chipW.size + (if (pct != null) tw(pctText, 14f, true) + 24f else 0f)
+        val planHeadNeed = PAD * 2 + tw(TableHit.PLAN_TITLE, 16f, true) + 30f + chipW.sum() + 8f * chipW.size + (if (pct != null) tw(pctText, 14f, true) + 24f else 0f)
         var needAll = max(max(need, need2 + if (hasPlan) 0f else planAddW + PAD), if (vol != null) VOL_MIN_W else 0f)
         if (hasPlan) needAll = max(needAll, max(PLAN_MIN_W, planHeadNeed))
         if (cols.isNotEmpty() && needAll > total) { widths[widths.size - 1] += needAll - total; total = needAll }
@@ -240,7 +251,8 @@ class TableDraw {
             val tabsH = if (t.sheets.size > 1) PLAN_TABS else 0f
             val tabX = FloatArray(t.sheets.size + 1)
             tabX[0] = PLAN_PAD
-            for ((i, sh) in t.sheets.withIndex()) tabX[i + 1] = tabX[i] + tw(sheetName(t, i), 12.5f, true) + 26f + 6f
+            // У открытой вкладки — «▾» (касание — меню листа); место под него у всех, чтобы вкладки не прыгали.
+            for ((i, sh) in t.sheets.withIndex()) tabX[i + 1] = tabX[i] + tw(sheetName(t, i) + " ▾", 12.5f, true) + 26f + 6f
             val sheetW = total - 2 * PLAN_PAD
             val cur = TablePlan.current(t)!!
             val sheetH = sheetW * cur.aspect()
@@ -256,7 +268,7 @@ class TableDraw {
         }
         val planSplit = if (hasPlan) Float.MAX_VALUE else total - planAddW
         return TableLayout(h, cols, colX, rows, total, height, info, addW, prefix, vol, volTop, volH, missing, swatch, plan, planSplit, headH,
-            if (vol != null) vparts else emptyList()).also { t.lay = it }
+            if (vol != null) vparts else emptyList()).also { t.lay = it; t.layFrame = frame }
     }
 
     fun sheetName(t: BoardTable, i: Int): String = t.sheets.getOrNull(i)?.name?.ifEmpty { null } ?: "Лист ${i + 1}"
@@ -326,7 +338,8 @@ class TableDraw {
             if (dv < PLAN_HEAD) {
                 for (i in 0 until p.chips.size / 2) if (u >= p.chips[i * 2] - 4f && u <= p.chips[i * 2 + 1] + 4f)
                     return TableHit(when (i) { 0 -> TableHit.PLAN_COLOR; 1 -> TableHit.PLAN_ADD; 2 -> TableHit.PLAN_ELEM; else -> TableHit.PLAN_OUTLINE }, null, null)
-                return TableHit(TableHit.TITLE, null, null)
+                // Остальная шапка («План захваток ▾», процент, название листа) — меню листа (0.26.2).
+                return TableHit(TableHit.PLAN_MENU, null, null)
             }
             if (dv < PLAN_HEAD + p.tabsH) {
                 for (i in 0 until p.tabX.size - 1) if (u >= p.tabX[i] && u < p.tabX[i + 1]) return TableHit(TableHit.PLAN_TAB, null, i.toString())
@@ -523,8 +536,8 @@ class TableDraw {
         canvas.drawLine(x0, top, x0 + w, top, line)
         text.textSize = 16f * k; text.isFakeBoldText = true; text.color = Ui.INK
         val ty = top + PLAN_HEAD / 2f * k + 16f * k * 0.36f
-        canvas.drawText("План захваток", x0 + PAD * 1.4f * k, ty, text)
-        val tw0 = text.measureText("План захваток")
+        canvas.drawText(TableHit.PLAN_TITLE, x0 + PAD * 1.4f * k, ty, text)
+        val tw0 = text.measureText(TableHit.PLAN_TITLE)
         var tx0 = x0 + PAD * 1.4f * k + tw0 + 12f * k
         // Готовность (0.26): «выполнено ≈ 13 %» — по площади элементов разметки, примерно.
         if (p.pct != null) {
@@ -554,7 +567,7 @@ class TableDraw {
                 canvas.drawRoundRect(rect, 7f * k, 7f * k, fill)
                 if (on) { fill.color = Ui.ACCENT; canvas.drawRect(rect.left + 4f * k, rect.top, rect.right - 4f * k, rect.top + 2.5f * k, fill) }
                 text.textSize = 12.5f * k; text.isFakeBoldText = on; text.color = if (on) Ui.INK else Ui.INK2
-                canvas.drawText(sheetName(t, i), rect.left + 13f * k, rect.centerY() + 12.5f * k * 0.36f + 2f * k, text)
+                canvas.drawText(sheetName(t, i) + if (on) " ▾" else "", rect.left + 13f * k, rect.centerY() + 12.5f * k * 0.36f + 2f * k, text)
             }
             text.isFakeBoldText = false
         }

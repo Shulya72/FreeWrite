@@ -156,6 +156,7 @@ object BoardPdf {
             val bmp = try {
                 pages.render(page, w, h)
             } catch (e: OutOfMemoryError) {
+                Trail.add("PDF: не хватило памяти на лист ${w}×${h}, пробую мельче")
                 if (limit <= 2048) throw e
                 limit = max(2048, (limit * 0.7f).roundToInt())
                 continue
@@ -222,6 +223,7 @@ class PdfInsert(
                     }
                 }.onFailure { t ->
                     android.util.Log.w("FreeWrite", "pdf", t)
+                    Trail.add("PDF не открылся: $t")
                     val why = when (t) {
                         is SecurityException -> "PDF защищён паролем. Откройте его в программе для PDF, сохраните копию без пароля и вставьте её."
                         is OutOfMemoryError -> "Не хватило памяти, чтобы открыть этот PDF."
@@ -385,6 +387,7 @@ class PdfInsert(
                 try {
                     out += BoardPdf.renderToImage(ctx, pages, p, side)
                     outPages += p
+                    Trail.add("PDF: лист ${p + 1} готов (${out.last().second}×${out.last().third})")
                 } catch (t: Throwable) {
                     android.util.Log.w("FreeWrite", "pdf page $p", t)
                     failed++

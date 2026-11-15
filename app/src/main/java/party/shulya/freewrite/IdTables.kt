@@ -39,6 +39,12 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
     /** Закреплена булавкой (0.23.1): не двигается и не меняет размер — рисунки поверх плана остаются на месте. */
     var locked = false
 
+    /** Склейка (0.26.3): номер таблицы слева, к которой эта приклеена (вплотную справа, тот же верх и масштаб). */
+    var dock = ""
+
+    /** Раздел (0.26.3): номер рамки, в которой таблица стоит (рамка растёт вместе с таблицами). Пусто — по положению. */
+    var sec = ""
+
     /**
      * Вид таблицы (0.24, [TableKinds]): «kj_vert», «kj_slab»; [TableKinds.CUSTOM] — без вида (один объём). Пусто — таблица
      * до 0.24, считается «Вертикальными элементами» ([TableKinds.LEGACY]).
@@ -52,6 +58,8 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
 
     /** Раскладка (считает [TableDraw]): пересчитывается, когда меняются строки, столбцы, статусы. */
     internal var lay: TableLayout? = null
+    /** Номер кадра, на котором [lay] уже сверена с данными (0.26.2). */
+    internal var layFrame = 0L
 
     /**
      * Все столбцы (со скрытыми) — свои или по умолчанию. Свой список до 0.24 у таблицы с частями объёма: вместо «Объёма по
@@ -362,6 +370,8 @@ object IdTables {
         }
         TablePlan.sheetsJson(sb, t)
         if (t.locked) sb.append(",\"lk\":1")
+        if (t.dock.isNotEmpty()) sb.append(",\"dk\":").append(JSONObject.quote(t.dock))
+        if (t.sec.isNotEmpty()) sb.append(",\"sec\":").append(JSONObject.quote(t.sec))
         sb.append('}')
         return sb.toString()
     }
@@ -397,6 +407,8 @@ object IdTables {
         }
         TablePlan.parseSheets(j, t)
         t.locked = j.optInt("lk") == 1
+        t.dock = j.optString("dk")
+        t.sec = j.optString("sec")
         return t
     }
 

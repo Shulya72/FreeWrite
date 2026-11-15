@@ -108,7 +108,26 @@ class PhoneTest {
 
         assertEquals("без пера начинаем с «Руки»", BoardActivity.Tool.HAND, tool())
         assertNotNull("инструменты внизу", root.findViewWithTag<View>("board_bottom_tools"))
-        assertEquals("«Палец рисует» на телефоне не нужен", View.GONE, root.findViewWithTag<View>("board_finger_draws").visibility)
+        // Панель «две строки» (0.27): внизу две строки по шесть кнопок — все видны целиком, ничего не листается.
+        val bottom = root.findViewWithTag<View>("board_bottom_tools")
+        for (tag in listOf("board_tool_hand", "board_tool_pen", "board_tool_eraser", "board_tool_select", "board_tool_fill", "board_color",
+            "board_tool_table", "board_tool_callout", "board_tool_status", "board_tool_text", "board_tool_frame", "board_tool_image")) {
+            val b = root.findViewWithTag<View>(tag)
+            assertNotNull(tag, b)
+            val loc = IntArray(2); b.getLocationInWindow(loc)
+            assertTrue("$tag целиком на экране: ${loc[0]}+${b.width}", b.width > 0 && loc[0] >= 0 && loc[0] + b.width <= root.width)
+            var p: android.view.ViewParent? = b.parent
+            var inBottom = false
+            while (p != null) { if (p === bottom) inBottom = true; p = p.parent }
+            assertTrue("$tag — внизу", inBottom)
+        }
+        assertEquals("«Палец рисует» на телефоне не нужен (и он в меню «⋮»)", null, root.findViewWithTag<View>("board_finger_draws"))
+        // «Цвет» — полоса цветов над кнопками.
+        assertEquals(View.GONE, root.findViewWithTag<View>("board_colors").visibility)
+        root.findViewWithTag<View>("board_color").performClick(); idle()
+        assertEquals(View.VISIBLE, root.findViewWithTag<View>("board_colors").visibility)
+        root.findViewWithTag<View>("board_color").performClick(); idle()
+        shot(root, "phone-board-toolbar.png")
 
         // «Рука»: пальцем — двигать доску.
         val cx = view.width / 2f; val cy = view.height / 2f

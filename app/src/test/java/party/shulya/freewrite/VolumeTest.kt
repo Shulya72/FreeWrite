@@ -237,7 +237,7 @@ class VolumeTest {
         assertEquals("180.2", rows[6].vol)
         assertEquals(1, s.view.tableDraw.layout(s.b, t1).volMissing.size)
         // «В текст» + активная ячейка: написанное пером «41,5» — в объём бетона захватки 4.
-        root.findViewWithTag<View>("board_tool_write").performClick()
+        s.a.setTool(BoardActivity.Tool.WRITE) // кнопки «В текст» на доске с 0.26.2 нет — инструмент остался
         val (bx, by) = s.cell(rows[7], TableCol.VOL)
         tap(s.view, MotionEvent.TOOL_TYPE_STYLUS, bx, by)
         assertEquals(rows[7] to TableCol.VOL, s.a.tableUi.active)

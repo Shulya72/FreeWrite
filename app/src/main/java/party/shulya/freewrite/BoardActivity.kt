@@ -12,6 +12,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.widget.PopupWindow
 import android.view.View
+import android.view.ViewGroup
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -137,13 +138,16 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         updateSubtitle()
         engine.start(this)
-        // Без пера (телефон) начинаем с «Руки»: пальцем двигать и выбирать. С пером — с «Ручки».
-        setTool(if (stylus) Tool.PEN else Tool.HAND, quiet = true)
+        // Всегда начинаем с «Руки» (0.26.2, Владимир: «по умолчанию всегда рука» — с «Ручкой» случайно чертил по таблице).
+        setTool(Tool.HAND, quiet = true)
         updateBanner()
         updateZoom()
         if ((board.isEmpty && board.camX == 0f && board.camY == 0f) || intent.getBooleanExtra(EXTRA_FIT, false)) view.post { view.fitAll() }
         // Прислали PDF или картинки через «Поделиться → FreeWrite» и выбрали эту доску.
         intent.getStringArrayListExtra(EXTRA_INSERT)?.let { paths -> view.post { insertFiles(paths) } }
+        Trail.add("Открыта доска: штрихов ${board.strokes.size}, надписей ${board.texts.size}, картинок ${board.images.size}, " +
+            "таблиц ${board.tables.size}, строк ${board.recs.size}, листов плана ${board.tables.sumOf { it.sheets.size }}, " +
+            "областей ${board.zones.size}, ведомостей ${board.vedoms.size}" + if (board.sync.isShared) ", общая" else "")
         if (intent.getBooleanExtra(EXTRA_SHOW_SPEED, false)) {
             showFrameMs = true
             view.post { view.fitAll(); handler.post(frameTicker) }
@@ -155,11 +159,14 @@ class BoardActivity : Activity(), BoardView.Host {
         saveNow(sync = true)
         remote?.flush()
         remote?.stop()
+        Trail.stopWatch()
+        Trail.flush()
         super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
+        Trail.startWatch("доска")
         if (BoardStore.importCount(board.id) != loadedImports) reloadAfterImport()
         remote?.start()
     }
@@ -321,7 +328,7 @@ class BoardActivity : Activity(), BoardView.Host {
             setOnClickListener { onBackPressed() }
         })
         titleView = Ui.text(this, board.title, 16f, Ui.INK, bold = true).apply {
-            maxWidth = dp(if (phone) 400f else 200f); isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
+            isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
             setPadding(dp(4f), 0, dp(10f), 0)
         }
         val titleBox = LinearLayout(this).apply {
@@ -338,97 +345,110 @@ class BoardActivity : Activity(), BoardView.Host {
             addView(subtitleView)
             setOnClickListener { rename() }
         }
-        if (phone) top.addView(titleBox, LinearLayout.LayoutParams(0, Ui.WRAP, 1f)) else top.addView(titleBox)
-        val undoButton = Ui.ToolButton(this, R.drawable.ic_undo, "Отменить").apply { tag = "board_undo"; setOnClickListener { undo() } }
-        val redoButton = Ui.ToolButton(this, R.drawable.ic_redo, "Вернуть").apply { setOnClickListener { redo() } }
-        val cloudButton = Ui.ToolButton(this, R.drawable.ic_cloud, "Совместно").apply {
-            tag = "board_cloud"
-            setOnClickListener { cloudDialog() }
+        top.addView(titleBox, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        // Панель «две строки» (0.27, вариант Г, Владимир: «не листать вправо-влево»): всё видно сразу. Планшет — две строки
+        // сверху (учёт и действия; инструменты), телефон — сверху действия, внизу две строки по шесть кнопок.
+        fun icon(res: Int, desc: String, tag: String?, click: () -> Unit) = Ui.ToolButton(this, res, "", compact = true).apply {
+            contentDescription = desc; tag?.let { this.tag = it }; setOnClickListener { click() }
+        }
+        fun add(v: View, w: Float) = top.addView(v, LinearLayout.LayoutParams(dp(w), Ui.WRAP))
+        val undoButton = icon(R.drawable.ic_undo, "Отменить", "board_undo") { undo() }
+        val redoButton = icon(R.drawable.ic_redo, "Вернуть", "board_redo") { redo() }
+        val moreButton = icon(R.drawable.ic_more, "Ещё: совместно, файлом, вся доска", "board_more") {}
+        moreButton.setOnClickListener { moreMenu(moreButton, phone) }
+        if (phone) {
+            add(undoButton, 44f); add(redoButton, 44f)
+            val acct = Ui.ToolButton(this, R.drawable.ic_statuses, "Учёт", compact = true).apply { tag = "board_acct" }
+            acct.setOnClickListener { acctMenu(acct) }
+            add(acct, 52f)
+            add(moreButton, 40f)
+        } else {
+            add(Ui.ToolButton(this, R.drawable.ic_statuses, "Статусы", compact = true).apply { tag = "board_statuses"; setOnClickListener { toggleLegend() } }, 62f)
+            add(Ui.ToolButton(this, R.drawable.ic_vedom, "Ведомости", compact = true).apply { tag = "board_vedoms"; setOnClickListener { vedomUi.listDialog() } }, 66f)
+            add(Ui.ToolButton(this, R.drawable.ic_sections, "Разделы", compact = true).apply { tag = "board_sections"; setOnClickListener { sectionsDialog() } }, 62f)
+            add(Ui.ToolButton(this, R.drawable.ic_sum, "Сводка", compact = true).apply { tag = "board_summary"; setOnClickListener { openSummary() } }, 62f)
+            top.addView(Ui.separator(this))
+            add(undoButton, 44f); add(redoButton, 44f)
+            add(icon(R.drawable.ic_cloud, "Совместно", "board_cloud") { cloudDialog() }, 44f)
+            add(moreButton, 40f)
+        }
+        top.setBackgroundColor(Ui.PAPER)
+        top.setPadding(dp(4f), dp(2f), dp(4f), dp(2f))
+        root.addView(top, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+
+        // Инструменты (набор Владимира, 0.26.2): Рука | Ручка, Ластик, Выделить, Заливка | Таблица, Выноска, Метка, Текст,
+        // Раздел, Картинка. «В текст», «Маркер», «Фигуры» с доски убраны (в «Записи» остаются).
+        fun tool(row: ViewGroup, t: Tool) = when (t) {
+            Tool.HAND -> addTool(row, t, R.drawable.ic_hand, "Рука")
+            Tool.PEN -> addTool(row, t, R.drawable.ic_pen, "Ручка")
+            Tool.ERASER -> addTool(row, t, R.drawable.ic_eraser, "Ластик")
+            Tool.SELECT -> addTool(row, t, R.drawable.ic_lasso, "Выделить")
+            Tool.FILL -> addTool(row, t, R.drawable.ic_fill, "Заливка")
+            Tool.TABLE -> addTool(row, t, R.drawable.ic_table, "Таблица")
+            Tool.CALLOUT -> addTool(row, t, R.drawable.ic_callout, "Выноска")
+            Tool.STATUS -> addTool(row, t, R.drawable.ic_status, "Метка")
+            Tool.TEXT -> addTool(row, t, R.drawable.ic_text, "Текст")
+            Tool.FRAME -> addTool(row, t, R.drawable.ic_frame, "Раздел")
+            else -> {}
+        }
+        fun imageButton() = Ui.ToolButton(this, R.drawable.ic_image, "Картинка", compact = true).apply {
+            tag = "board_tool_image"
+            setOnClickListener { insertMenu() }
+        }
+        if (phone) {
+            val r1 = Ui.EvenRow(this).apply { setPadding(dp(6f), dp(4f), dp(6f), 0) }
+            for (t in listOf(Tool.HAND, Tool.PEN, Tool.ERASER, Tool.SELECT, Tool.FILL)) tool(r1, t)
+            r1.addView(colorButton())
+            val r2 = Ui.EvenRow(this).apply { setPadding(dp(6f), 0, dp(6f), dp(8f)) }
+            for (t in listOf(Tool.TABLE, Tool.CALLOUT, Tool.STATUS, Tool.TEXT, Tool.FRAME)) tool(r2, t)
+            r2.addView(imageButton())
+            bottomTools = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                tag = "board_bottom_tools"
+                setBackgroundColor(Ui.PAPER)
+                addView(r1, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+                addView(r2, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            }
+        } else {
+            val row = Ui.EvenRow(this).apply { setPadding(dp(6f), 0, dp(6f), dp(4f)); setBackgroundColor(Ui.PAPER) }
+            tool(row, Tool.HAND)
+            row.addView(Ui.evenSep(this))
+            for (t in listOf(Tool.PEN, Tool.ERASER, Tool.SELECT, Tool.FILL)) tool(row, t)
+            row.addView(Ui.evenSep(this))
+            for (t in listOf(Tool.TABLE, Tool.CALLOUT, Tool.STATUS, Tool.TEXT, Tool.FRAME)) tool(row, t)
+            row.addView(imageButton())
+            root.addView(View(this).apply { setBackgroundColor(Color.rgb(237, 240, 245)) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+            root.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         }
 
-        val tools = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        // Без пера главное — двигать, метки, выноски, надписи с клавиатуры; с пером — письмо и рисование.
-        val order = if (stylus) listOf(Tool.HAND, Tool.WRITE, Tool.PEN, Tool.MARKER, Tool.SHAPE, Tool.TABLE, Tool.STATUS,
-            Tool.CALLOUT, Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.TEXT, Tool.FRAME)
-        else listOf(Tool.HAND, Tool.TABLE, Tool.STATUS, Tool.CALLOUT, Tool.TEXT, Tool.PEN, Tool.MARKER, Tool.SHAPE,
-            Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.FRAME, Tool.WRITE)
-        for (t in order) when (t) {
-            Tool.HAND -> addTool(tools, t, R.drawable.ic_hand, "Рука")
-            Tool.TEXT -> addTool(tools, t, R.drawable.ic_text, "Текст")
-            Tool.WRITE -> addTool(tools, t, R.drawable.ic_write, "В текст")
-            Tool.PEN -> addTool(tools, t, R.drawable.ic_pen, "Ручка")
-            Tool.MARKER -> addTool(tools, t, R.drawable.ic_marker, "Маркер")
-            Tool.SHAPE -> addTool(tools, t, R.drawable.ic_shapes, "Фигуры")
-            Tool.STATUS -> addTool(tools, t, R.drawable.ic_status, "Метка")
-            Tool.ROW -> addTool(tools, t, R.drawable.ic_check, "Строка ИД")
-            Tool.TABLE -> addTool(tools, t, R.drawable.ic_table, "Таблица ИД")
-            Tool.CALLOUT -> addTool(tools, t, R.drawable.ic_callout, "Выноска")
-            Tool.FILL -> addTool(tools, t, R.drawable.ic_fill, "Заливка")
-            Tool.ERASER -> addTool(tools, t, R.drawable.ic_eraser, "Ластик")
-            Tool.SELECT -> addTool(tools, t, R.drawable.ic_lasso, "Выделить")
-            Tool.FRAME -> addTool(tools, t, R.drawable.ic_frame, "Раздел")
-            Tool.PIPETTE -> {}
+        // Цвета — полоса над доской (планшет — когда выбраны Ручка или Заливка, телефон — по кнопке «Цвет»): три последних,
+        // палитра, пипетка.
+        colorStrip = LinearLayout(this).apply {
+            tag = "board_colors"
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ui.rounded(this@BoardActivity, Ui.PAPER, Ui.RULE, 999f)
+            elevation = dp(4f).toFloat()
+            setPadding(dp(12f), dp(4f), dp(6f), dp(4f))
+            visibility = View.GONE
         }
-        // Три последних цвета и «Цвет» — палитра из 24 цветов и пипетка.
         for (i in 0 until 3) {
             val v = View(this).apply {
                 contentDescription = "Цвет"
                 tag = "board_quick_color_$i"
                 setOnClickListener { setColor(ColorKit.recent(this@BoardActivity)[i], remember = false) }
             }
-            tools.addView(v, LinearLayout.LayoutParams(dp(24f), dp(24f)).apply { setMargins(dp(5f), 0, dp(5f), 0) })
+            colorStrip.addView(v, LinearLayout.LayoutParams(dp(26f), dp(26f)).apply { setMargins(dp(5f), 0, dp(5f), 0) })
             quickColors += v
         }
-        tools.addView(Ui.ToolButton(this, R.drawable.ic_palette, "Цвет").apply {
+        colorStrip.addView(Ui.separator(this))
+        colorStrip.addView(Ui.ToolButton(this, R.drawable.ic_palette, "Цвет", compact = true).apply {
             tag = "board_tool_palette"
             setOnClickListener { ColorKit.showPalette(this@BoardActivity, penColor, { setColor(it) }, { startPipette(forSelection = false) }) }
-        })
-        tools.addView(Ui.separator(this))
-        tools.addView(Ui.ToolButton(this, R.drawable.ic_image, "Картинка").apply {
-            tag = "board_tool_image"
-            setOnClickListener { insertMenu() }
-        })
-        if (!phone) { tools.addView(undoButton); tools.addView(redoButton) }
-        tools.addView(Ui.ToolButton(this, R.drawable.ic_fit, "Всё").apply { setOnClickListener { view.fitAll() } })
-        tools.addView(Ui.ToolButton(this, R.drawable.ic_statuses, "Статусы").apply {
-            tag = "board_statuses"
-            setOnClickListener { toggleLegend() }
-        })
-        tools.addView(Ui.ToolButton(this, R.drawable.ic_sections, "Разделы").apply {
-            tag = "board_sections"
-            setOnClickListener { sectionsDialog() }
-        })
-        tools.addView(Ui.ToolButton(this, R.drawable.ic_vedom, "Ведомости").apply {
-            tag = "board_vedoms"
-            setOnClickListener { vedomUi.listDialog() }
-        })
-        if (!phone) tools.addView(cloudButton)
-        tools.addView(Ui.ToolButton(this, R.drawable.ic_share, "Файлом").apply {
-            tag = "board_share"
-            setOnClickListener { shareBoard() }
-        })
-        // «Палец рисует» — только на устройстве с пером (без пера палец и так рисует инструментом).
-        fingerBox = CheckBox(this).apply {
-            text = "Палец рисует"; textSize = 13f; setTextColor(Ui.INK2)
-            buttonTintList = ColorStateList.valueOf(Ui.ACCENT)
-            tag = "board_finger_draws"
-            visibility = if (stylus) View.VISIBLE else View.GONE
-            setOnCheckedChangeListener { _, on -> fingerWrites = on }
-        }
-        tools.addView(fingerBox)
-        if (phone) {
-            top.addView(undoButton)
-            top.addView(redoButton)
-            top.addView(cloudButton)
-            top.setBackgroundColor(Ui.PAPER)
-            root.addView(top, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        } else {
-            top.addView(Ui.separator(this))
-            top.addView(tools)
-            root.addView(Ui.toolbar(this, top), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        }
-        root.addView(View(this).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
-        bottomTools = if (phone) tools else null
+        }, LinearLayout.LayoutParams(dp(56f), Ui.WRAP))
+        colorStrip.addView(Ui.ToolButton(this, R.drawable.ic_pipette, "Пипетка", compact = true).apply {
+            tag = "board_tool_pipette"
+            setOnClickListener { colorsOpen = false; startPipette(forSelection = false) }
+        }, LinearLayout.LayoutParams(dp(56f), Ui.WRAP))
 
         banner = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
@@ -465,7 +485,17 @@ class BoardActivity : Activity(), BoardView.Host {
                 true
             }
         }
-        area.addView(zoomLabel, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+        val zoomBox = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(zoomLabel)
+            addView(Ui.ToolButton(this@BoardActivity, R.drawable.ic_fit, "", compact = true).apply {
+                tag = "board_fit"
+                contentDescription = "Вся доска"
+                background = Ui.rounded(this@BoardActivity, Ui.PAPER, Ui.RULE, 999f)
+                setOnClickListener { view.fitAll() }
+            }, LinearLayout.LayoutParams(dp(40f), dp(40f)).apply { marginStart = dp(8f) })
+        }
+        area.addView(zoomBox, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.BOTTOM or Gravity.START; setMargins(dp(14f), 0, 0, dp(14f))
         })
         hintView = Ui.text(this, "", 13f, Ui.PAPER).apply {
@@ -518,23 +548,27 @@ class BoardActivity : Activity(), BoardView.Host {
         area.addView(legendScroll, FrameLayout.LayoutParams(minOf(dp(290f), resources.displayMetrics.widthPixels - dp(24f)), Ui.WRAP).apply {
             gravity = Gravity.BOTTOM or Gravity.END; setMargins(0, 0, dp(12f), dp(60f))
         })
+        area.addView(colorStrip, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+            gravity = if (phone) Gravity.BOTTOM or Gravity.START else Gravity.TOP or Gravity.START
+            setMargins(dp(12f), dp(10f), dp(12f), dp(12f))
+        })
         root.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
         bottomTools?.let { tools ->
-            // Телефон: инструменты внизу, под большим пальцем.
+            // Телефон: инструменты внизу, под большим пальцем, две строки без прокрутки.
             root.addView(View(this).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
-            root.addView(Ui.toolbar(this, tools).apply { tag = "board_bottom_tools" }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            root.addView(tools, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         }
         handler.postDelayed({ hint("Пальцем — двигать и масштабировать, пером — писать и рисовать", 3500) }, 300)
     }
 
-    private fun addTool(row: LinearLayout, t: Tool, icon: Int, label: String) {
-        val b = Ui.ToolButton(this, icon, label).apply { setOnClickListener { setTool(t) } }
+    private fun addTool(row: ViewGroup, t: Tool, icon: Int, label: String) {
+        val b = Ui.ToolButton(this, icon, label, compact = true).apply { setOnClickListener { setTool(t) } }
         b.tag = "board_tool_" + t.name.lowercase()
         toolButtons[t] = b
         row.addView(b)
     }
 
-    private fun setTool(t: Tool, quiet: Boolean = false) {
+    internal fun setTool(t: Tool, quiet: Boolean = false) {
         if (!quiet && view.placing != null) { val c = placeCancel; endPlacing(); c?.invoke() } // выбрали инструмент — место не ищем
         if (t != Tool.WRITE) current?.let { commit(it) }
         if (t != Tool.WRITE) tableUi.deactivate()
@@ -572,9 +606,83 @@ class BoardActivity : Activity(), BoardView.Host {
             val sel = c == penColor && colorTool(tool)
             v.background = ColorKit.swatch(this, c, false)
             v.scaleX = if (sel) 1.25f else 1f; v.scaleY = v.scaleX
-            v.alpha = if (colorTool(tool)) 1f else 0.55f
+            v.alpha = if (colorTool(tool) || colorsOpen) 1f else 0.55f
         }
+        colorDot?.background = ColorKit.swatch(this, penColor, false)
+        updateColorStrip()
     }
+
+    // ---------------------------------------------------------------- панель «две строки» (0.27)
+
+    private lateinit var colorStrip: LinearLayout
+    /** Телефон: полоса цветов открыта кнопкой «Цвет». */
+    private var colorsOpen = false
+    private var colorDot: View? = null
+    private var colorCell: View? = null
+
+    /**
+     * Полоса цветов: планшет — когда выбраны Ручка или Заливка (и не занята верхом панель выделенного или режима),
+     * телефон — открыта кнопкой «Цвет».
+     */
+    private fun updateColorStrip() {
+        if (!::colorStrip.isInitialized) return
+        val busy = (::selBar.isInitialized && selBar.visibility == View.VISIBLE) || (::modeBar.isInitialized && modeBar.visibility == View.VISIBLE)
+        val show = if (bottomTools != null) colorsOpen else colorTool(tool) && !busy
+        colorStrip.visibility = if (show) View.VISIBLE else View.GONE
+        colorCell?.background = if (colorsOpen) Ui.rounded(this, Ui.ACCENT_SOFT, null, 10f) else null
+    }
+
+    /** Телефон: кнопка «Цвет» — кружок текущего цвета; касание — полоса цветов. */
+    private fun colorButton(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(0, dp(7f), 0, dp(4f))
+        tag = "board_color"
+        contentDescription = "Цвет"
+        isClickable = true
+        val dot = View(this@BoardActivity)
+        addView(dot, LinearLayout.LayoutParams(dp(22f), dp(22f)).apply { bottomMargin = dp(3f) })
+        addView(Ui.text(this@BoardActivity, "Цвет", 10.5f, Ui.INK2).apply { gravity = Gravity.CENTER; isSingleLine = true })
+        colorDot = dot
+        colorCell = this
+        setOnClickListener { colorsOpen = !colorsOpen; refreshColors() }
+    }
+
+    /** «⋮»: совместно (телефон), файлом, «палец рисует» (с пером), вся доска. */
+    private fun moreMenu(anchor: View, phone: Boolean) {
+        val m = android.widget.PopupMenu(this, anchor)
+        if (phone) m.menu.add(0, 1, 0, "Совместно")
+        m.menu.add(0, 2, 1, "Отправить файлом")
+        if (stylus) m.menu.add(0, 3, 2, "Палец рисует").apply { isCheckable = true; isChecked = fingerWrites }
+        m.menu.add(0, 4, 3, "Вся доска")
+        m.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> cloudDialog()
+                2 -> shareBoard()
+                3 -> { fingerWrites = !fingerWrites; hint(if (fingerWrites) "Палец рисует выбранным инструментом" else "Палец — двигать доску, перо — рисовать", 2500) }
+                4 -> view.fitAll()
+            }
+            true
+        }
+        m.show()
+    }
+
+    /** Телефон, «Учёт»: статусы, ведомости, разделы, сводка. */
+    private fun acctMenu(anchor: View) {
+        val m = android.widget.PopupMenu(this, anchor)
+        m.menu.add(0, 1, 0, "Статусы и подсветка")
+        m.menu.add(0, 2, 1, "Ведомости")
+        m.menu.add(0, 3, 2, "Разделы — перейти")
+        m.menu.add(0, 4, 3, "Сводка ИГС и Excel")
+        m.setOnMenuItemClickListener { item ->
+            when (item.itemId) { 1 -> toggleLegend(); 2 -> vedomUi.listDialog(); 3 -> sectionsDialog(); 4 -> openSummary() }
+            true
+        }
+        m.show()
+    }
+
+    /** «Сводка»: есть таблицы ИД — сводка ИГС (цифры, по шифрам, Excel), иначе — по разделам. */
+    private fun openSummary() = if (board.tables.isNotEmpty()) tableUi.summaryDialog() else summaryDialog()
 
     /** Выбран цвет: ручка/маркер/фигуры рисуют им. remember — поставить первым среди последних. */
     private fun setColor(c: Int, remember: Boolean = true) {
@@ -705,6 +813,8 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     internal fun changed() {
+        // Склеенные таблицы и рамки разделов — по таблицам (0.26.3). Только после своих правок: чужие приходят уже разложенными.
+        TableDock.arrange(board, view.tableDraw)
         if (::legend.isInitialized && legend.visibility == View.VISIBLE) buildLegend()
         view.pruneSelection()
         pipetteSnap = null
@@ -898,7 +1008,7 @@ class BoardActivity : Activity(), BoardView.Host {
         if (stylus) return
         stylus = true
         Input.markStylus(this)
-        fingerBox?.visibility = View.VISIBLE
+        fingerBox?.visibility = View.VISIBLE // «Палец рисует» — в меню «⋮» (0.27)
         hint("Перо — инструмент, палец — двигать доску", 3000)
     }
 
@@ -1021,23 +1131,27 @@ class BoardActivity : Activity(), BoardView.Host {
         if (first) eraseUndoPushed = false
         val r = Ui.dpf(this, 14f) / board.camZ
         var changedAny = false
-        val keep = board.strokes.filterNot { d ->
+        // Штрихи под ластиком (0.26.2): сначала рамка штриха (готовая), точки — только у тех, что рядом; новый список —
+        // только если что-то стёрто. Раньше на каждой точке движения перебирались все точки всех штрихов доски.
+        var hitIdx: ArrayList<Int>? = null
+        for ((si, d) in board.strokes.withIndex()) {
+            val rr = r + d.width / 2
+            val bb = d.bounds()
+            if (x < bb.left - rr || x > bb.right + rr || y < bb.top - rr || y > bb.bottom + rr) continue
             var i = 0
-            var hit = false
-            while (i + 1 < d.pts.size && !hit) {
+            while (i + 1 < d.pts.size) {
                 val dx = d.pts[i] - x; val dy = d.pts[i + 1] - y
-                val rr = r + d.width / 2
-                if (dx * dx + dy * dy < rr * rr) hit = true
+                if (dx * dx + dy * dy < rr * rr) { (hitIdx ?: ArrayList<Int>().also { hitIdx = it }).add(si); break }
                 i += 3
             }
-            hit
         }
+        val keep = hitIdx?.let { idx -> val set = idx.toHashSet(); board.strokes.filterIndexed { i, _ -> i !in set } }
         val h = view.hitAt(x, y)
         val fi = view.fillBorderAt(x, y, r)
-        if (keep.size != board.strokes.size || fi >= 0 ||
+        if (keep != null || fi >= 0 ||
             (h != null && h.kind != BoardView.Kind.IMAGE && h.kind != BoardView.Kind.TABLE && h.kind != BoardView.Kind.VEDOM)) {
             if (!eraseUndoPushed) { pushUndo(); eraseUndoPushed = true }
-            if (keep.size != board.strokes.size) { board.strokes.clear(); board.strokes.addAll(keep); changedAny = true }
+            if (keep != null) { board.strokes.clear(); board.strokes.addAll(keep); changedAny = true }
             when (h?.kind) {
                 BoardView.Kind.TEXT -> { board.texts.removeAt(h.index); changedAny = true }
                 BoardView.Kind.STICKER -> { board.stickers.removeAt(h.index); changedAny = true }
@@ -1269,14 +1383,14 @@ class BoardActivity : Activity(), BoardView.Host {
         val label = if (n < 3) "Углы: $n — нужно хотя бы 3" else "Углы: $n"
         modeBar.removeAllViews()
         modeBar.addView(Ui.floatingBar(this, label, *buttons.toTypedArray()))
-        modeBar.visibility = View.VISIBLE
+        modeBar.visibility = View.VISIBLE; updateColorStrip()
     }
 
     /** Панель режима (обрезка, точки заливки, ввод в ячейку таблицы). */
     internal fun showModeBar(label: String, buttons: List<TextView>) {
         modeBar.removeAllViews()
         modeBar.addView(Ui.floatingBar(this, label, *buttons.toTypedArray()))
-        modeBar.visibility = View.VISIBLE
+        modeBar.visibility = View.VISIBLE; updateColorStrip()
     }
 
     /** Инструмент сейчас (для таблиц: в «В текст» касание пером ячейки — писать в неё). */
@@ -1350,7 +1464,7 @@ class BoardActivity : Activity(), BoardView.Host {
 
     internal fun hideModeBar() {
         modeBar.removeAllViews()
-        modeBar.visibility = View.GONE
+        modeBar.visibility = View.GONE; updateColorStrip()
     }
 
     // ---------------------------------------------------------------- обрезка и булавка
@@ -1367,7 +1481,7 @@ class BoardActivity : Activity(), BoardView.Host {
         )
         modeBar.removeAllViews()
         modeBar.addView(Ui.floatingBar(this, "Обрезка: тяните края и углы", *buttons))
-        modeBar.visibility = View.VISIBLE
+        modeBar.visibility = View.VISIBLE; updateColorStrip()
         hint("Тяните $penWord или пальцем за края и углы рамки — лишнее скроется. Скрытое не пропадает", 4000)
     }
 
@@ -1687,7 +1801,15 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     override fun onDragStart() { pushUndo() }
-    override fun onDragEnd() { changed() }
+    override fun onDragEnd() {
+        // Таблицу отпустили у правого края другой — приклеилась; оттащили — отклеилась (0.26.3).
+        (view.selection.singleOrNull() as? BoardTable)?.takeIf { !it.locked }?.let { t ->
+            val was = t.dock
+            TableDock.afterMove(board, view.tableDraw, t, view.origScale(t), Ui.dpf(this, 40f) / board.camZ)
+            if (t.dock != was) hint(if (t.dock.isNotEmpty()) "Таблицы склеены: один масштаб, двигаются вместе" else "Таблица отклеена", 2200)
+        }
+        changed()
+    }
     override fun onDragCancel() {
         if (undoStack.isNotEmpty()) undoStack.removeLast()
         view.invalidate()
@@ -1705,7 +1827,7 @@ class BoardActivity : Activity(), BoardView.Host {
         selBar.removeAllViews()
         tableUi.markFromFill(sel)
         if (sel.isEmpty()) {
-            selBar.visibility = View.GONE
+            selBar.visibility = View.GONE; updateColorStrip()
             return
         }
         val label = tableUi.selectionLabel(sel) ?: vedomUi.selectionLabel(sel) ?: when {
@@ -1789,7 +1911,7 @@ class BoardActivity : Activity(), BoardView.Host {
         buttons += Ui.pill(this, "Готово", Color.WHITE, Ui.ACCENT).apply { tag = "sel_done"; setOnClickListener { view.clearSelection() } }
         val bar = Ui.floatingBar(this, label2, *buttons.toTypedArray())
         selBar.addView(bar)
-        selBar.visibility = View.VISIBLE
+        selBar.visibility = View.VISIBLE; updateColorStrip()
     }
 
     private fun idOf(o: Any): String? = when (o) {
