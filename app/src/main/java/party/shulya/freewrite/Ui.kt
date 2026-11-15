@@ -64,7 +64,8 @@ object Ui {
         text(ctx, value, sp, color).apply { typeface = Typeface.MONOSPACE }
 
     /** Кнопка инструмента: значок и подпись под ним. Выбранная — с оранжевым фоном. */
-    class ToolButton(ctx: Context, iconRes: Int, label: String) : LinearLayout(ctx) {
+    /** Кнопка инструмента: значок и подпись. [compact] — для панели «две строки» (0.27): узкая, подпись 10,5 sp в одну строку. */
+    class ToolButton(ctx: Context, iconRes: Int, label: String, compact: Boolean = false) : LinearLayout(ctx) {
         private val icon = ImageView(ctx)
         private val caption = TextView(ctx)
         var selectedTool = false
@@ -79,19 +80,72 @@ object Ui {
         init {
             orientation = VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(ctx, 7f), dp(ctx, 5f), dp(ctx, 7f), dp(ctx, 4f))
-            minimumWidth = dp(ctx, 54f)
+            if (compact) setPadding(dp(ctx, 1f), dp(ctx, 5f), dp(ctx, 1f), dp(ctx, 4f))
+            else setPadding(dp(ctx, 7f), dp(ctx, 5f), dp(ctx, 7f), dp(ctx, 4f))
+            minimumWidth = dp(ctx, if (compact) 0f else 54f)
             isClickable = true
             isFocusable = true
             contentDescription = label
             icon.setImageResource(iconRes)
             addView(icon, LayoutParams(dp(ctx, 24f), dp(ctx, 24f)))
             caption.text = label
-            caption.textSize = 11f
+            caption.textSize = if (compact) 10.5f else 11f
+            if (label.isBlank()) caption.visibility = GONE // только значок (отменить, вернуть, «⋮»)
+            if (compact) { caption.isSingleLine = true; caption.ellipsize = android.text.TextUtils.TruncateAt.END }
             caption.gravity = Gravity.CENTER
             addView(caption, LayoutParams(WRAP, WRAP))
             selectedTool = false
         }
+    }
+
+    /**
+     * Строка кнопок без прокрутки (0.27, панель «две строки»): кнопки делят ширину поровну, но не шире [maxCell]; лишнее
+     * место — по краям (строка по центру). Разделители (tag [SEP]) — своей ширины. При повороте экрана считается заново.
+     */
+    class EvenRow(ctx: Context, private val maxCell: Int = dp(ctx, 76f)) : ViewGroup(ctx) {
+        private var cell = 0
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val w = MeasureSpec.getSize(widthMeasureSpec)
+            var cells = 0; var fixed = 0
+            for (i in 0 until childCount) {
+                val c = getChildAt(i)
+                if (c.visibility == GONE) continue
+                if (c.tag == SEP) { c.measure(MeasureSpec.makeMeasureSpec(c.layoutParams.width, MeasureSpec.EXACTLY), heightMeasureSpec); fixed += c.measuredWidth } else cells++
+            }
+            cell = if (cells == 0) 0 else minOf(maxCell, (w - paddingLeft - paddingRight - fixed) / cells)
+            var h = 0
+            for (i in 0 until childCount) {
+                val c = getChildAt(i)
+                if (c.visibility == GONE || c.tag == SEP) continue
+                c.measure(MeasureSpec.makeMeasureSpec(cell, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
+                h = maxOf(h, c.measuredHeight)
+            }
+            setMeasuredDimension(w, h + paddingTop + paddingBottom)
+        }
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            var total = 0
+            for (i in 0 until childCount) { val c = getChildAt(i); if (c.visibility != GONE) total += if (c.tag == SEP) c.measuredWidth else cell }
+            var x = maxOf(paddingLeft, (r - l - total) / 2)
+            val inner = b - t - paddingTop - paddingBottom
+            for (i in 0 until childCount) {
+                val c = getChildAt(i)
+                if (c.visibility == GONE) continue
+                val cw = if (c.tag == SEP) c.measuredWidth else cell
+                val ch = if (c.tag == SEP) minOf(inner, dp(context, 34f)) else c.measuredHeight
+                val y = paddingTop + (inner - ch) / 2
+                c.layout(x, y, x + cw, y + ch)
+                x += cw
+            }
+        }
+        companion object { const val SEP = "sep" }
+    }
+
+    /** Тонкий разделитель для [EvenRow]. */
+    fun evenSep(ctx: Context): View = View(ctx).apply {
+        tag = EvenRow.SEP
+        setBackgroundColor(RULE)
+        layoutParams = ViewGroup.LayoutParams(dp(ctx, 9f), dp(ctx, 34f))
+        background = android.graphics.drawable.InsetDrawable(android.graphics.drawable.ColorDrawable(RULE), dp(ctx, 4f), 0, dp(ctx, 4f), 0)
     }
 
     /**

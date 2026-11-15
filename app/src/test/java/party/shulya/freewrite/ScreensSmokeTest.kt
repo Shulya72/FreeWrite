@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.widget.ScrollView
 import org.robolectric.RuntimeEnvironment
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -908,6 +909,38 @@ class ScreensSmokeTest {
         assertEquals(x0, BoardStore(ctx).load(b0.id)!!.images[0].x, 0.01f)
     }
 
+    // ------------------------------------------------------------------ 0.27: панель «две строки»
+
+    /** Планшет вертикально (MatePad Mini, 674 dp): две строки сверху, все инструменты и учёт видны, ничего не листается. */
+    @Test
+    @Config(qualifiers = "w674dp-h1078dp-port-xhdpi")
+    fun board_twoRowsFitTabletPortrait() {
+        val b0 = sampleBoard()
+        val controller = Robolectric.buildActivity(BoardActivity::class.java, Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b0.id)).setup()
+        val activity = controller.get()
+        val root = activity.window.decorView
+        idle()
+        val tags = listOf("board_tool_hand", "board_tool_pen", "board_tool_eraser", "board_tool_select", "board_tool_fill", "board_tool_table",
+            "board_tool_callout", "board_tool_status", "board_tool_text", "board_tool_frame", "board_tool_image",
+            "board_statuses", "board_vedoms", "board_sections", "board_summary", "board_undo", "board_redo", "board_cloud", "board_more")
+        for (tag in tags) {
+            val v = root.findViewWithTag<View>(tag)
+            assertNotNull(tag, v)
+            val loc = IntArray(2); v.getLocationInWindow(loc)
+            assertTrue("$tag целиком на экране: ${loc[0]}+${v.width} / ${root.width}", v.width > 0 && loc[0] >= 0 && loc[0] + v.width <= root.width)
+        }
+        // Инструменты — одной строкой (у всех один верх).
+        val tops = tags.take(11).map { val loc = IntArray(2); root.findViewWithTag<View>(it).getLocationInWindow(loc); loc[1] }.toSet()
+        assertEquals("одна строка", 1, tops.size)
+        assertEquals(BoardActivity.Tool.HAND, activity.tool())
+        assertEquals(View.GONE, root.findViewWithTag<View>("board_colors").visibility)
+        root.findViewWithTag<View>("board_tool_pen").performClick(); idle()
+        assertEquals("с ручкой — полоса цветов", View.VISIBLE, root.findViewWithTag<View>("board_colors").visibility)
+        screenshot(root, "board-tablet-portrait.png")
+        root.findViewWithTag<View>("board_tool_hand").performClick(); idle()
+        assertEquals(View.GONE, root.findViewWithTag<View>("board_colors").visibility)
+    }
+
     // ------------------------------------------------------------------ 0.8.2: склейка надписей
 
     @Test
@@ -1036,7 +1069,7 @@ class ScreensSmokeTest {
         val sa = shadowOf(activity)
 
         // 1. Первый раз — сразу «Поделиться» Android с файлом .freewrite.
-        root.findViewWithTag<View>("board_share").performClick()
+        moreItem(root, 2) // «⋮ → Отправить файлом»
         waitUntil("выбор приложения") { sa.peekNextStartedActivity() != null }
         val chooser = sa.nextStartedActivity
         assertEquals(Intent.ACTION_CHOOSER, chooser.action)
@@ -1048,7 +1081,7 @@ class ScreensSmokeTest {
         assertTrue(uri.toString(), uri.toString().startsWith("content://party.shulya.freewrite") && uri.toString().endsWith(".freewrite"))
 
         // 2. Второй раз картинка у коллеги уже есть — спрашиваем «целиком / только новое».
-        root.findViewWithTag<View>("board_share").performClick()
+        moreItem(root, 2) // «⋮ → Отправить файлом»
         idle()
         val dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
         assertTrue(dialog.isShowing)
@@ -1216,4 +1249,15 @@ class ScreensSmokeTest {
         val dir = File("build/screenshots").apply { mkdirs() }
         FileOutputStream(File(dir, name)).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
+
+    /** Пункт меню «⋮» доски (0.27): 1 — совместно (телефон), 2 — файлом, 3 — палец рисует, 4 — вся доска. */
+    private fun moreItem(root: android.view.View, id: Int) {
+        root.findViewWithTag<android.view.View>("board_more").performClick()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        val pm = org.robolectric.shadows.ShadowPopupMenu.getLatestPopupMenu()
+        val item = pm.menu.findItem(id)
+        org.robolectric.Shadows.shadowOf(pm).onMenuItemClickListener.onMenuItemClick(item)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    }
+
 }

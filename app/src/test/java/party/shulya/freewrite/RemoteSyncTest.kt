@@ -365,7 +365,7 @@ class RemoteSyncTest {
             idle(); assertTrue("не дождался: $what", cond())
         }
         idle()
-        root.findViewWithTag<android.view.View>("board_cloud").performClick()
+        moreItem(root, 1) // «⋮ → Совместно» (телефон)
         idle()
         org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         waitFor("код-приглашение") { t.boards.containsKey(b.id) && (activity.window.decorView.rootView != null) &&
@@ -391,7 +391,7 @@ class RemoteSyncTest {
         t.call(org.json.JSONObject().put("op", "push").put("board", b.id).put("key", board0.key).put("changes",
             org.json.JSONArray().put(org.json.JSONObject().put("id", textObj.id).put("rev", "9999999999999.0000.kolya2")
                 .put("k", "text").put("d", newBody))))
-        root.findViewWithTag<android.view.View>("board_cloud").performClick()
+        moreItem(root, 1) // «⋮ → Совместно» (телефон)
         idle()
         org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().getButton(android.app.AlertDialog.BUTTON_NEUTRAL).performClick()
         val field = BoardActivity::class.java.getDeclaredField("board").apply { isAccessible = true }
@@ -444,4 +444,15 @@ class RemoteSyncTest {
         assertEquals(null, Remote.siteLink("", "ABCDEFGH"))
         assertEquals(null, Remote.siteLink("https://functions.example/abc", ""))
     }
+
+    /** Пункт меню «⋮» доски (0.27): 1 — совместно (телефон), 2 — файлом, 3 — палец рисует, 4 — вся доска. */
+    private fun moreItem(root: android.view.View, id: Int) {
+        root.findViewWithTag<android.view.View>("board_more").performClick()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        val pm = org.robolectric.shadows.ShadowPopupMenu.getLatestPopupMenu()
+        val item = pm.menu.findItem(id)
+        org.robolectric.Shadows.shadowOf(pm).onMenuItemClickListener.onMenuItemClick(item)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    }
+
 }
