@@ -461,7 +461,7 @@ class TablesTest {
         idle()
 
         // «В текст»: касание пером ячейки «Захватка» — активная ячейка и панель «→ ↓ Готово».
-        root.findViewWithTag<View>("board_tool_write").performClick()
+        s.a.setTool(BoardActivity.Tool.WRITE) // кнопки «В текст» на доске с 0.26.2 нет — инструмент остался
         val (zx, zy) = s.cell(rows[4], TableCol.ZAH)
         tap(s.view, MotionEvent.TOOL_TYPE_STYLUS, zx, zy)
         assertEquals(rows[4] to TableCol.ZAH, s.a.tableUi.active)

@@ -1370,6 +1370,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         if (tool == MotionEvent.TOOL_TYPE_ERASER || t == BoardActivity.Tool.ERASER) {
             mode = Mode.ERASE
+            eraseX = x; eraseY = y
             host.onErase(x, y, true)
             return
         }
@@ -1513,8 +1514,14 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 invalidate()
             }
             Mode.ERASE -> {
-                for (h in 0 until ev.historySize) host.onErase(wx(ev.getHistoricalX(idx, h)), wy(ev.getHistoricalY(idx, h)), false)
-                host.onErase(wx(sxp), wy(syp), false)
+                // Ластик (0.26.2): точки движения — не чаще чем через 4 dp (ластик 14 dp, ничего не пропустит); раскладка
+                // таблиц на одно движение сверяется один раз (раньше — на каждой точке, над таблицей доска подвисала).
+                val outer = tableDraw.frame
+                tableDraw.frame = ++frameNo
+                try {
+                    for (h in 0 until ev.historySize) eraseStep(wx(ev.getHistoricalX(idx, h)), wy(ev.getHistoricalY(idx, h)))
+                    eraseStep(wx(sxp), wy(syp))
+                } finally { tableDraw.frame = outer }
             }
             Mode.INK -> {
                 val s = live ?: return
@@ -1903,6 +1910,17 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     }
 
     private var lastSlowLog = 0L
+
+    private var eraseX = 0f
+    private var eraseY = 0f
+
+    private fun eraseStep(x: Float, y: Float) {
+        val step = Ui.dpf(context, 4f) / b.camZ
+        val dx = x - eraseX; val dy = y - eraseY
+        if (dx * dx + dy * dy < step * step) return
+        eraseX = x; eraseY = y
+        host.onErase(x, y, false)
+    }
 
     private fun drawFrame(canvas: Canvas) {
         val t0 = System.nanoTime()

@@ -173,8 +173,7 @@ class StatusRowsTest {
 
         // «Строка ИД» (с 0.20 инструмента на панели нет — его место заняла «Таблица ИД», старые строки работают):
         // касание пером у захватки — название (предложено «Захватка 1 — ») → строка.
-        a.javaClass.getDeclaredMethod("setTool", BoardActivity.Tool::class.java, Boolean::class.javaPrimitiveType)
-            .apply { isAccessible = true }.invoke(a, BoardActivity.Tool.ROW, false)
+        a.setTool(BoardActivity.Tool.ROW, false)
         tap(view, MotionEvent.TOOL_TYPE_STYLUS, sx(300f), sy(400f))
         var dlg = ShadowAlertDialog.getLatestAlertDialog()
         val edit = dlg.window!!.decorView.findViewWithTag<android.widget.EditText>("row_title")

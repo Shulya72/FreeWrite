@@ -121,6 +121,42 @@ class PlanSpeedTest {
         println("BENCH plan-frame-all-again ms=${"%.2f".format(all2)} nozones ms=${"%.2f".format(ms(t) / 10)}")
         bd.zones.addAll(zones)
 
+        // Ластик над таблицей (Владимир: «ластиком на таблицу навожу — доска чуть-чуть зависает»): на таблице 60 росчерков.
+        view.fitAll(); idle()
+        val tb = view.tableDraw.bounds(bd, t0, android.graphics.RectF())
+        for (k in 0 until 60) {
+            val x0 = tb.left + tb.width() * (0.1f + 0.012f * k); val y0 = tb.top + tb.height() * 0.2f
+            val pts = FloatArray(30 * 3) { i -> when (i % 3) { 0 -> x0 + (i / 3) * 6f; 1 -> y0 + (i / 3) * 4f; else -> 0.5f } }
+            bd.strokes += Drawing("pen", Color.BLUE, 3f, pts)
+        }
+        a.setTool(BoardActivity.Tool.ERASER, quiet = true)
+        fun sx(x: Float) = (x - bd.camX) * bd.camZ
+        fun sy(y: Float) = (y - bd.camY) * bd.camZ
+        val ex0 = sx(tb.left + tb.width() * 0.05f); val ey = sy(tb.top + tb.height() * 0.6f) // по строкам, ниже росчерков
+        val ex1 = sx(tb.left + tb.width() * 0.95f)
+        val props = arrayOf(android.view.MotionEvent.PointerProperties().apply { id = 0; toolType = android.view.MotionEvent.TOOL_TYPE_STYLUS })
+        fun pc(x: Float, y: Float) = arrayOf(android.view.MotionEvent.PointerCoords().apply { this.x = x; this.y = y; pressure = 0.5f })
+        val d0 = android.os.SystemClock.uptimeMillis()
+        view.dispatchTouchEvent(android.view.MotionEvent.obtain(d0, d0, android.view.MotionEvent.ACTION_DOWN, 1, props, pc(ex0, ey), 0, 0, 1f, 1f, 0, 0, android.view.InputDevice.SOURCE_STYLUS, 0))
+        t = System.nanoTime()
+        val moves = 60
+        for (m in 1..moves) {
+            val ev = android.view.MotionEvent.obtain(d0, d0 + m * 8L - 6, android.view.MotionEvent.ACTION_MOVE, 1, props,
+                pc(ex0 + (ex1 - ex0) * (m - 0.8f) / moves, ey), 0, 0, 1f, 1f, 0, 0, android.view.InputDevice.SOURCE_STYLUS, 0)
+            for (hh in 1..4) ev.addBatch(d0 + m * 8L - 6 + hh * 2, pc(ex0 + (ex1 - ex0) * (m - 0.8f + hh * 0.2f) / moves, ey), 0)
+            view.dispatchTouchEvent(ev)
+            ev.recycle()
+        }
+        val eraseMs = ms(t) / moves
+        view.dispatchTouchEvent(android.view.MotionEvent.obtain(d0, d0 + moves * 8L + 4, android.view.MotionEvent.ACTION_UP, 1, props, pc(ex1, ey), 0, 0, 1f, 1f, 0, 0, android.view.InputDevice.SOURCE_STYLUS, 0))
+        idle()
+        println("BENCH erase-over-table ms-per-move=${"%.3f".format(eraseMs)}")
+        assertEquals("ластик по строкам таблицы росчерки выше не стёр", 60, bd.strokes.size)
+        // Так было (каждая точка — отдельно, раскладка таблиц каждый раз): для сравнения.
+        t = System.nanoTime()
+        for (m in 1..moves) for (hh in 0..4) a.onErase(tb.left + tb.width() * (0.05f + 0.9f * (m - 0.8f + hh * 0.2f) / moves), tb.top + tb.height() * 0.6f, false)
+        println("BENCH erase-over-table-old-way ms-per-move=${"%.3f".format(ms(t) / moves)}")
+
         // Смысл тот же: цвет области — самая отстающая схема захватки, процент — по площади.
         val list = bd.statuses(BoardStatus.ID)
         for (zn in bd.zones.filter { it.t == t0.id && !it.free }.take(10)) {

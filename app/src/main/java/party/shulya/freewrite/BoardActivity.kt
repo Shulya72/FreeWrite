@@ -137,8 +137,8 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         updateSubtitle()
         engine.start(this)
-        // Без пера (телефон) начинаем с «Руки»: пальцем двигать и выбирать. С пером — с «Ручки».
-        setTool(if (stylus) Tool.PEN else Tool.HAND, quiet = true)
+        // Всегда начинаем с «Руки» (0.26.2, Владимир: «по умолчанию всегда рука» — с «Ручкой» случайно чертил по таблице).
+        setTool(Tool.HAND, quiet = true)
         updateBanner()
         updateZoom()
         if ((board.isEmpty && board.camX == 0f && board.camY == 0f) || intent.getBooleanExtra(EXTRA_FIT, false)) view.post { view.fitAll() }
@@ -353,11 +353,9 @@ class BoardActivity : Activity(), BoardView.Host {
         }
 
         val tools = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        // Без пера главное — двигать, метки, выноски, надписи с клавиатуры; с пером — письмо и рисование.
-        val order = if (stylus) listOf(Tool.HAND, Tool.WRITE, Tool.PEN, Tool.MARKER, Tool.SHAPE, Tool.TABLE, Tool.STATUS,
-            Tool.CALLOUT, Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.TEXT, Tool.FRAME)
-        else listOf(Tool.HAND, Tool.TABLE, Tool.STATUS, Tool.CALLOUT, Tool.TEXT, Tool.PEN, Tool.MARKER, Tool.SHAPE,
-            Tool.FILL, Tool.ERASER, Tool.SELECT, Tool.FRAME, Tool.WRITE)
+        // Набор Владимира (0.26.2): «В текст», «Маркер» и «Фигуры» с доски убраны (в «Записи» остаются), ластик — рядом с ручкой.
+        val order = listOf(Tool.HAND, Tool.PEN, Tool.ERASER, Tool.TABLE, Tool.CALLOUT, Tool.FILL, Tool.STATUS,
+            Tool.SELECT, Tool.TEXT, Tool.FRAME)
         for (t in order) when (t) {
             Tool.HAND -> addTool(tools, t, R.drawable.ic_hand, "Рука")
             Tool.TEXT -> addTool(tools, t, R.drawable.ic_text, "Текст")
@@ -540,7 +538,7 @@ class BoardActivity : Activity(), BoardView.Host {
         row.addView(b)
     }
 
-    private fun setTool(t: Tool, quiet: Boolean = false) {
+    internal fun setTool(t: Tool, quiet: Boolean = false) {
         if (!quiet && view.placing != null) { val c = placeCancel; endPlacing(); c?.invoke() } // выбрали инструмент — место не ищем
         if (t != Tool.WRITE) current?.let { commit(it) }
         if (t != Tool.WRITE) tableUi.deactivate()
@@ -1027,23 +1025,27 @@ class BoardActivity : Activity(), BoardView.Host {
         if (first) eraseUndoPushed = false
         val r = Ui.dpf(this, 14f) / board.camZ
         var changedAny = false
-        val keep = board.strokes.filterNot { d ->
+        // Штрихи под ластиком (0.26.2): сначала рамка штриха (готовая), точки — только у тех, что рядом; новый список —
+        // только если что-то стёрто. Раньше на каждой точке движения перебирались все точки всех штрихов доски.
+        var hitIdx: ArrayList<Int>? = null
+        for ((si, d) in board.strokes.withIndex()) {
+            val rr = r + d.width / 2
+            val bb = d.bounds()
+            if (x < bb.left - rr || x > bb.right + rr || y < bb.top - rr || y > bb.bottom + rr) continue
             var i = 0
-            var hit = false
-            while (i + 1 < d.pts.size && !hit) {
+            while (i + 1 < d.pts.size) {
                 val dx = d.pts[i] - x; val dy = d.pts[i + 1] - y
-                val rr = r + d.width / 2
-                if (dx * dx + dy * dy < rr * rr) hit = true
+                if (dx * dx + dy * dy < rr * rr) { (hitIdx ?: ArrayList<Int>().also { hitIdx = it }).add(si); break }
                 i += 3
             }
-            hit
         }
+        val keep = hitIdx?.let { idx -> val set = idx.toHashSet(); board.strokes.filterIndexed { i, _ -> i !in set } }
         val h = view.hitAt(x, y)
         val fi = view.fillBorderAt(x, y, r)
-        if (keep.size != board.strokes.size || fi >= 0 ||
+        if (keep != null || fi >= 0 ||
             (h != null && h.kind != BoardView.Kind.IMAGE && h.kind != BoardView.Kind.TABLE && h.kind != BoardView.Kind.VEDOM)) {
             if (!eraseUndoPushed) { pushUndo(); eraseUndoPushed = true }
-            if (keep.size != board.strokes.size) { board.strokes.clear(); board.strokes.addAll(keep); changedAny = true }
+            if (keep != null) { board.strokes.clear(); board.strokes.addAll(keep); changedAny = true }
             when (h?.kind) {
                 BoardView.Kind.TEXT -> { board.texts.removeAt(h.index); changedAny = true }
                 BoardView.Kind.STICKER -> { board.stickers.removeAt(h.index); changedAny = true }

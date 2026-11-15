@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.widget.ScrollView
 import org.robolectric.RuntimeEnvironment
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -232,7 +233,13 @@ class ScreensSmokeTest {
         screenshot(root, "board-portrait.png")
         val board = { activity.board() }
 
-        // Ручка (включена сразу): штрих остаётся рисунком.
+        // По умолчанию — «Рука» (0.26.2); на панели нет «В текст», «Маркера» и «Фигур», ластик — сразу за ручкой.
+        assertEquals(BoardActivity.Tool.HAND, activity.tool())
+        for (gone in listOf("board_tool_write", "board_tool_marker", "board_tool_shape")) assertNull(gone, root.findViewWithTag<View>(gone))
+        val bar = root.findViewWithTag<View>("board_tool_pen").parent as android.view.ViewGroup
+        assertEquals(bar.indexOfChild(root.findViewWithTag("board_tool_pen")) + 1, bar.indexOfChild(root.findViewWithTag("board_tool_eraser")))
+        // Ручка: штрих остаётся рисунком.
+        root.findViewWithTag<View>("board_tool_pen").performClick()
         val strokes0 = board().strokes.size
         drawStroke(view, MotionEvent.TOOL_TYPE_STYLUS, 0.3f, 0.75f)
         assertEquals(strokes0 + 1, board().strokes.size)
@@ -261,8 +268,8 @@ class ScreensSmokeTest {
         drawStroke(view, MotionEvent.TOOL_TYPE_FINGER, 0.6f, 0.4f)
         assertTrue("доска сдвинулась", board().camX != camX0)
 
-        // «В текст» без модели: надпись остаётся рисунком.
-        root.findViewWithTag<View>("board_tool_write").performClick()
+        // «В текст» (с 0.26.2 кнопки на доске нет, сам инструмент остался) без модели: надпись остаётся рисунком.
+        activity.setTool(BoardActivity.Tool.WRITE)
         drawStroke(view, MotionEvent.TOOL_TYPE_STYLUS, 0.2f, 0.6f)
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1600))
         assertEquals(strokes0 + 1, board().strokes.size)
@@ -482,7 +489,7 @@ class ScreensSmokeTest {
         assertEquals("доска на месте", camX, board().camX, 0.01f)
 
         // Фигуры на доске: круг пером.
-        root.findViewWithTag<View>("board_tool_shape").performClick()
+        activity.setTool(BoardActivity.Tool.SHAPE) // кнопки «Фигуры» на доске с 0.26.2 нет
         val n0 = board().strokes.size
         val circle = (0..80).map { i ->
             val t = 0.2 + (2 * Math.PI + 0.3) * i / 80
@@ -855,6 +862,7 @@ class ScreensSmokeTest {
         val m = board().images[0]
         val cx0 = sx(m.x + m.w / 2); val cy0 = sy(m.y + m.h / 2)
         val x0 = m.x
+        root.findViewWithTag<View>("board_tool_pen").performClick() // пишут пером, ладонь лежит на экране
 
         // 0. Выделена не пальцем (как только что вставленная картинка) — ладонь её не тащит, только доску.
         view.select(listOf(m))
