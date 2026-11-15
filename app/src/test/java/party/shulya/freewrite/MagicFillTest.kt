@@ -137,6 +137,24 @@ class MagicFillTest {
         assertTrue("след: ${MagicFill.area(free[0])}", MagicFill.area(free[0]) in 1500f..2600f)
     }
 
+    /** Кисть вдоль стены не цепляет жирную надпись рядом (0.26.3, Владимир: «зацепляет надписи, которые рядом были»). */
+    @Test
+    fun brushSkipsLabelBesideWall() {
+        val im = thickWalls().apply {
+            // Жирные «буквы» над нижней стеной (верх стены — 340), в 7 px от неё — под краем кисти радиусом 14.
+            for (k in 0 until 4) box(120 + k * 14, 322, 129 + k * 14, 333)
+        }
+        val ink = MagicFill.inkMask(im.lum)
+        val solid = MagicFill.solidMask(ink, im.w, im.h)
+        val pieces = MagicFill.brush(solid, im.w, im.h, floatArrayOf(100f, 345f, 180f, 346f, 250f, 344f), 14f)
+        assertEquals("только стена, без надписи", 1, pieces.size)
+        val ys = pieces[0].filterIndexed { i, _ -> i % 2 == 1 }
+        assertTrue("верх куска — стена, не буквы: ${ys.min()}", ys.min() >= 338f)
+        // Провели прямо по надписи — её и возьмёт (стереть — «Стереть лишнее»).
+        val onText = MagicFill.brush(solid, im.w, im.h, floatArrayOf(118f, 327f, 175f, 327f), 6f)
+        assertTrue(onText.isNotEmpty())
+    }
+
     @Test
     fun shapesAndSimplify() {
         val e = MagicFill.ellipse(0.1f, 0.1f, 0.3f, 0.5f)

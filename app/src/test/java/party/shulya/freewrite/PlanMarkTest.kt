@@ -287,6 +287,41 @@ class PlanMarkTest {
         shot(s.view, "plan-sheet-menu.png")
     }
 
+    /** «Стереть лишнее» (0.26.3): след кисти режет захватку; «Отменить» — шаг назад, обводка остаётся. */
+    @Test
+    fun cutAwayExtraFromZahvatka() {
+        val b0 = sample()
+        val t0 = b0.tables[0]
+        b0.zones += BoardZone(t0.id, t0.sheets[0].id, "", "1", MagicFill.rect(0.1f, 0.3f, 0.5f, 0.5f), Color.rgb(30, 90, 200))
+        val s = open(b0)
+        val t = s.b.tables[0]
+        s.a.planUi.startOutline(t, "", "1")
+        zoomSheet(s)
+        barClick(s, "pt_cut")
+        assertEquals(PlanEdit.CUT, s.view.planEdit!!.tool)
+        // Поперёк области — два куска.
+        drag(s.view, s.onSheet(t, 0.3f, 0.2f), s.onSheet(t, 0.3f, 0.6f))
+        assertEquals(2, s.b.zones.count { it.zah == "1" })
+        assertNotNull("обводка продолжается", s.view.planEdit)
+        // Черновик (прямоугольник) и сразу стереть его край — черновик стал областью, край стёрт.
+        barClick(s, "pt_rect")
+        drag(s.view, s.onSheet(t, 0.6f, 0.3f), s.onSheet(t, 0.8f, 0.5f))
+        assertEquals(1, s.view.planEdit!!.pieces.size)
+        barClick(s, "pt_cut")
+        drag(s.view, s.onSheet(t, 0.75f, 0.2f), s.onSheet(t, 0.75f, 0.6f))
+        assertEquals(0, s.view.planEdit!!.pieces.size)
+        assertEquals(4, s.b.zones.count { it.zah == "1" })
+        shot(s.view, "plan-cut.png")
+        // «Отменить» — шаг назад (черновик снова черновик), ещё раз — область целая.
+        barClick(s, "pt_undo")
+        assertNotNull(s.view.planEdit)
+        assertEquals(2, s.b.zones.count { it.zah == "1" })
+        barClick(s, "pt_undo")
+        assertEquals(1, s.b.zones.count { it.zah == "1" })
+        assertNotNull("режим остался", s.view.planEdit)
+        s.a.planUi.endOutline(save = false)
+    }
+
     /** Ручная обводка по точкам (0.26.1): касание рядом с углом пилона — точка ровно в угол чертежа. */
     @Test
     fun pointsSnapToDrawingCorners() {

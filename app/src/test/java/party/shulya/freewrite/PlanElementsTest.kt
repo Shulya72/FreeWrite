@@ -167,6 +167,28 @@ class PlanElementsTest {
         assertEquals(2, PlanElements.split(rect, listOf(hole), 0.7f, floatArrayOf(0.4f, 0.1f, 0.4f, 0.5f))!!.size)
     }
 
+    /** «Стереть лишнее» (0.26.3): след кисти вырезается из области — пополам, дырой, целиком; мимо — не трогает. */
+    @Test
+    fun eraseCutsHolesAndWholePieces() {
+        val sq = floatArrayOf(0.2f, 0.2f, 0.6f, 0.2f, 0.6f, 0.4f, 0.2f, 0.4f) // 0,4 × 0,2 (aspect 1)
+        // Поперёк — два куска.
+        val two = PlanElements.erase(sq, emptyList(), 1f, floatArrayOf(0.4f, 0.1f, 0.4f, 0.5f), 0.01f)!!
+        assertEquals(2, two.size)
+        val a0 = PlanElements.area(sq, emptyList(), 1f)
+        val left = two.sumOf { PlanElements.area(it.outer, it.holes, 1f).toDouble() }.toFloat()
+        assertEquals("стёрта полоса 0,02 × 0,2", a0 - 0.02f * 0.2f, left, 0.002f)
+        // Точкой посередине — дыра.
+        val hole = PlanElements.erase(sq, emptyList(), 1f, floatArrayOf(0.4f, 0.3f), 0.02f)!!
+        assertEquals(1, hole.size); assertEquals(1, hole[0].holes.size)
+        // Мимо — не трогает.
+        assertEquals(null, PlanElements.erase(sq, emptyList(), 1f, floatArrayOf(0.8f, 0.8f, 0.9f, 0.9f), 0.01f))
+        // Широкой кистью по всему — целиком.
+        assertEquals(0, PlanElements.erase(sq, emptyList(), 1f, floatArrayOf(0.15f, 0.3f, 0.65f, 0.3f), 0.2f)!!.size)
+        // Лист не квадратный (высота 0,5 ширины): точка всё так же внутри.
+        val wide = PlanElements.erase(floatArrayOf(0.2f, 0.4f, 0.6f, 0.4f, 0.6f, 0.8f, 0.2f, 0.8f), emptyList(), 0.5f, floatArrayOf(0.4f, 0.6f), 0.02f)!!
+        assertEquals(1, wide[0].holes.size)
+    }
+
     /** Привязка «как в AutoCAD» (0.26.1): угол пилона, пересечение линий; размеры и штриховка — нет. */
     @Test
     fun snapToCornersAndCrossings() {

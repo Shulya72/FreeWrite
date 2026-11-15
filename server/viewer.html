@@ -886,7 +886,8 @@ function vLayout(v) {
     let w = tw(VCOL[c], VF.HF, true) + 2 * VF.P;
     for (const row of texts) w = Math.max(w, tw(row[ci], VF.FONT, pill || c === "zah" || c === "uch" || c === "n") + 2 * VF.P + (pill ? 22 : 0));
     return c === "n" ? Math.max(w, 34) : c === "rd" ? Math.max(w, tw("00.00.00", VF.FONT, false) + 2 * VF.P)
-      : c === "igs" ? Math.min(Math.max(w, 120), 300) : c === "res" ? Math.min(Math.max(w, 100), 220) : Math.min(Math.max(w, 56), 230);
+      : c === "igs" ? Math.min(Math.max(w, 120), 300) : c === "res" ? Math.min(Math.max(w, 100), 220)
+      : c === "cipher" ? Math.min(Math.max(w, 56), 560) : Math.min(Math.max(w, 56), 230); // шифр — целиком (0.26.3)
   });
   let total = widths.reduce((a, b) => a + b, 0);
   const foot = !v.given;

@@ -53,6 +53,8 @@ class PlanEdit(val t: BoardTable, val sheet: PlanSheet, val uch: String, val zah
     var elements = false
     /** Привязка к углам и пересечениям линий чертежа (0.26.1) — по PDF листа; готовится в фоне. */
     @Volatile var snap: PlanSnap? = null
+    /** Сколько раз в этой обводке стирали лишнее (0.26.3): «Отменить» возвращает их по одному. */
+    var cuts = 0
 
     companion object {
         const val MAGIC = 0
@@ -73,7 +75,13 @@ class PlanEdit(val t: BoardTable, val sheet: PlanSheet, val uch: String, val zah
         val GAPS = intArrayOf(0, 3, 6, 10, 15, 22)
 
         /** Инструменты, которым нужен след пальца/пера. */
-        fun pathTool(t: Int) = t == BRUSH || t == ASSIGN || t == ERASE
+        /** «Стереть лишнее» (0.26.3): кистью вырезать из областей захватки (или элементов) захваченные надписи. */
+        const val CUT = 8
+
+        fun pathTool(t: Int) = t == BRUSH || t == ASSIGN || t == ERASE || t == CUT
+
+        /** Кисть со следом (кисть по стенам, стереть лишнее): лупы нет, рисуется широкая полоса. */
+        fun brushTool(t: Int) = t == BRUSH || t == CUT
 
         /** Где точка притягивается к углам (лупа с привязкой). */
         fun snapTool(t: Int) = t == POINTS || t == RECT || t == CIRCLE
@@ -104,6 +112,7 @@ class PlanUi(private val a: BoardActivity) {
         val pe = v.planEdit ?: return false
         if (pe.points.isNotEmpty()) { pe.points.removeAt(pe.points.size - 1); pe.points.removeAt(pe.points.size - 1) }
         else if (pe.pieces.isNotEmpty()) pe.pieces.removeAt(pe.pieces.size - 1)
+        else if (pe.cuts > 0) { pe.cuts--; return false } // стёртое лишнее — шагом отмены доски, режим остаётся
         else return pe.tool != PlanEdit.ASSIGN && pe.tool != PlanEdit.SCISSORS && pe.tool != PlanEdit.ERASE && !pe.elements
         v.invalidate()
         return true
@@ -111,14 +120,15 @@ class PlanUi(private val a: BoardActivity) {
 
     /** Режим, который «Отменить» доски не закрывает (отметка, ножницы, «убрать» — каждое касание сразу на доске). */
     fun keepOnUndo(pe: PlanEdit) = pe.pieces.isEmpty() && pe.points.isEmpty() &&
-        (pe.tool == PlanEdit.ASSIGN || pe.tool == PlanEdit.SCISSORS || pe.tool == PlanEdit.ERASE || pe.elements)
+        (pe.tool == PlanEdit.ASSIGN || pe.tool == PlanEdit.SCISSORS || pe.tool == PlanEdit.ERASE || pe.elements ||
+            pe.tool == PlanEdit.CUT)
 
     /** После отмены доски — тот же режим на восстановленной таблице и листе. */
     fun rebind(old: PlanEdit) {
         val t = b.tables.firstOrNull { it.id == old.t.id }
         val sh = t?.sheets?.firstOrNull { it.id == old.sheet.id }
         if (t == null || sh == null) { v.planEdit = null; a.hideModeBar(); return }
-        val pe = PlanEdit(t, sh, old.uch, old.zah).also { it.tool = old.tool; it.elements = old.elements; it.color = old.color; it.gap = old.gap; it.snap = old.snap }
+        val pe = PlanEdit(t, sh, old.uch, old.zah).also { it.tool = old.tool; it.elements = old.elements; it.color = old.color; it.gap = old.gap; it.snap = old.snap; it.cuts = old.cuts }
         v.planEdit = pe
         v.planHover = null
         if (pe.tool == PlanEdit.ASSIGN) v.markedRecs = IdTables.zahRows(b, t, pe.uch, pe.zah).toSet()
@@ -391,7 +401,8 @@ class PlanUi(private val a: BoardActivity) {
 
     private fun toolHint(tool: Int) = when (tool) {
         PlanEdit.MAGIC -> "Касайтесь внутри помещения, плиты, по колонне или стене — контур найдётся сам. Можно несколько раз"
-        PlanEdit.BRUSH -> "Проведите пальцем или пером вдоль нужных стен — возьмутся стены под кистью"
+        PlanEdit.BRUSH -> "Проведите пальцем или пером по середине стен — возьмутся стены под кистью"
+        PlanEdit.CUT -> "Проведите по лишнему (надписи, хвосты) — сотрётся из захватки. «Отменить» — вернуть"
         PlanEdit.RECT -> "Протяните от угла до угла"
         PlanEdit.CIRCLE -> "Протяните рамку круга от угла до угла"
         else -> "Касайтесь углов по порядку; касание первой точки — замкнуть"
@@ -490,6 +501,7 @@ class PlanUi(private val a: BoardActivity) {
         buttons += toolPill("◯", PlanEdit.CIRCLE, "pt_circle")
         buttons += toolPill("По точкам", PlanEdit.POINTS, "pt_points")
         buttons += toolPill("Кисть по стенам", PlanEdit.BRUSH, "pt_brush")
+        buttons += toolPill("Стереть лишнее", PlanEdit.CUT, "pt_cut")
         if (pe.tool == PlanEdit.MAGIC) {
             buttons += Ui.pill(a, "Зазор −", Ui.INK, Ui.DESK).apply { tag = "pt_gap_minus"; setOnClickListener { if (pe.gap > 0) { pe.gap--; outlineBar(pe) } } }
             buttons += Ui.pill(a, "+ (${pe.gap})", Ui.INK, Ui.DESK).apply { tag = "pt_gap_plus"; setOnClickListener { if (pe.gap < PlanEdit.GAPS.size - 1) { pe.gap++; outlineBar(pe) } } }
@@ -499,7 +511,7 @@ class PlanUi(private val a: BoardActivity) {
         if (pe.elements) buttons += Ui.pill(a, "Найти…", Ui.INK, Ui.DESK).apply { tag = "pt_find"; setOnClickListener { val t = pe.t; endOutline(save = true); findDialog(t) } }
         buttons += Ui.pill(a, "Отменить", Ui.INK, Ui.DESK).apply {
             tag = "pt_undo"
-            setOnClickListener { undoPiece() }
+            setOnClickListener { a.undo() } // кусок черновика, иначе — стёртое лишнее (шаг доски)
         }
         buttons += Ui.pill(a, "Отмена", Ui.INK, Ui.DESK).apply { tag = "pt_cancel"; setOnClickListener { endOutline(save = false) } }
         buttons += Ui.pill(a, "Готово", Color.WHITE, Ui.ACCENT).apply { tag = "pt_done"; setOnClickListener { endOutline(save = true) } }
@@ -549,11 +561,11 @@ class PlanUi(private val a: BoardActivity) {
         v.tableDraw.toSheet(pe.t, pe.sheet, r, x1, y1, p1)
         if (pe.tool == PlanEdit.ASSIGN || pe.tool == PlanEdit.ERASE) { pickElements(pe, r, x1, y1, tap); return }
         if (pe.tool == PlanEdit.SCISSORS) { scissors(pe, p0, p1, tap); return }
-        if (pe.tool == PlanEdit.BRUSH) {
+        if (pe.tool == PlanEdit.BRUSH || pe.tool == PlanEdit.CUT) {
             val trail = ArrayList(pe.path)
             pe.path.clear()
             if (trail.size < 2) trail.addAll(listOf(x0, y0))
-            brush(pe, r, trail)
+            if (pe.tool == PlanEdit.BRUSH) brush(pe, r, trail) else cut(pe, r, trail)
             return
         }
         when (pe.tool) {
@@ -655,6 +667,63 @@ class PlanUi(private val a: BoardActivity) {
                 v.invalidate()
             }
         }
+    }
+
+    /**
+     * «Стереть лишнее» (0.26.3, Владимир: «кисть зацепляет надписи — нужен а-ля полуластик, лишнее стереть»): черновик
+     * сначала становится областями захватки, потом из областей (в разметке — из свободных элементов) вырезается след
+     * кисти. Кусок, от которого ничего не осталось, уходит; разрезанный — становится несколькими. Шаг отмены доски.
+     */
+    private fun cut(pe: PlanEdit, r: RectF, trail: List<Float>) {
+        val sh = pe.sheet
+        val q = FloatArray(2)
+        val path = FloatArray(trail.size)
+        for (i in trail.indices step 2) {
+            v.tableDraw.toSheet(pe.t, sh, r, trail[i], trail[i + 1], q)
+            path[i] = q[0]; path[i + 1] = q[1]
+        }
+        // Полуширина кисти 14 dp на экране → доли ширины картинки листа.
+        val half = Ui.dpf(a, PlanEdit.BRUSH_DP) / b.camZ / max(1f, r.width()) * (sh.cr - sh.cl)
+        if (pe.points.size >= 6) closePoints(pe)
+        val pushed = pe.pieces.isNotEmpty()
+        if (pushed) { a.pushUndo(); commitPieces(pe) }
+        val targets = b.zones.filter { z ->
+            z.t == pe.t.id && z.s == sh.id && (if (pe.elements) z.e && z.free else !z.free && z.zkey() == IdTables.zkey(pe.uch, pe.zah))
+        }
+        val cutOf = HashMap<BoardZone, List<PlanElements.Element>>()
+        for (z in targets) PlanElements.erase(z.pts, z.holes, sh.ratio(), path, half)?.let { cutOf[z] = it }
+        if (cutOf.isEmpty()) {
+            if (pushed) { pe.cuts++; a.changed() }
+            a.hint("Под кистью нечего стирать — проведите по лишнему у этой захватки", 2000)
+            return
+        }
+        if (!pushed) a.pushUndo()
+        pe.cuts++
+        var gone = 0
+        for ((z, parts) in cutOf) {
+            val i = b.zones.indexOf(z)
+            if (i < 0) continue
+            b.zones.removeAt(i)
+            if (parts.isEmpty()) { gone++; continue }
+            b.zones.addAll(i, parts.map { e ->
+                BoardZone(z.t, z.s, z.uch, z.zah, e.outer, z.color).also { n -> n.e = z.e; n.holes = e.holes }
+            })
+        }
+        a.changed()
+        if (gone > 0) a.hint(if (gone == 1) "Кусок стёрт целиком" else "Стёрто кусков целиком: $gone", 1500)
+    }
+
+    /** Черновик обводки — в области захватки (элементы при разметке), обводка продолжается. Без своего шага отмены. */
+    private fun commitPieces(pe: PlanEdit) {
+        if (pe.pieces.isEmpty()) return
+        if (pe.elements) b.zones += pe.pieces.map { BoardZone(pe.t.id, pe.sheet.id, "", "", it, TablePlan.FREE).also { z -> z.e = true } }
+        else {
+            val color = colorOf(pe)
+            if (pe.color != null) for (z in TablePlan.zonesOf(b, pe.t, pe.uch, pe.zah)) z.color = color
+            val asElements = TablePlan.elements(b, pe.t).isNotEmpty()
+            b.zones += pe.pieces.map { BoardZone(pe.t.id, pe.sheet.id, pe.uch, pe.zah, it, color).also { z -> z.e = asElements } }
+        }
+        pe.pieces.clear()
     }
 
     /** Закончить обводку: save — куски стали областями захватки. */

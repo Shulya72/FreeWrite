@@ -334,6 +334,51 @@ object PlanElements {
         return pieces.sortedByDescending { it.first }.map { it.second }
     }
 
+    /**
+     * Стереть кистью (0.26.3): из области ([outer], [holes] — доли картинки, [aspect] — высота к ширине) вырезать след
+     * [path] (x, y… доли картинки) полушириной [half] (доли ширины картинки). Куски с дырами по убыванию площади; пусто —
+     * стёрта целиком; null — след её не задел.
+     */
+    fun erase(outer: FloatArray, holes: List<FloatArray>, aspect: Float, path: FloatArray, half: Float): List<Element>? {
+        if (outer.size < 6 || path.size < 2) return null
+        var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
+        var i = 0
+        while (i + 1 < outer.size) { l = min(l, outer[i]); r = max(r, outer[i]); t = min(t, outer[i + 1] * aspect); b = max(b, outer[i + 1] * aspect); i += 2 }
+        // След далеко от области (рамки не пересекаются) — не трогаем.
+        var pl = Float.MAX_VALUE; var pt = Float.MAX_VALUE; var pr = -Float.MAX_VALUE; var pb = -Float.MAX_VALUE
+        i = 0
+        while (i + 1 < path.size) { pl = min(pl, path[i]); pr = max(pr, path[i]); pt = min(pt, path[i + 1] * aspect); pb = max(pb, path[i + 1] * aspect); i += 2 }
+        if (pr + half < l || pl - half > r || pb + half < t || pt - half > b) return null
+        val side = max(r - l, b - t)
+        if (side <= 0f) return null
+        val k = 1400f / side
+        val pad = 3f / k
+        val ras = Ras(ceil((r - l) * k + 6).toInt(), ceil((b - t) * k + 6).toInt(), k, l - pad, t - pad)
+        fun sc(a: FloatArray) = FloatArray(a.size) { if (it % 2 == 0) a[it] else a[it] * aspect }
+        val m = BooleanArray(ras.w * ras.h)
+        ras.poly(m, listOf(sc(outer)) + holes.map { sc(it) })
+        val before = m.count { it }
+        if (before == 0) return null
+        val c = BooleanArray(m.size)
+        val hw = max(0.8f, half * k)
+        if (path.size < 4) ras.line(c, path[0], path[1] * aspect, path[0], path[1] * aspect, hw)
+        i = 2
+        while (i + 1 < path.size) { ras.line(c, path[i - 2], path[i - 1] * aspect, path[i], path[i + 1] * aspect, hw); i += 2 }
+        var removed = 0
+        for (q in m.indices) if (m[q] && c[q]) { m[q] = false; removed++ }
+        if (removed == 0) return null
+        val pieces = ArrayList<Pair<Int, Element>>()
+        val fake = PdfVector.Page(1f, 1f, emptyList(), emptyMap(), 1)
+        components(m, ras.w, ras.h) { px, n, box ->
+            if (n < max(6, before / 2000)) return@components
+            Sub(px, n, ras.w, box).element(ras, fake)?.let { e ->
+                fun un(a: FloatArray) = FloatArray(a.size) { if (it % 2 == 0) a[it] else a[it] / aspect }
+                pieces += n to Element(un(e.outer), e.holes.map { un(it) })
+            }
+        }
+        return pieces.sortedByDescending { it.first }.map { it.second }
+    }
+
     // ---------------------------------------------------------------- заглушки в проёмах
 
     /**

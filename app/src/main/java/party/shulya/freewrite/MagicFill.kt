@@ -170,12 +170,20 @@ object MagicFill {
         if (rr <= l || bt <= t) return emptyList()
         val sw = rr - l; val sh = bt - t
         val stroke = BooleanArray(sw * sh)
+        // Середина следа (0.26.3): берутся только куски, через которые прошла середина кисти, — надписи сбоку от
+        // стены, попавшие под край кисти, не цепляются.
+        val core = BooleanArray(sw * sh)
+        val rc = max(1.5f, r * 0.35f)
         // След кисти: кружки вдоль пути с шагом в полрадиуса.
-        val step = max(1f, r / 2f)
+        val step = max(1f, min(r / 2f, rc))
         fun stamp(cx: Float, cy: Float) {
             val x0 = max(l, (cx - r).toInt()); val x1 = min(rr - 1, (cx + r).toInt())
             val y0 = max(t, (cy - r).toInt()); val y1 = min(bt - 1, (cy + r).toInt())
-            for (yy in y0..y1) for (xx in x0..x1) if ((xx - cx) * (xx - cx) + (yy - cy) * (yy - cy) <= r * r) stroke[(yy - t) * sw + (xx - l)] = true
+            for (yy in y0..y1) for (xx in x0..x1) {
+                val d2 = (xx - cx) * (xx - cx) + (yy - cy) * (yy - cy)
+                if (d2 <= r * r) stroke[(yy - t) * sw + (xx - l)] = true
+                if (d2 <= rc * rc) core[(yy - t) * sw + (xx - l)] = true
+            }
         }
         stamp(path[0], path[1])
         for (k in 2 until path.size step 2) {
@@ -193,21 +201,27 @@ object MagicFill {
             if (solid[(t + yy) * w + l + xx]) { m[i] = true; hit++ }
         }
         // Под кистью почти нет стен — красим след кисти.
-        val mask = if (hit < strokeArea * 0.12f) stroke else m
-        val out = ArrayList<FloatArray>()
-        val seen = BooleanArray(sw * sh)
-        for (i in mask.indices) {
-            if (!mask[i] || seen[i]) continue
-            val comp = BooleanArray(sw * sh)
-            val f = flood(sw, sh, i, comp) { mask[it] && !seen[it] }
-            for (j in comp.indices) if (comp[j]) seen[j] = true
-            if (f.area < 30) continue // крошки
-            val c = contourIn(comp, sw, sh, bbox(comp, sw, sh)) ?: continue
-            val sp = simplify(c, 1.0f)
-            for (k in sp.indices step 2) { sp[k] += l.toFloat(); sp[k + 1] += t.toFloat() }
-            out += sp
+        val onStroke = hit < strokeArea * 0.12f
+        val mask = if (onStroke) stroke else m
+        fun pieces(needCore: Boolean): List<FloatArray> {
+            val out = ArrayList<FloatArray>()
+            val seen = BooleanArray(sw * sh)
+            for (i in mask.indices) {
+                if (!mask[i] || seen[i]) continue
+                val comp = BooleanArray(sw * sh)
+                val f = flood(sw, sh, i, comp) { mask[it] && !seen[it] }
+                var touches = !needCore
+                for (j in comp.indices) if (comp[j]) { seen[j] = true; if (core[j]) touches = true }
+                if (f.area < 30 || !touches) continue // крошки; кусок сбоку от середины следа (надпись)
+                val c = contourIn(comp, sw, sh, bbox(comp, sw, sh)) ?: continue
+                val sp = simplify(c, 1.0f)
+                for (k in sp.indices step 2) { sp[k] += l.toFloat(); sp[k + 1] += t.toFloat() }
+                out += sp
+            }
+            return out
         }
-        return out
+        // Середина следа не задела ни одного куска (провели рядом со стеной) — как раньше, всё под кистью.
+        return if (onStroke) pieces(false) else pieces(true).ifEmpty { pieces(false) }
     }
 
     private class Flood(val area: Int, val border: Boolean)

@@ -1304,6 +1304,11 @@ class TableUi(private val a: BoardActivity) {
             out += pill("+ строка", "sel_add") { addForm(t, next = true) }
             out += pill("Столбцы", "sel_cols") { columnsDialog(t) }
             out += pill(if (t.sheets.isEmpty()) "+ план" else "План", "sel_plan") { if (t.sheets.isEmpty()) a.planUi.addSheet(t) else a.planUi.sheetMenu(t) }
+            // Склейка (0.26.3): приклеенную — отклеить (останется на месте, дальше двигается сама по себе).
+            if (t.dock.isNotEmpty()) out += pill("Отклеить", "sel_undock") {
+                a.pushUndo(); t.dock = ""; a.changed(); a.buildSelectionBar()
+                a.hint("Таблица отклеена. Приклеить снова — поставить вплотную справа к другой", 2500)
+            }
             out += pill(if (t.locked) "Открепить" else "Закрепить", "sel_tpin") {
                 a.pushUndo(); t.locked = !t.locked; a.changed(); a.buildSelectionBar()
                 a.hint(if (t.locked) "Таблица закреплена: не сдвинется — рисуйте поверх плана. Открепить — булавка в углу" else "Таблицу снова можно двигать", 3000)

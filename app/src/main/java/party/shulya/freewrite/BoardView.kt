@@ -936,6 +936,9 @@ class BoardView(context: Context, private val host: Host) : View(context) {
 
     // Исходное положение выделенного в начале жеста: от него считаем сдвиг и масштаб без накопления ошибок.
     private class Orig(val obj: Any, val a: FloatArray, val w: Float)
+
+    /** Масштаб таблицы до жеста переноса/размера (для склейки, 0.26.3); null — таблица в жесте не участвовала. */
+    fun origScale(t: BoardTable): Float? = origs.firstOrNull { it.obj === t }?.a?.getOrNull(2)
     private val origs = ArrayList<Orig>()
     private val origBounds = RectF()
     private var editStarted = false
@@ -962,6 +965,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             for (t in selection.filterIsInstance<BoardTable>()) {
                 if (t.locked) continue
                 for (o in planContents(t)) if (seen.add(o)) objs += o
+                // Приклеенные справа (0.26.3) едут и масштабируются вместе, со своими рисунками на плане.
+                for (f in TableDock.followers(b, t)) {
+                    if (f.locked || !seen.add(f)) continue
+                    objs += f
+                    for (o in planContents(f)) if (seen.add(o)) objs += o
+                }
             }
         }
         for (o in objs) {
@@ -1266,7 +1275,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 parent?.requestDisallowInterceptTouchEvent(true)
                 mode = Mode.PLAN
                 // Лупа с перекрестием (0.26 — пальцем и пером, во всех режимах, кроме кисти): палец или рука закрывают место.
-                planAim = tool != MotionEvent.TOOL_TYPE_MOUSE && pe.tool != PlanEdit.BRUSH
+                planAim = tool != MotionEvent.TOOL_TYPE_MOUSE && !PlanEdit.brushTool(pe.tool)
                 if (planAim) { updateAim(downX, downY, planSnap()); sceneValid = false }
                 if (pe.tool == PlanEdit.ASSIGN || pe.tool == PlanEdit.ERASE) host.onPlanHover(if (planAim) aim.x else x, if (planAim) aim.y else y)
                 val p0 = if (planAim) PointF(aim.x, aim.y) else PointF(x, y)
@@ -2057,6 +2066,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawLine(calloutDown.x, calloutDown.y, calloutNow.x, calloutNow.y, dashPaint)
         }
         if (!plain) drawSelection(canvas, z)
+        if (!plain) drawDockHint(canvas, z)
         if (!plain) cropping?.let { if (exists(it)) drawCropFrame(canvas, it, z) }
         if (!plain && mode == Mode.FRAME_DRAG) {
             dashPaint.strokeWidth = Ui.dpf(context, 1.5f) / z
@@ -2324,7 +2334,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             linePaint.color = acc; linePaint.strokeWidth = Ui.dpf(context, 2.5f) / z
             canvas.drawPath(zonePath, linePaint)
         }
-        if (pe.tool == PlanEdit.BRUSH && pe.path.size >= 4) {
+        if (PlanEdit.brushTool(pe.tool) && pe.path.size >= 4) {
             // След кисти — полупрозрачной широкой линией.
             val p = Path()
             p.moveTo(pe.path[0], pe.path[1])
@@ -2332,7 +2342,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             while (i + 1 < pe.path.size) { p.lineTo(pe.path[i], pe.path[i + 1]); i += 2 }
             val bp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
-                color = acc; alpha = 80; strokeWidth = Ui.dpf(context, PlanEdit.BRUSH_DP) * 2f / z
+                color = if (pe.tool == PlanEdit.CUT) Ui.INK2 else acc; alpha = 80; strokeWidth = Ui.dpf(context, PlanEdit.BRUSH_DP) * 2f / z
             }
             canvas.drawPath(p, bp)
         }
@@ -2624,6 +2634,19 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     }
 
     /** Рамка выделения и уголки, за которые меняют размер; при нескольких объектах — тонкие рамки каждого. */
+    /** Тянут таблицу у правого края другой — полоса «приклеится сюда» (0.26.3). */
+    private fun drawDockHint(canvas: Canvas, z: Float) {
+        if (mode != Mode.MOVE_SEL || !editStarted) return
+        val t = selection.singleOrNull() as? BoardTable ?: return
+        val a = TableDock.candidate(b, tableDraw, t, Ui.dpf(context, 40f) / z) ?: return
+        tableDraw.bounds(b, a, rect2)
+        val x = rect2.right + TableDock.GAP / 2f * a.scale
+        linePaint.color = Ui.ACCENT; linePaint.alpha = 220
+        linePaint.strokeWidth = Ui.dpf(context, 5f) / z
+        canvas.drawLine(x, rect2.top, x, rect2.bottom, linePaint)
+        linePaint.alpha = 255
+    }
+
     private fun drawSelection(canvas: Canvas, z: Float) {
         val bb = selectionBounds() ?: return
         if (selection.size > 1) {

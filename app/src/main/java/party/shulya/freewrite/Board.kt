@@ -226,6 +226,12 @@ class BoardFill(val pts: FloatArray, var color: Int, var alpha: Float = DEFAULT_
  */
 class BoardFrame(var x: Float, var y: Float, var w: Float, var h: Float, var title: String) {
     var id: String = Ids.next()
+    /**
+     * Свой размер раздела (0.26.3), когда рамка выросла под таблицы внутри ([TableDock]); 0 — свой размер = [w]/[h].
+     * Таблицы ужались — рамка возвращается к своему размеру.
+     */
+    var ow = 0f
+    var oh = 0f
 }
 
 class BoardCallout(var x: Float, var y: Float, var scale: Float, var title: String, var sid: String) {
@@ -316,7 +322,11 @@ class Board(
         val (x, y) = when (o) {
             is BoardSticker -> (o.x + 64f * o.scale) to (o.y + o.h / 2f)
             is BoardRow -> (o.x + 20f * o.scale) to (o.y + o.h / 2f)
-            is BoardTable -> (o.x + 20f * o.scale) to (o.y + 19f * o.scale) // левый край названия
+            is BoardTable -> {
+                // Раздел таблицы (0.26.3) — тот, в который её поставили, даже если рамка выросла и место не по центру.
+                if (o.sec.isNotEmpty()) frames.firstOrNull { it.id == o.sec }?.let { return it }
+                (o.x + 20f * o.scale) to (o.y + 19f * o.scale) // левый край названия
+            }
             is BoardRec -> return IdTables.tableOf(this, o)?.let { sectionOf(it) }
             is BoardVedom -> (o.x + 20f * o.scale) to (o.y + 19f * o.scale)
             is BoardCallout -> if (o.leaders.size >= 2) o.leaders[0] to o.leaders[1] else o.x to o.y
@@ -683,11 +693,16 @@ class Board(
         }
 
         fun frameJson(fr: BoardFrame): String =
-            "{\"id\":${q(fr.id)},\"x\":${f(fr.x)},\"y\":${f(fr.y)},\"w\":${f(fr.w)},\"h\":${f(fr.h)},\"title\":${JSONObject.quote(fr.title)}}"
+            "{\"id\":${q(fr.id)},\"x\":${f(fr.x)},\"y\":${f(fr.y)},\"w\":${f(fr.w)},\"h\":${f(fr.h)},\"title\":${JSONObject.quote(fr.title)}" +
+                (if (fr.ow > 0f) ",\"ow\":${f(fr.ow)}" else "") + (if (fr.oh > 0f) ",\"oh\":${f(fr.oh)}" else "") + "}"
 
         fun parseFrame(j: JSONObject) = BoardFrame(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(),
             j.optDouble("w", 400.0).toFloat().coerceAtLeast(1f), j.optDouble("h", 300.0).toFloat().coerceAtLeast(1f),
-            j.optString("title", "Раздел")).also { it.id = jid(j) }
+            j.optString("title", "Раздел")).also {
+            it.id = jid(j)
+            it.ow = j.optDouble("ow", 0.0).toFloat().takeIf { v -> v.isFinite() && v > 0f } ?: 0f
+            it.oh = j.optDouble("oh", 0.0).toFloat().takeIf { v -> v.isFinite() && v > 0f } ?: 0f
+        }
 
         fun parseStatus(j: JSONObject) = BoardStatus(j.optString("id", newStatusId()), j.optString("name", "Статус"), j.optInt("color", Ui.INK2),
             when (j.optString("g")) { BoardStatus.CON -> BoardStatus.CON; BoardStatus.CK -> BoardStatus.CK; BoardStatus.DWG -> BoardStatus.DWG; else -> BoardStatus.ID })

@@ -709,6 +709,8 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     internal fun changed() {
+        // Склеенные таблицы и рамки разделов — по таблицам (0.26.3). Только после своих правок: чужие приходят уже разложенными.
+        TableDock.arrange(board, view.tableDraw)
         if (::legend.isInitialized && legend.visibility == View.VISIBLE) buildLegend()
         view.pruneSelection()
         pipetteSnap = null
@@ -1695,7 +1697,15 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     override fun onDragStart() { pushUndo() }
-    override fun onDragEnd() { changed() }
+    override fun onDragEnd() {
+        // Таблицу отпустили у правого края другой — приклеилась; оттащили — отклеилась (0.26.3).
+        (view.selection.singleOrNull() as? BoardTable)?.takeIf { !it.locked }?.let { t ->
+            val was = t.dock
+            TableDock.afterMove(board, view.tableDraw, t, view.origScale(t), Ui.dpf(this, 40f) / board.camZ)
+            if (t.dock != was) hint(if (t.dock.isNotEmpty()) "Таблицы склеены: один масштаб, двигаются вместе" else "Таблица отклеена", 2200)
+        }
+        changed()
+    }
     override fun onDragCancel() {
         if (undoStack.isNotEmpty()) undoStack.removeLast()
         view.invalidate()

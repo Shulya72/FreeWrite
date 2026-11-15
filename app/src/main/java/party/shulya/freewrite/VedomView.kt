@@ -132,6 +132,8 @@ class VedomDraw {
                 RD -> max(w, tw("00.00.00", FONT, false) + 2 * PAD)
                 TableCol.IGS -> min(max(w, 120f), 300f)
                 RES -> min(max(w, 100f), 220f)
+                // Шифр — целиком (0.26.3, Владимир: «половина названия скрыта»): «КЖ 6.1.1 · Несущие стены и колонны».
+                CIPHER -> min(max(w, 56f), 560f)
                 else -> min(max(w, 56f), 230f)
             }
             widths[ci] = w

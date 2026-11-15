@@ -67,6 +67,27 @@ class VedomTest {
         return b
     }
 
+    /** Шифр в ведомости — целиком (0.26.3, Владимир: «половина названия скрыта»). */
+    @Test
+    fun cipherColumnShowsWholeTitle() {
+        val b = Board.create("Шифр")
+        b.frames += BoardFrame(0f, 0f, 4000f, 2400f, "КЖ 6.1.1")
+        val t = BoardTable(100f, 100f, 1f, "Несущие стены и колонны").apply { kind = TableKinds.KJ_VERT.id }
+        b.tables += t
+        val r = BoardRec(t.id, 1.0).apply { zah = "1"; work = "Бетон" }
+        b.recs += r
+        val v = BoardVedom(100f, 900f, 1f, Vedoms.CUST, "З-1")
+        b.vedoms += v
+        b.vitems += BoardVItem(v.id, r.id, 1.0)
+        val draw = VedomDraw()
+        val l = draw.layout(b, v)
+        val ci = l.cols.indexOf(VedomDraw.CIPHER)
+        assertEquals("КЖ 6.1.1 · Несущие стены и колонны", l.texts[0][ci])
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { textSize = 100f }
+        val need = paint.measureText(l.texts[0][ci]) / 100f * VedomDraw.FONT + 2 * VedomDraw.PAD
+        assertTrue("столбец ${l.colX[ci + 1] - l.colX[ci]} ≥ текста $need", l.colX[ci + 1] - l.colX[ci] >= need)
+    }
+
     @Test
     fun customerVedomByPartsHistoryAndColleagues() {
         val b = sample()
