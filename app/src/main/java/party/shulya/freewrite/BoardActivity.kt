@@ -7,6 +7,7 @@ import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Bundle
+import android.os.SystemClock
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -118,18 +119,58 @@ class BoardActivity : Activity(), BoardView.Host {
 
     // ---------------------------------------------------------------- жизненный цикл
 
+    /** Доска прочитана и экран собран (большая доска читается в фоне, 0.27.5). */
+    private var opened = false
+    internal val isOpened get() = opened
+    private var resumedNow = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = BoardStore(this)
         noteStore = NoteStore(this)
         stylus = Input.stylusSeen(this)
-        val id = intent.getStringExtra(EXTRA_ID)
-        board = id?.let { store.load(it) } ?: Board.create("Доска").also { store.save(it) }
-        loadedImports = BoardStore.importCount(board.id)
         engine = HandwritingEngine { android.util.Log.i("FreeWrite", it) }
         engine.onChanged = { updateBanner() }
+        val id = intent.getStringExtra(EXTRA_ID)
+        val t0 = SystemClock.uptimeMillis()
+        // Большая доска (Владимир, 16.11: «нажимаю на общую доску — зависает на 2–3 секунды»): экран сразу, «Открываю доску…»,
+        // файл читается в фоне. Небольшая — как раньше, сразу.
+        val size = id?.let { store.fileSize(it) } ?: 0L
+        if (id != null && asyncOpen && size > ASYNC_OPEN_BYTES) {
+            setContentView(openingView(store.titleOf(id)))
+            Thread({
+                val b = try { store.load(id) } catch (t: Throwable) { Trail.add("Доска не прочиталась: $t"); null }
+                handler.post {
+                    if (isFinishing || isDestroyed) return@post
+                    open(b ?: Board.create("Доска").also { store.save(it) }, t0, size)
+                }
+            }, "board-open").start()
+            return
+        }
+        open(id?.let { store.load(it) } ?: Board.create("Доска").also { store.save(it) }, t0, size)
+    }
+
+    /** Экран, пока большая доска читается: название и «Открываю доску…». */
+    private fun openingView(title: String): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        setBackgroundColor(Ui.DESK)
+        tag = "board_opening"
+        addView(android.widget.ProgressBar(this@BoardActivity))
+        addView(Ui.text(this@BoardActivity, title.ifEmpty { "Доска" }, 20f, Ui.INK, bold = true).apply {
+            gravity = Gravity.CENTER; setPadding(dp(24f), dp(16f), dp(24f), dp(4f))
+        })
+        addView(Ui.text(this@BoardActivity, "Открываю доску…", 15f, Ui.MUTED).apply { gravity = Gravity.CENTER })
+    }
+
+    /** Доска прочитана — собрать экран (то, что раньше было в onCreate). */
+    private fun open(b: Board, t0: Long, size: Long) {
+        val read = SystemClock.uptimeMillis() - t0
+        board = b
+        loadedImports = BoardStore.importCount(board.id)
         buildUi()
         setContentView(root)
+        opened = true
         RemoteSync.transport()?.let { remote = RemoteSync(this, it, remoteHost) }
         pdf = PdfInsert(this, { hint(it, 3500) }) { blocks, asked, kept ->
             // Лист для плана таблицы (0.23) — под таблицу (с PDF — для поиска элементов, 0.26), иначе — на доску.
@@ -137,7 +178,8 @@ class BoardActivity : Activity(), BoardView.Host {
             else { kept?.let { java.io.File(java.io.File(filesDir, "note_images"), it.file).delete() }; placeImages(blocks, asked, sheets = true) }
         }
         updateSubtitle()
-        engine.start(this)
+        // Распознавание рукописи (ML Kit) — только когда выбирают «В текст» (0.27.5: на доске этой кнопки нет, а запуск при
+        // каждом открытии доски задерживал её).
         // Всегда начинаем с «Руки» (0.26.2, Владимир: «по умолчанию всегда рука» — с «Ручкой» случайно чертил по таблице).
         setTool(Tool.HAND, quiet = true)
         updateBanner()
@@ -145,16 +187,28 @@ class BoardActivity : Activity(), BoardView.Host {
         if ((board.isEmpty && board.camX == 0f && board.camY == 0f) || intent.getBooleanExtra(EXTRA_FIT, false)) view.post { view.fitAll() }
         // Прислали PDF или картинки через «Поделиться → FreeWrite» и выбрали эту доску.
         intent.getStringArrayListExtra(EXTRA_INSERT)?.let { paths -> view.post { insertFiles(paths) } }
-        Trail.add("Открыта доска: штрихов ${board.strokes.size}, надписей ${board.texts.size}, картинок ${board.images.size}, " +
+        Trail.add("Открыта доска (${size / 1024} КБ, чтение $read мс, всего ${SystemClock.uptimeMillis() - t0} мс): " +
+            "штрихов ${board.strokes.size}, надписей ${board.texts.size}, картинок ${board.images.size}, " +
             "таблиц ${board.tables.size}, строк ${board.recs.size}, листов плана ${board.tables.sumOf { it.sheets.size }}, " +
             "областей ${board.zones.size}, ведомостей ${board.vedoms.size}" + if (board.sync.isShared) ", общая" else "")
         if (intent.getBooleanExtra(EXTRA_SHOW_SPEED, false)) {
             showFrameMs = true
             view.post { view.fitAll(); handler.post(frameTicker) }
         }
+        if (resumedNow) afterResume()
+    }
+
+    /** Запустить распознавание рукописи (один раз) — для «В текст». */
+    private var engineStarted = false
+    private fun ensureEngine() {
+        if (engineStarted) return
+        engineStarted = true
+        engine.start(this)
     }
 
     override fun onPause() {
+        resumedNow = false
+        if (!opened) { super.onPause(); return }
         current?.let { commit(it) }
         saveNow(sync = true)
         remote?.flush()
@@ -166,6 +220,11 @@ class BoardActivity : Activity(), BoardView.Host {
 
     override fun onResume() {
         super.onResume()
+        resumedNow = true
+        if (opened) afterResume()
+    }
+
+    private fun afterResume() {
         Trail.startWatch("доска")
         if (BoardStore.importCount(board.id) != loadedImports) reloadAfterImport()
         remote?.start()
@@ -299,19 +358,20 @@ class BoardActivity : Activity(), BoardView.Host {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        engine.close()
+        if (engineStarted) engine.close()
         remote?.close()
-        pdf.close()
+        if (::pdf.isInitialized) pdf.close()
         if (planUiMade) planUi.close()
         io.shutdown()
         saver.shutdown() // уже начатые сохранения дописываются
-        images.close()
-        view.release()
+        if (::images.isInitialized) images.close()
+        if (::view.isInitialized) view.release()
         super.onDestroy()
     }
 
     @Deprecated("Activity.onBackPressed")
     override fun onBackPressed() {
+        if (!opened) { finish(); return } // доска ещё читается — просто выйти
         current?.let { commit(it) }
         val finishNow = Runnable { saveNow(); finish() }
         if (committing.isEmpty()) finishNow.run() else handler.postDelayed(finishNow, 1500)
@@ -460,7 +520,7 @@ class BoardActivity : Activity(), BoardView.Host {
             background = Ui.rounded(this@BoardActivity, Ui.ACCENT, null, 10f)
             setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
             setOnClickListener {
-                engine.download(engine.language("ru"))
+                ensureEngine(); engine.download(engine.language("ru"))
                 handler.removeCallbacks(bannerTicker); handler.postDelayed(bannerTicker, 1000)
             }
         }
@@ -574,6 +634,7 @@ class BoardActivity : Activity(), BoardView.Host {
         if (!quiet && view.placing != null) { val c = placeCancel; endPlacing(); c?.invoke() } // выбрали инструмент — место не ищем
         if (t != Tool.WRITE) current?.let { commit(it) }
         if (t != Tool.WRITE) tableUi.deactivate()
+        if (t == Tool.WRITE) ensureEngine() // распознавание — только для «В текст» (0.27.5)
         view.releaseHold() // свежие штрихи — сразу в доску (0.27.4)
         tool = t
         if (t != Tool.FILL && t != Tool.PIPETTE && fillPts.isNotEmpty()) cancelFillDraft()
@@ -2471,6 +2532,7 @@ class BoardActivity : Activity(), BoardView.Host {
     }
 
     private fun recognize(g: Group) {
+        ensureEngine()
         val ru = engine.language("ru")
         val n = g.strokes.size
         if (n == 0) return
@@ -2551,5 +2613,11 @@ class BoardActivity : Activity(), BoardView.Host {
         private const val REQ_IMAGE = 42
         private const val REQ_PDF = 43
         private const val REQ_SHEET_PDF = 44
+
+        /** Доска больше этого (байт файла) открывается в фоне: экран сразу, «Открываю доску…» (0.27.5). */
+        const val ASYNC_OPEN_BYTES = 400_000L
+
+        /** Открывать большие доски в фоне. В проверках (Robolectric) — сразу, если проверка не попросила иначе. */
+        internal var asyncOpen: Boolean = android.os.Build.FINGERPRINT != "robolectric"
     }
 }
