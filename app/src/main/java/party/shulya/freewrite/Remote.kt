@@ -261,7 +261,7 @@ object Remote {
             }
             "table" -> {
                 val nt = IdTables.parseTable(j).also { it.id = r.id }
-                board.tables.firstOrNull { it.id == r.id }?.let { nt.tab = it.tab } // открытая вкладка плана — своя
+                board.tables.firstOrNull { it.id == r.id }?.let { nt.tab = it.tab; nt.filter = it.filter } // вкладка плана и отбор — свои
                 put(board.tables, nt) { it.id }
             }
             "rec" -> put(board.recs, IdTables.parseRec(j).also { it.id = r.id }) { it.id }

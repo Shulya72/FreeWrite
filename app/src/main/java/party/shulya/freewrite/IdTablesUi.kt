@@ -342,6 +342,8 @@ class TableUi(private val a: BoardActivity) {
             }
             TableHit.PLAN_MENU -> a.planUi.sheetMenu(t)
             TableHit.PLAN_SHEET -> a.planUi.onSheetTap(t, h.fx, h.fy)
+            // «Захватка ▾» в шапке — отбор (0.27.3): выбрать захватки, объёмы — только по ним.
+            TableHit.HEAD -> if (h.col == TableCol.ZAH) filterDialog(t) else v.select(listOf(t))
             TableHit.CELL -> {
                 val r = h.rec ?: return
                 val col = h.col
@@ -1023,6 +1025,8 @@ class TableUi(private val a: BoardActivity) {
                 o += step ?: 1.0
                 n++
             }
+            // Отбор по захваткам (0.27.3): новая захватка не прячется — добавляется к отобранным.
+            t.filter?.takeIf { it.zah.isNotEmpty() }?.let { if (IdTables.zkey(u, z) !in it.zah) t.filter = it.withZah(listOf(IdTables.zkey(u, z))) }
             a.changed()
             a.hint(if (n == list.size) "Добавлено строк: $n" else "Добавлено: $n (такие строки уже были)", 1600)
             return n
@@ -1106,10 +1110,33 @@ class TableUi(private val a: BoardActivity) {
         dialog.show()
     }
 
-    /** Отбор строк таблицы (на этом планшете): статусы ИГС, исполнители, текст. Остальные строки скрыты до «Показать всё». */
+    /**
+     * Отбор строк таблицы (на этом планшете): захватки (0.27.3), статусы ИГС, исполнители, текст. Остальные строки скрыты до
+     * «Показать всё»; итоги объёмов — только по отобранным (Владимир: «выбрать захватки 1, 2, 3, 4 — и объём только по ним»).
+     */
     fun filterDialog(t: BoardTable) {
         val f = t.filter
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16f), dp(8f), dp(16f), 0) }
+        // Захватки — кнопками в строку, по порядку «по-человечески» (с участком: «LM1 · 3 этаж»).
+        val zahs = IdTables.zahList(b, t).sortedWith { p, q -> IdTables.naturalCompare(p.first, q.first).takeIf { it != 0 } ?: IdTables.naturalCompare(p.second, q.second) }
+        val zahBoxes = ArrayList<Pair<CheckBox, String>>()
+        if (zahs.isNotEmpty()) {
+            val head = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            head.addView(Ui.text(a, t.colName(TableCol.ZAH), 14f, Ui.MUTED, bold = true), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+            fun link(text: String, tag: String, on: Boolean) = Ui.text(a, text, 14f, Ui.ACCENT, bold = true).apply {
+                this.tag = tag; setPadding(dp(10f), dp(6f), dp(4f), dp(6f))
+                setOnClickListener { for ((cb, _) in zahBoxes) cb.isChecked = on }
+            }
+            head.addView(link("Все", "flt_zah_all", true)); head.addView(link("Снять", "flt_zah_none", false))
+            box.addView(head)
+            val flow = Ui.FlowRow(a).apply { hGap = dp(4f); vGap = 0; setPadding(0, 0, 0, dp(8f)) }
+            for ((i, z) in zahs.withIndex()) {
+                val key = IdTables.zkey(z.first, z.second)
+                zahBoxes += CheckBox(a).apply { text = IdTables.zahLabel(z.first, z.second); isChecked = f?.zah?.contains(key) == true; tag = "flt_zah_$i" }
+                    .also { flow.addView(it) } to key
+            }
+            box.addView(flow)
+        }
         box.addView(Ui.text(a, "ИГС", 14f, Ui.MUTED, bold = true))
         val igsBoxes = b.statuses(BoardStatus.ID).mapIndexed { i, st ->
             CheckBox(a).apply { text = st.name; isChecked = f?.igs?.contains(st.id) == true; tag = "flt_igs_$i" }.also { box.addView(it) } to st.id
@@ -1125,7 +1152,8 @@ class TableUi(private val a: BoardActivity) {
         AlertDialog.Builder(a).setTitle("Отбор · " + IdTables.fullTitle(b, t)).setView(ScrollView(a).apply { addView(box) })
             .setPositiveButton("Показать") { _, _ ->
                 val nf = RowFilter(igsBoxes.filter { it.first.isChecked }.map { it.second }.toSet(),
-                    whoBoxes.filter { it.first.isChecked }.map { it.second }.toSet(), text.text.toString().trim())
+                    whoBoxes.filter { it.first.isChecked }.map { it.second }.toSet(), text.text.toString().trim(),
+                    zahBoxes.filter { it.first.isChecked }.map { it.second }.toSet())
                 t.filter = if (nf.isEmpty) null else nf
                 v.invalidate(); a.buildSelectionBar()
             }

@@ -160,10 +160,16 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
 }
 
 /** Отбор строк таблицы: по статусам ИГС, исполнителю, тексту. Пусто — всё. */
-class RowFilter(val igs: Set<String> = emptySet(), val who: Set<String> = emptySet(), val text: String = "") {
-    val isEmpty: Boolean get() = igs.isEmpty() && who.isEmpty() && text.isBlank()
+class RowFilter(val igs: Set<String> = emptySet(), val who: Set<String> = emptySet(), val text: String = "",
+                /** Захватки ([BoardRec.zkey]: участок + захватка), 0.27.3: «захватки 1, 2, 3, 4» — и объёмы только по ним. */
+                val zah: Set<String> = emptySet()) {
+    val isEmpty: Boolean get() = igs.isEmpty() && who.isEmpty() && text.isBlank() && zah.isEmpty()
+
+    /** Тот же отбор плюс захватки [keys] (новые строки, добавленные при отборе по захваткам, не прячутся). */
+    fun withZah(keys: Collection<String>) = RowFilter(igs, who, text, zah + keys)
 
     fun matches(r: BoardRec): Boolean {
+        if (zah.isNotEmpty() && r.zkey() !in zah) return false
         if (igs.isNotEmpty() && r.igs !in igs) return false
         if (who.isNotEmpty() && r.who.trim() !in who) return false
         if (text.isNotBlank()) {
@@ -475,6 +481,27 @@ object IdTables {
         val all = allRows(b, t)
         val f = t.filter ?: return all
         return if (f.isEmpty) all else all.filter { f.matches(it) }
+    }
+
+    /**
+     * Что отобрано — коротко, для шапки объёмов (0.27.3): «захватки 1, 2, 3, 4 · В работе · Иванов · «текст»».
+     * Захватки — по порядку «по-человечески», с участком («LM1 · 3 этаж»).
+     */
+    fun filterText(b: Board, t: BoardTable): String {
+        val f = t.filter ?: return ""
+        if (f.isEmpty) return ""
+        val out = ArrayList<String>()
+        if (f.zah.isNotEmpty()) {
+            val labels = LinkedHashMap<String, Pair<String, String>>()
+            for (r in allRows(b, t)) if (r.zkey() in f.zah) labels.getOrPut(r.zkey()) { r.uch.trim() to r.zah.trim() }
+            val names = labels.values.sortedWith { p, q -> naturalCompare(p.first, q.first).takeIf { it != 0 } ?: naturalCompare(p.second, q.second) }
+                .map { zahLabel(it.first, it.second) }
+            out += (if (names.size == 1) "${t.colName(TableCol.ZAH).lowercase(Locale.ROOT)} " else "захватки ") + names.joinToString(", ").ifEmpty { "—" }
+        }
+        if (f.igs.isNotEmpty()) out += b.statuses(BoardStatus.ID).filter { it.id in f.igs }.joinToString(", ") { it.name }
+        if (f.who.isNotEmpty()) out += f.who.sorted().joinToString(", ")
+        if (f.text.isNotBlank()) out += "«${f.text.trim()}»"
+        return out.joinToString(" · ")
     }
 
     /** Все строки, у которых есть таблица (для сводки). */
