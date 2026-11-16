@@ -294,29 +294,17 @@ class VedomUi(private val a: BoardActivity) {
     fun onLongPress(x: BoardVedom, h: VedomHit) {
         val i = h.item ?: return
         val rec = Vedoms.rec(b, i)
-        val items = arrayListOf("Карточка", "Показать в таблице", "История схемы", "Выше", "Ниже", "Убрать из ведомости")
+        // «Выше»/«Ниже» убраны (0.27.2): позиции сами стоят по шифрам и порядку строк в таблицах.
+        val items = arrayListOf("Карточка", "Показать в таблице", "История схемы", "Убрать из ведомости")
         AlertDialog.Builder(a).setTitle("${x.num} · ${Vedoms.labelText(b, i)}")
             .setItems(items.toTypedArray()) { _, k ->
                 when (k) {
                     0 -> itemCard(x, i)
                     1 -> showInTable(x, i)
                     2 -> if (rec != null) historyDialog(rec) else a.hint("Строки в таблице уже нет", 1800)
-                    3 -> move(x, i, -1)
-                    4 -> move(x, i, 1)
-                    5 -> removeItems(listOf(i))
+                    3 -> removeItems(listOf(i))
                 }
             }.show()
-    }
-
-    private fun move(x: BoardVedom, i: BoardVItem, d: Int) {
-        val list = Vedoms.items(b, x)
-        val k = list.indexOf(i)
-        val j = k + d
-        if (k < 0 || j !in list.indices) return
-        a.pushUndo()
-        val o = list[j].o
-        list[j].o = i.o; i.o = o
-        a.changed()
     }
 
     fun removeItems(items: List<BoardVItem>) {

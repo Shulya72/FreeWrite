@@ -182,7 +182,45 @@ object Vedoms {
     fun vedom(b: Board, id: String): BoardVedom? = b.vedoms.firstOrNull { it.id == id }
 
     /** Позиции ведомости по порядку. */
-    fun items(b: Board, v: BoardVedom): List<BoardVItem> = b.vitems.filter { it.v == v.id }.sortedWith(compareBy<BoardVItem>({ it.o }, { it.id }))
+    /**
+     * Позиции ведомости по порядку (0.27.2, Владимир: «упорядочивание по шифрам от меньшего к большему, как везде в
+     * таблицах»): по шифру «по-человечески» (КЖ 6.1.2 раньше КЖ 6.1.10), внутри шифра — как строки в своей таблице.
+     * Позиции, чьих строк уже нет, — после живых того же шифра, по участку и захватке; без шифра — в конце. Порядок
+     * считается из данных, поэтому на всех планшетах и на сайте одинаковый.
+     */
+    fun items(b: Board, v: BoardVedom): List<BoardVItem> {
+        val list = b.vitems.filter { it.v == v.id }
+        if (list.size < 2) return list
+        val tabs = HashMap<String, BoardTable>()
+        for (t in b.tables) tabs.putIfAbsent(t.id, t)
+        val want = HashSet<String>()
+        for (i in list) want += i.r
+        val recs = HashMap<String, BoardRec>()
+        for (r in b.recs) if (r.id in want) recs.putIfAbsent(r.id, r)
+        val titles = HashMap<String, String>()
+        val keys = list.map { i ->
+            val r = recs[i.r]
+            val t = r?.let { tabs[it.t] }
+            if (r != null && t != null) ItemKey(i, titles.getOrPut(t.id) { IdTables.fullTitle(b, t).trim() }, true, t.id, r.o, r.uch, r.zah)
+            else ItemKey(i, i.lt.trim(), false, "", 0.0, i.lu, i.lz)
+        }
+        return keys.sortedWith(ITEM_ORDER).map { it.i }
+    }
+
+    private class ItemKey(val i: BoardVItem, val title: String, val live: Boolean, val t: String, val ro: Double, val uch: String, val zah: String)
+
+    private val ITEM_ORDER = Comparator<ItemKey> { p, q ->
+        if (p.title.isEmpty() != q.title.isEmpty()) return@Comparator if (p.title.isEmpty()) 1 else -1
+        var c = IdTables.naturalCompare(p.title, q.title)
+        if (c == 0) c = q.live.compareTo(p.live) // живые строки — раньше удалённых
+        if (c == 0) c = p.t.compareTo(q.t)
+        if (c == 0) c = p.ro.compareTo(q.ro) // как в таблице
+        if (c == 0) c = IdTables.naturalCompare(p.uch, q.uch)
+        if (c == 0) c = IdTables.naturalCompare(p.zah, q.zah)
+        if (c == 0) c = p.i.o.compareTo(q.i.o)
+        if (c == 0) c = p.i.id.compareTo(q.i.id)
+        c
+    }
 
     fun rec(b: Board, i: BoardVItem): BoardRec? = b.recs.firstOrNull { it.id == i.r }?.takeIf { IdTables.tableOf(b, it) != null }
 
