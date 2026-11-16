@@ -160,12 +160,31 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
 }
 
 /** Отбор строк таблицы: по статусам ИГС, исполнителю, тексту. Пусто — всё. */
-class RowFilter(val igs: Set<String> = emptySet(), val who: Set<String> = emptySet(), val text: String = "") {
-    val isEmpty: Boolean get() = igs.isEmpty() && who.isEmpty() && text.isBlank()
+/**
+ * Отбор строк таблицы как в Excel (0.27.3, Владимир: «фильтрация у каждой таблицы, как в Excel»): у каждого столбца — какие
+ * значения показывать ([cols]: ключ столбца → ключи значений [IdTables.filterKey]); столбцы складываются («и»). [text] — поиск
+ * по строке. Только на этом планшете (не сохраняется и не уходит коллегам).
+ */
+class RowFilter(val cols: Map<String, Set<String>> = emptyMap(), val text: String = "") {
+    val isEmpty: Boolean get() = cols.values.all { it.isEmpty() } && text.isBlank()
 
-    fun matches(r: BoardRec): Boolean {
-        if (igs.isNotEmpty() && r.igs !in igs) return false
-        if (who.isNotEmpty() && r.who.trim() !in who) return false
+    /** У столбца стоит отбор. */
+    fun on(col: String) = cols[col]?.isNotEmpty() == true
+
+    /** Тот же отбор, у столбца [col] — значения [keys] (null или пусто — снять отбор со столбца); всё снято — null. */
+    fun with(col: String, keys: Set<String>?): RowFilter? {
+        val m = LinkedHashMap(cols)
+        if (keys.isNullOrEmpty()) m.remove(col) else m[col] = keys
+        return RowFilter(m, text).takeUnless { it.isEmpty }
+    }
+
+    /** Новая строка при отборе не прячется: её значения добавляются к отобранным. */
+    fun including(b: Board, r: BoardRec): RowFilter =
+        RowFilter(cols.mapValues { (c, keys) -> if (keys.isEmpty()) keys else keys + IdTables.filterKey(b, r, c) }, text)
+
+    /** Строка проходит отбор; [except] — без отбора этого столбца (список значений в окне отбора — как в Excel). */
+    fun matches(b: Board, r: BoardRec, except: String? = null): Boolean {
+        for ((c, keys) in cols) if (c != except && keys.isNotEmpty() && IdTables.filterKey(b, r, c) !in keys) return false
         if (text.isNotBlank()) {
             val hay = (r.uch + " " + r.zah + " " + r.con + " " + r.work + " " + r.nsch + " " + r.aosr + " " + r.who + " " + r.note + " " + r.extra.values.joinToString(" ")).lowercase(Locale.ROOT)
             if (!text.lowercase(Locale.ROOT).split(' ').filter { it.isNotBlank() }.all { it in hay }) return false
@@ -474,7 +493,78 @@ object IdTables {
     fun rowsOf(b: Board, t: BoardTable): List<BoardRec> {
         val all = allRows(b, t)
         val f = t.filter ?: return all
-        return if (f.isEmpty) all else all.filter { f.matches(it) }
+        return if (f.isEmpty) all else all.filter { f.matches(b, it) }
+    }
+
+    // ---------------------------------------------------------------- отбор как в Excel (0.27.3)
+
+    /** Ключ значения ячейки для отбора: статус — его номер, дата — «2026-11-16», объём — число, текст — без регистра. */
+    fun filterKey(b: Board, r: BoardRec, col: String): String {
+        val c = TableCol(col)
+        val v = r.get(col).trim()
+        return when {
+            c.isStatus -> status(b, groupOf(col), v).id
+            c.isDate || c.isVol -> v
+            else -> v.lowercase(Locale.ROOT)
+        }
+    }
+
+    /** Значение столбца в окне отбора: ключ, как показать, сколько строк. */
+    class FilterValue(val key: String, val label: String, val count: Int)
+
+    const val EMPTY_LABEL = "(Пустые)"
+
+    /**
+     * Значения столбца [col] у строк, что проходят отбор других столбцов (как в Excel), по порядку: статусы — как в списке,
+     * даты — по времени, объёмы — по числу, текст — «по-человечески»; пустые — в конце.
+     */
+    fun filterValues(b: Board, t: BoardTable, col: String): List<FilterValue> {
+        val f = t.filter
+        val c = TableCol(col)
+        val counts = LinkedHashMap<String, Int>()
+        val labels = HashMap<String, String>()
+        for (r in allRows(b, t)) {
+            if (f != null && !f.matches(b, r, except = col)) continue
+            val k = filterKey(b, r, col)
+            counts[k] = (counts[k] ?: 0) + 1
+            if (k !in labels) labels[k] = filterLabel(b, col, k, r.get(col).trim())
+        }
+        // Отобранные значения, которых сейчас нет (строку поменяли) — тоже в списке, чтобы их можно было снять.
+        f?.cols?.get(col)?.forEach { k -> if (k !in counts) { counts[k] = 0; labels[k] = filterLabel(b, col, k, k) } }
+        val order: Comparator<String> = when {
+            c.isStatus -> { val ids = b.statuses(groupOf(col)).map { it.id }; compareBy { k -> ids.indexOf(k).let { if (it < 0) Int.MAX_VALUE else it } } }
+            c.isDate -> compareBy { it }
+            c.isVol -> compareBy { volNum(it) }
+            else -> Comparator { p, q -> naturalCompare(labels[p]!!, labels[q]!!) }
+        }
+        return counts.keys.sortedWith(Comparator<String> { p, q -> if (p.isEmpty() != q.isEmpty()) (if (p.isEmpty()) 1 else -1) else 0 }.then(order))
+            .map { FilterValue(it, labels[it]!!, counts[it]!!) }
+    }
+
+    /** Как показать значение в окне отбора ([raw] — как написано в ячейке). */
+    fun filterLabel(b: Board, col: String, key: String, raw: String): String {
+        if (key.isEmpty()) return EMPTY_LABEL
+        val c = TableCol(col)
+        return when {
+            c.isStatus -> status(b, groupOf(col), key).name
+            c.isDate -> dateShort(key)
+            c.isVol -> volFmt(volNum(key))
+            else -> raw.ifEmpty { key }
+        }
+    }
+
+    /** Что отобрано — коротко, для шапки объёмов: «Захватка: 1, 2, 3, 4 · ИГС: В работе». */
+    fun filterText(b: Board, t: BoardTable): String {
+        val f = t.filter ?: return ""
+        if (f.isEmpty) return ""
+        val out = ArrayList<String>()
+        for ((col, keys) in f.cols) {
+            if (keys.isEmpty()) continue
+            val vals = filterValues(b, t, col).filter { it.key in keys }.map { it.label }
+            out += t.colName(col) + ": " + if (vals.size > 6) Ui.plural(vals.size, "значение", "значения", "значений") else vals.joinToString(", ")
+        }
+        if (f.text.isNotBlank()) out += "«${f.text.trim()}»"
+        return out.joinToString(" · ")
     }
 
     /** Все строки, у которых есть таблица (для сводки). */

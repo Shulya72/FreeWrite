@@ -342,6 +342,9 @@ class TableUi(private val a: BoardActivity) {
             }
             TableHit.PLAN_MENU -> a.planUi.sheetMenu(t)
             TableHit.PLAN_SHEET -> a.planUi.onSheetTap(t, h.fx, h.fy)
+            // Шапка столбца — отбор как в Excel (0.27.3): значения с галочками; объёмы — только по видимым строкам.
+            TableHit.HEAD -> h.col?.let { columnFilter(t, it) } ?: v.select(listOf(t))
+            TableHit.FILTER_CLEAR -> setFilter(t, null)
             TableHit.CELL -> {
                 val r = h.rec ?: return
                 val col = h.col
@@ -650,8 +653,11 @@ class TableUi(private val a: BoardActivity) {
             background = Ui.rounded(a, Ui.PAPER, Ui.RULE, 14f)
             addView(list)
         }
-        val content = ScrollView(a).apply { addView(box) }
-        val w = dp(300f)
+        showNear(ScrollView(a).apply { addView(box) }, dp(300f), rect)
+    }
+
+    /** Окно у места на доске [rect] (ниже, если помещается, иначе выше); без места — у левого края экрана. */
+    private fun showNear(content: View, w: Int, rect: RectF?) {
         val pw = PopupWindow(content, w, ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
             elevation = Ui.dpf(a, 10f)
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
@@ -1023,6 +1029,8 @@ class TableUi(private val a: BoardActivity) {
                 o += step ?: 1.0
                 n++
             }
+            // При отборе (0.27.3) новые строки не прячутся: их значения добавляются к отобранным.
+            t.filter?.let { f0 -> var f = f0; for (r in b.recs.takeLast(n)) f = f.including(b, r); t.filter = f }
             a.changed()
             a.hint(if (n == list.size) "Добавлено строк: $n" else "Добавлено: $n (такие строки уже были)", 1600)
             return n
@@ -1106,32 +1114,100 @@ class TableUi(private val a: BoardActivity) {
         dialog.show()
     }
 
-    /** Отбор строк таблицы (на этом планшете): статусы ИГС, исполнители, текст. Остальные строки скрыты до «Показать всё». */
-    fun filterDialog(t: BoardTable) {
-        val f = t.filter
-        val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16f), dp(8f), dp(16f), 0) }
-        box.addView(Ui.text(a, "ИГС", 14f, Ui.MUTED, bold = true))
-        val igsBoxes = b.statuses(BoardStatus.ID).mapIndexed { i, st ->
-            CheckBox(a).apply { text = st.name; isChecked = f?.igs?.contains(st.id) == true; tag = "flt_igs_$i" }.also { box.addView(it) } to st.id
+    /** Поставить отбор таблице (null — показать всё). */
+    fun setFilter(t: BoardTable, f: RowFilter?) {
+        t.filter = f?.takeUnless { it.isEmpty }
+        popup?.dismiss()
+        v.invalidate(); a.buildSelectionBar()
+    }
+
+    /**
+     * Отбор по столбцу как в Excel (0.27.3, Владимир: «фильтрация у каждой таблицы, как в Excel»): окно у шапки столбца —
+     * поиск, «(Выделить всё)», значения с галочками и числом строк, «Снять», «Отмена», «ОК». В списке — значения строк, что
+     * проходят отбор других столбцов. Отмечены все — отбора по столбцу нет.
+     */
+    fun columnFilter(t: BoardTable, col: String) {
+        popup?.dismiss()
+        val values = IdTables.filterValues(b, t, col)
+        val cur = t.filter?.cols?.get(col)?.takeIf { it.isNotEmpty() }
+        val box = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14f), dp(10f), dp(14f), dp(6f))
+            background = Ui.rounded(a, Ui.PAPER, Ui.RULE, 14f)
+            tag = "col_filter"
         }
-        val whos = IdTables.allRows(b, t).map { it.who.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
-        val whoBoxes = ArrayList<Pair<CheckBox, String>>()
-        if (whos.isNotEmpty()) {
-            box.addView(Ui.text(a, t.colName(TableCol.WHO), 14f, Ui.MUTED, bold = true).apply { setPadding(0, dp(10f), 0, 0) })
-            for (w in whos) whoBoxes += CheckBox(a).apply { text = w; isChecked = f?.who?.contains(w) == true }.also { box.addView(it) } to w
+        box.addView(Ui.text(a, "Отбор · " + t.colName(col), 15f, Ui.INK, bold = true))
+        val search = EditText(a).apply { hint = "Поиск"; isSingleLine = true; textSize = 15f; tag = "flt_search" }
+        box.addView(search, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        val all = CheckBox(a).apply { text = "(Выделить всё)"; tag = "flt_all" }
+        box.addView(all)
+        val list = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+        val items = ArrayList<Pair<CheckBox, IdTables.FilterValue>>()
+        for ((i, fv) in values.withIndex()) {
+            val row = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val cb = CheckBox(a).apply { text = fv.label; isChecked = cur == null || fv.key in cur; tag = "flt_val_$i" }
+            row.addView(cb, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+            row.addView(Ui.text(a, fv.count.toString(), 13f, Ui.MUTED).apply { setPadding(dp(8f), 0, dp(4f), 0) })
+            list.addView(row)
+            items += cb to fv
         }
-        val text = EditText(a).apply { setText(f?.text.orEmpty()); isSingleLine = true; hint = "текст: захватка, конструкция…"; tag = "flt_text" }
-        box.addView(text)
-        AlertDialog.Builder(a).setTitle("Отбор · " + IdTables.fullTitle(b, t)).setView(ScrollView(a).apply { addView(box) })
-            .setPositiveButton("Показать") { _, _ ->
-                val nf = RowFilter(igsBoxes.filter { it.first.isChecked }.map { it.second }.toSet(),
-                    whoBoxes.filter { it.first.isChecked }.map { it.second }.toSet(), text.text.toString().trim())
-                t.filter = if (nf.isEmpty) null else nf
-                v.invalidate(); a.buildSelectionBar()
+        if (values.isEmpty()) list.addView(Ui.text(a, "Значений нет", 14f, Ui.MUTED).apply { setPadding(0, dp(8f), 0, dp(8f)) })
+        val scroll = ScrollView(a).apply { addView(list) }
+        list.measure(View.MeasureSpec.makeMeasureSpec(dp(272f), View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
+        box.addView(scroll, LinearLayout.LayoutParams(Ui.MATCH, minOf(list.measuredHeight, dp(320f))))
+        val btns = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6f), 0, 0) }
+        fun btn(text: String, tag: String, color: Int, f: () -> Unit) = Ui.text(a, text, 15f, color, bold = true).apply {
+            this.tag = tag; setPadding(dp(10f), dp(10f), dp(10f), dp(10f)); isClickable = true; setOnClickListener { f() }
+        }
+        val clear = btn("Снять", "flt_clear", if (cur != null) Ui.ACCENT else Ui.MUTED) { if (cur != null) setFilter(t, t.filter?.with(col, null)) }
+        btns.addView(clear)
+        btns.addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
+        btns.addView(btn("Отмена", "flt_cancel", Ui.INK2) { popup?.dismiss() })
+        val ok = btn("ОК", "flt_ok", Ui.ACCENT) {}
+        btns.addView(ok)
+        box.addView(btns)
+
+        fun shown() = items.filter { (it.first.parent as View).visibility == View.VISIBLE }
+        var syncing = false
+        fun sync() {
+            syncing = true
+            val vis = shown()
+            all.isChecked = vis.isNotEmpty() && vis.all { it.first.isChecked }
+            ok.alpha = if (vis.any { it.first.isChecked }) 1f else 0.4f
+            syncing = false
+        }
+        all.setOnCheckedChangeListener { _, on -> if (!syncing) { syncing = true; for ((cb, _) in shown()) cb.isChecked = on; syncing = false; sync() } }
+        for ((cb, _) in items) cb.setOnCheckedChangeListener { _, _ -> if (!syncing) sync() }
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
+            override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
+            override fun afterTextChanged(e: android.text.Editable?) {
+                val q = e?.toString()?.trim()?.lowercase(java.util.Locale.ROOT).orEmpty()
+                syncing = true
+                for ((cb, fv) in items) {
+                    val match = q.isEmpty() || fv.label.lowercase(java.util.Locale.ROOT).contains(q)
+                    (cb.parent as View).visibility = if (match) View.VISIBLE else View.GONE
+                    // Как в Excel: найденное отмечено, OK оставит только его.
+                    if (q.isNotEmpty() && match) cb.isChecked = true
+                }
+                syncing = false
+                sync()
             }
-            .setNeutralButton("Показать всё") { _, _ -> t.filter = null; v.invalidate(); a.buildSelectionBar() }
-            .setNegativeButton("Отмена", null)
-            .show()
+        })
+        ok.setOnClickListener {
+            val q = search.text.toString().trim()
+            val chosen = (if (q.isEmpty()) items else shown()).filter { it.first.isChecked }.map { it.second.key }.toSet()
+            if (chosen.isEmpty()) { a.hint("Отметьте хотя бы одно значение", 1500); return@setOnClickListener }
+            val keys = if (q.isEmpty() && chosen.size == values.size) null else chosen
+            setFilter(t, (t.filter ?: RowFilter()).with(col, keys))
+        }
+        sync()
+        // У шапки столбца.
+        val l = v.tableDraw.layout(b, t)
+        val ci = l.cols.indexOfFirst { it.k == col }
+        val rect = if (ci < 0) null else RectF(t.x + l.colX[ci] * t.scale, t.y + TableDraw.TITLE_H * t.scale,
+            t.x + l.colX[ci + 1] * t.scale, t.y + v.tableDraw.rowsTop(l) * t.scale)
+        showNear(box, dp(300f), rect)
     }
 
     fun renameDialog(t: BoardTable) {
@@ -1313,8 +1389,8 @@ class TableUi(private val a: BoardActivity) {
                 a.pushUndo(); t.locked = !t.locked; a.changed(); a.buildSelectionBar()
                 a.hint(if (t.locked) "Таблица закреплена: не сдвинется — рисуйте поверх плана. Открепить — булавка в углу" else "Таблицу снова можно двигать", 3000)
             }
-            out += if (t.filter == null) pill("Отбор", "sel_filter") { filterDialog(t) }
-            else pill("Показать всё", "sel_filter") { t.filter = null; v.invalidate(); a.buildSelectionBar() }
+            // Отбор — кнопками «▾» в шапке столбцов (0.27.3); здесь — только снять весь.
+            if (t.filter != null) out += pill("Снять отбор", "sel_filter") { setFilter(t, null) }
             out += pill("Сводка", "sel_summary") { summaryDialog(only = t) }
         }
         if (sel.isNotEmpty() && sel.all { it is BoardRec }) {

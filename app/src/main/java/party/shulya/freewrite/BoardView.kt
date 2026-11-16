@@ -1693,7 +1693,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         if (h?.kind == Kind.TABLE && host.tool() != BoardActivity.Tool.SELECT) {
             val t = b.tables[h.index]
             val th = tableDraw.hit(b, t, x, y)
-            if (th != null && th.part != TableHit.TITLE && th.part != TableHit.HEAD) {
+            // Шапка таблицы — выделить её; шапка столбца — отбор как в Excel (0.27.3).
+            if (th != null && th.part != TableHit.TITLE && (th.part != TableHit.HEAD || th.col != null)) {
                 host.onTableTap(t, th)
                 return
             }

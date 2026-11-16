@@ -133,11 +133,14 @@ class TableDockTest {
         fun sx(x: Float) = (x - b.camX) * b.camZ
         fun sy(y: Float) = (y - b.camY) * b.camZ
         act.setTool(BoardActivity.Tool.SELECT)
-        // Правую — к правому краю левой (не вплотную: на 25 единиц правее и на 12 ниже) — приклеилась.
+        // Правую — к правому краю левой (не вплотную: на 25 единиц правее и на 12 ниже) — приклеилась. Берём за середину
+        // заголовка: у уголка — размер, а не перенос.
         view.select(listOf(c))
         val spot = TableDock.dockedSpot(b, view.tableDraw, a, FloatArray(2))
-        val from = sx(c.x + 40f) to sy(c.y + 10f)
-        val to = sx(spot[0] + 25f + 40f) to sy(spot[1] + 12f + 10f)
+        // Место приклейки — на экране, не у края (у края доска сама сдвигается под пальцем).
+        view.fitRect(a.x - 40f, a.y - 200f, spot[0] + 900f, a.y + 600f); idle()
+        val from = sx(c.x + 300f) to sy(c.y + 20f)
+        val to = sx(spot[0] + 25f + 300f) to sy(spot[1] + 12f + 20f)
         drag(view, from, to)
         assertEquals(a.id, c.dock)
         assertEquals(spot[0], c.x, 0.5f); assertEquals(a.y, c.y, 0.5f)
@@ -146,7 +149,7 @@ class TableDockTest {
         afterPen()
         view.select(listOf(a))
         val ax0 = a.x
-        drag(view, sx(a.x + 40f) to sy(a.y + 10f), sx(a.x + 40f + 200f) to sy(a.y + 10f + 100f))
+        drag(view, sx(a.x + 300f) to sy(a.y + 20f), sx(a.x + 300f + 200f) to sy(a.y + 20f + 100f))
         assertEquals(ax0 + 200f, a.x, 2f)
         assertEquals(TableDock.dockedSpot(b, view.tableDraw, a, FloatArray(2))[0], c.x, 0.5f)
         assertEquals(a.y, c.y, 0.5f)
@@ -156,12 +159,12 @@ class TableDockTest {
         assertEquals("", c.dock)
         afterPen()
         view.select(listOf(c))
-        drag(view, sx(c.x + 40f) to sy(c.y + 10f), sx(c.x + 40f + 30f) to sy(c.y + 10f + 8f))
+        drag(view, sx(c.x + 300f) to sy(c.y + 20f), sx(c.x + 300f + 30f) to sy(c.y + 20f + 8f))
         assertEquals(a.id, c.dock)
         // Оттащили правую далеко — отклеилась.
         afterPen()
         view.select(listOf(c))
-        drag(view, sx(c.x + 40f) to sy(c.y + 10f), sx(c.x + 40f + 400f) to sy(c.y + 10f + 300f))
+        drag(view, sx(c.x + 300f) to sy(c.y + 20f), sx(c.x + 300f + 400f) to sy(c.y + 20f + 300f))
         assertEquals("", c.dock)
     }
 

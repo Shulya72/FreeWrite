@@ -22,7 +22,9 @@ class TableLayout(val key: Long, val cols: List<TableCol>, val colX: FloatArray,
                   /** Высота шапки столбцов: у вида с частями объёма — в два этажа («Объём по схеме» над «Стены | Колонны»). */
                   val headH: Float = TableDraw.HEAD_H,
                   /** Итоги объёмов сеткой: вид работ × часть + «Всего» (0.24). */
-                  val volParts: List<TableKinds.Part> = emptyList())
+                  val volParts: List<TableKinds.Part> = emptyList(),
+                  /** Объёмы по отбору (0.27.3): «по отбору: захватки 1, 2, 3, 4 — 12 из 40 схем»; пусто — по всей таблице. */
+                  val volFilter: String = "")
 
 /**
  * Раскладка плана под таблицей (0.23), в единицах таблицы: шапка с кнопками, вкладки листов, лист, легенда.
@@ -59,6 +61,8 @@ class TableHit(val part: Int, val rec: BoardRec?, val col: String?) {
         const val PLAN_ELEM = 13
         /** «План захваток ▾» (0.26.2): меню листа — обрезать, название, ещё лист, убрать лист. */
         const val PLAN_MENU = 14
+        /** «✕ снять» у надписи «отбор: 8 из 20» в шапке таблицы (0.27.3): снять отбор со всех столбцов. */
+        const val FILTER_CLEAR = 15
         /** Подпись шапки плана — с «▾»: касание открывает меню листа. */
         const val PLAN_TITLE = "План захваток ▾"
     }
@@ -87,6 +91,8 @@ class TableDraw {
         const val ROW_H = 30f
         const val FOOT_H = 30f
         const val PAD = 9f
+        /** Место под кнопку отбора «▾» в шапке столбца (0.27.3). */
+        const val FBTN = 20f
         const val FONT = 13f
         const val HEAD_FONT = 11f
         const val TITLE_FONT = 19f
@@ -156,7 +162,10 @@ class TableDraw {
         val cols = t.visibleCols()
         val prefix = IdTables.sectionPrefix(b, t)
         val volOn = cols.any { it.isVol }
-        val all = if (volOn) IdTables.allRows(b, t) else rows
+        // Объёмы — по тем строкам, что видны (0.27.3, Владимир: «выбрать захватки 1, 2, 3, 4 — и объём только по ним»).
+        val f = t.filter
+        val filtered = f != null && !f.isEmpty
+        val all = if (volOn && !filtered) IdTables.allRows(b, t) else rows
         // Значок у номера захватки: цвет заливки на доске или области на плане (0.23, главнее).
         val swatch = TablePlan.zahColorsAll(b, t)
         val hasPlan = t.sheets.isNotEmpty()
@@ -177,7 +186,6 @@ class TableDraw {
         }
         for (c in cols) { h = 31 * h + c.k.hashCode(); h = 31 * h + c.name.hashCode() }
         for (s in b.statuses) { h = 31 * h + s.id.hashCode(); h = 31 * h + s.name.hashCode(); h = 31 * h + (if (s.done) 1 else 0) }
-        val f = t.filter
         h = 31 * h + (f?.hashCode() ?: 0)
         for (r in rows) {
             h = 31 * h + r.id.hashCode()
@@ -187,13 +195,13 @@ class TableDraw {
         h = 31 * h + b.events.size
         t.lay?.let { if (it.key == h) { t.layFrame = frame; return it } }
 
-        val allN = if (f == null || f.isEmpty) rows.size else IdTables.allRows(b, t).size
+        val allN = if (!filtered) rows.size else IdTables.allRows(b, t).size
         val done = rows.count { IdTables.status(b, BoardStatus.ID, it.igs).done }
         var info = "${Ui.plural(rows.size, "схема", "схемы", "схем")} · сдано в ПТО $done"
-        if (f != null && !f.isEmpty) info = "отбор: ${rows.size} из $allN · сдано $done"
+        if (filtered) info = "отбор: ${rows.size} из $allN · сдано $done   ✕ снять"
         val widths = FloatArray(cols.size)
         for ((ci, c) in cols.withIndex()) {
-            var w = tw(c.title(), HEAD_FONT, true) + 2 * PAD
+            var w = tw(c.title(), HEAD_FONT, true) + 2 * PAD + FBTN
             if (c.isStatus) {
                 val seen = HashSet<String>()
                 for (r in rows) { val n = IdTables.cellText(b, r, c.k); if (seen.add(n)) w = max(w, tw(n, FONT, true) + 22f + 2 * PAD) }
@@ -223,7 +231,8 @@ class TableDraw {
         val need = PAD * 2 + titleW + 24f + tw(info, 12f, false) + PAD
         val addW = PAD + tw("+ строка", FONT, true) + PAD * 2
         val need2 = addW + tw("+ следующая захватка", FONT, true) + PAD * 2
-        val vol = if (volOn && all.isNotEmpty()) IdTables.volumes(b, t, all) else null
+        val vol = if (volOn && (all.isNotEmpty() || filtered)) IdTables.volumes(b, t, all) else null
+        val volFilter = if (vol != null && filtered) "по отбору: ${IdTables.filterText(b, t)} — ${rows.size} из ${Ui.plural(allN, "схемы", "схем", "схем")}" else ""
         val planAddW = tw("+ план", FONT, true) + PAD * 2
         val chipText = arrayOf(if (t.zoneColor == TablePlan.OWN) "Цвет: свой ▾" else "Цвет: по ИГС ▾", "+ лист", "Элементы ▾", "Обвести захватку")
         val chipW = chipText.map { tw(it, 13f, true) + 24f }
@@ -231,6 +240,9 @@ class TableDraw {
         val pctText = pct?.let { "выполнено ≈ $it %" } ?: ""
         val planHeadNeed = PAD * 2 + tw(TableHit.PLAN_TITLE, 16f, true) + 30f + chipW.sum() + 8f * chipW.size + (if (pct != null) tw(pctText, 14f, true) + 24f else 0f)
         var needAll = max(max(need, need2 + if (hasPlan) 0f else planAddW + PAD), if (vol != null) VOL_MIN_W else 0f)
+        // Шапка объёмов по отбору: «Объёмы · …» + что отобрано + «+ проект» — в одну строку.
+        if (volFilter.isNotEmpty()) needAll = max(needAll, 28f + tw("Объёмы · ${t.title.ifEmpty { "таблица" }}", 15f, true) + 12f +
+            tw(volFilter, 12.5f, true) + 24f + tw("+ проект", 13.5f, true))
         if (hasPlan) needAll = max(needAll, max(PLAN_MIN_W, planHeadNeed))
         if (cols.isNotEmpty() && needAll > total) { widths[widths.size - 1] += needAll - total; total = needAll }
         if (cols.isEmpty()) total = needAll
@@ -268,7 +280,31 @@ class TableDraw {
         }
         val planSplit = if (hasPlan) Float.MAX_VALUE else total - planAddW
         return TableLayout(h, cols, colX, rows, total, height, info, addW, prefix, vol, volTop, volH, missing, swatch, plan, planSplit, headH,
-            if (vol != null) vparts else emptyList()).also { t.lay = it; t.layFrame = frame }
+            if (vol != null) vparts else emptyList(), volFilter).also { t.lay = it; t.layFrame = frame }
+    }
+
+    /** Кнопка отбора «▾» у столбца в шапке (0.27.3, как в Excel): квадрат у правого края названия. */
+    private fun drawFilterButton(canvas: Canvas, x1: Float, cy: Float, on: Boolean, k: Float) {
+        val sz = 15f * k
+        rect.set(x1 - sz, cy - sz / 2f, x1, cy + sz / 2f)
+        if (on) {
+            fill.color = Ui.ACCENT
+            canvas.drawRoundRect(rect, 3.5f * k, 3.5f * k, fill)
+        } else {
+            fill.color = Color.WHITE
+            canvas.drawRoundRect(rect, 3.5f * k, 3.5f * k, fill)
+            line.color = Color.rgb(176, 186, 204); line.strokeWidth = 1f * k
+            canvas.drawRoundRect(rect, 3.5f * k, 3.5f * k, line)
+        }
+        // Треугольник «▾» (у отобранного — белый).
+        val p = android.graphics.Path()
+        val w = 7f * k; val h = 4.5f * k
+        p.moveTo(rect.centerX() - w / 2f, rect.centerY() - h / 2f)
+        p.lineTo(rect.centerX() + w / 2f, rect.centerY() - h / 2f)
+        p.lineTo(rect.centerX(), rect.centerY() + h / 2f)
+        p.close()
+        fill.color = if (on) Color.WHITE else Color.rgb(96, 108, 130)
+        canvas.drawPath(p, fill)
     }
 
     fun sheetName(t: BoardTable, i: Int): String = t.sheets.getOrNull(i)?.name?.ifEmpty { null } ?: "Лист ${i + 1}"
@@ -304,7 +340,11 @@ class TableDraw {
         val u = (x - t.x) / t.scale
         val v = (y - t.y) / t.scale
         if (u < 0f || u > l.w || v < 0f || v > l.h) return null
-        if (v < TITLE_H) return TableHit(TableHit.TITLE, null, null)
+        if (v < TITLE_H) {
+            // «✕ снять» в конце надписи «отбор: …» — снять отбор (0.27.3).
+            if (t.filter?.isEmpty == false && u > l.w - PAD * 1.4f - tw("✕ снять", 12f, false) - 10f) return TableHit(TableHit.FILTER_CLEAR, null, null)
+            return TableHit(TableHit.TITLE, null, null)
+        }
         var col: String? = l.cols.lastOrNull()?.k
         var colI = l.cols.size - 1
         for (i in l.cols.indices) if (u < l.colX[i + 1]) { col = l.cols[i].k; colI = i; break }
@@ -461,16 +501,26 @@ class TableDraw {
             val g = "Объём по схеме"
             canvas.drawText(fit(g, gr - gl - 2 * PAD * k), (gl + gr) / 2f - min(text.measureText(g), gr - gl - 2 * PAD * k) / 2f, y0 + (TITLE_H + l.headH / 4f) * k + text.textSize * 0.36f, text)
         }
+        // Кнопка отбора «▾» у каждого столбца (как в Excel); столбец с отбором — название и кнопка цветом.
+        val flt = t.filter
         for ((ci, c) in l.cols.withIndex()) {
             val cw = (l.colX[ci + 1] - l.colX[ci]) * k
+            val on = flt?.on(c.k) == true
+            val bx = x0 + l.colX[ci + 1] * k - PAD * 0.6f * k
             if (c.part != null) {
-                text.color = GRP_FG
-                val tt = fit(c.title(), cw - 2 * PAD * k)
-                canvas.drawText(tt, x0 + l.colX[ci + 1] * k - PAD * k - text.measureText(tt), y0 + (TITLE_H + l.headH * 0.75f) * k + text.textSize * 0.36f, text)
+                val cy = y0 + (TITLE_H + l.headH * 0.75f) * k
+                text.color = if (on) Ui.ACCENT else GRP_FG
+                val tt = fit(c.title(), cw - 2 * PAD * k - FBTN * k)
+                canvas.drawText(tt, bx - FBTN * k - text.measureText(tt), cy + text.textSize * 0.36f, text)
+                drawFilterButton(canvas, bx, cy, on, k)
                 text.color = Ui.INK2
                 continue
             }
-            canvas.drawText(fit(c.title(), cw - 2 * PAD * k), x0 + (l.colX[ci] + PAD) * k, y0 + (TITLE_H + l.headH / 2f) * k + text.textSize * 0.36f, text)
+            val cy = y0 + (TITLE_H + l.headH / 2f) * k
+            if (on) text.color = Ui.ACCENT
+            canvas.drawText(fit(c.title(), cw - 2 * PAD * k - FBTN * k), x0 + (l.colX[ci] + PAD) * k, cy + text.textSize * 0.36f, text)
+            text.color = Ui.INK2
+            drawFilterButton(canvas, bx, cy, on, k)
         }
         // Шифр раздела, название таблицы (подраздел) и сводка.
         var tx = x0 + PAD * 1.4f * k
@@ -719,7 +769,8 @@ class TableDraw {
         val L = x0 + 14f * k
         val hy = top + (VOL_HEAD / 2f + 3f) * k + 5f * k
         val hw = txt("Объёмы · ${t.title.ifEmpty { "таблица" }}", L, hy, 15f, Ui.INK, bold = true)
-        txt("факт — сумма по схемам; проект — для каждой части (рамка ✎)", L + hw + 12f * k, hy, 12.5f, Ui.MUTED)
+        if (l.volFilter.isNotEmpty()) txt(l.volFilter, L + hw + 12f * k, hy, 12.5f, Ui.ACCENT, bold = true)
+        else txt("факт — сумма по схемам; проект — для каждой части (рамка ✎)", L + hw + 12f * k, hy, 12.5f, Ui.MUTED)
         val plus = "+ проект"
         text.textSize = 13.5f * k; text.isFakeBoldText = true
         val pw0 = text.measureText(plus)
@@ -732,7 +783,8 @@ class TableDraw {
         txt("Всего", totL + 10f * k, gy, 12.5f, GRP_FG, bold = true)
         val works = vol.map { it.work }.distinctBy { IdTables.norm(it) }
         if (works.isEmpty()) {
-            txt("Впишите объёмы в столбцах ${parts.joinToString(" и ") { "«${it.name}»" }} — здесь появятся итоги; проект — «+ проект»", L,
+            txt(if (l.volFilter.isNotEmpty()) "У отобранных схем объёмы не вписаны" else
+                "Впишите объёмы в столбцах ${parts.joinToString(" и ") { "«${it.name}»" }} — здесь появятся итоги; проект — «+ проект»", L,
                 top + (VOL_HEAD + VOLP_HEAD + VOLP_ROW / 2f) * k, 13.5f, Ui.MUTED)
         }
         for ((wi, wk) in works.withIndex()) {
@@ -776,7 +828,9 @@ class TableDraw {
                 fill.color = if (v.over) Ui.BAD else BAR
                 if (frac > 0f) canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, fill)
                 val diff = kotlin.math.abs(v.fact - v.plan)
-                val chip = if (v.over) "перебор +${IdTables.volFmt(diff)} ${v.unit}".trimEnd() else "осталось ${IdTables.volFmt(diff)} ${v.unit}".trimEnd()
+                // По отбору «осталось» не считаем (остаток — у всей таблицы): только доля проекта.
+                val chip = if (v.over) "перебор +${IdTables.volFmt(diff)} ${v.unit}".trimEnd()
+                    else if (l.volFilter.isNotEmpty()) "доля проекта" else "осталось ${IdTables.volFmt(diff)} ${v.unit}".trimEnd()
                 text.textSize = 12f * k; text.isFakeBoldText = true
                 val chw = text.measureText(chip) + 18f * k
                 text.isFakeBoldText = false
@@ -820,13 +874,14 @@ class TableDraw {
         val L = x0 + 14f * k
         val hy = top + (VOL_HEAD / 2f + 3f) * k + 5f * k
         val hw = txt("Объёмы · ${t.title.ifEmpty { "таблица" }}", L, hy, 15f, Ui.INK, bold = true)
-        txt("факт — сумма столбца «${t.colName(TableCol.VOL)}», проект — вписываете", L + hw + 12f * k, hy, 12.5f, Ui.MUTED)
+        if (l.volFilter.isNotEmpty()) txt(l.volFilter, L + hw + 12f * k, hy, 12.5f, Ui.ACCENT, bold = true)
+        else txt("факт — сумма столбца «${t.colName(TableCol.VOL)}», проект — вписываете", L + hw + 12f * k, hy, 12.5f, Ui.MUTED)
         val plus = "+ проект"
         text.textSize = 13.5f * k; text.isFakeBoldText = true
         val pw = text.measureText(plus)
         txt(plus, x0 + w - 14f * k - pw, hy, 13.5f, Ui.ACCENT, bold = true)
         if (vol.isEmpty()) {
-            txt("Впишите объёмы в столбце «${t.colName(TableCol.VOL)}» — здесь появятся итоги; проект — «+ проект»", L,
+            txt(if (l.volFilter.isNotEmpty()) "У отобранных схем объёмы не вписаны" else "Впишите объёмы в столбце «${t.colName(TableCol.VOL)}» — здесь появятся итоги; проект — «+ проект»", L,
                 top + (VOL_HEAD + VOL_ROW / 2f) * k + 4f * k, 13.5f, Ui.MUTED)
             return
         }
@@ -863,7 +918,7 @@ class TableDraw {
             val over = v.over
             val diff = kotlin.math.abs(v.fact - v.plan)
             val chip = if (over) "перебор +${IdTables.volFmt(diff)} ${v.unit} · +${String.format(java.util.Locale.US, "%.1f", diff / v.plan * 100).replace('.', ',')} %".replace("  ", " ")
-                else "осталось ${IdTables.volFmt(diff)} ${v.unit}".trimEnd()
+                else if (l.volFilter.isNotEmpty()) "доля проекта" else "осталось ${IdTables.volFmt(diff)} ${v.unit}".trimEnd()
             text.textSize = 13.5f * k; text.isFakeBoldText = true
             val cw = text.measureText(chip) + 22f * k
             text.isFakeBoldText = false

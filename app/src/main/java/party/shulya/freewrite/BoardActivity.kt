@@ -780,8 +780,9 @@ class BoardActivity : Activity(), BoardView.Host {
         val keep = view.planEdit?.takeIf { planUi.keepOnUndo(it) }
         if (view.planEdit != null && keep == null) planUi.endOutline(save = false)
         val tabs = board.tables.associate { it.id to it.tab } // открытая вкладка плана — та же
+        val filters = board.tables.filter { it.filter != null }.associate { it.id to it.filter } // и отбор строк (0.27.3)
         board = board.restored(snap)
-        for (t in board.tables) tabs[t.id]?.let { t.tab = it }
+        for (t in board.tables) { tabs[t.id]?.let { t.tab = it }; filters[t.id]?.let { t.filter = it } }
         if (keep != null) planUi.rebind(keep)
         titleView.text = board.title
         view.clearSelection()
@@ -1196,7 +1197,7 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         board.tables.lastOrNull { view.tableDraw.bounds(board, it, android.graphics.RectF()).contains(x, y) }?.let { t ->
             val th = view.tableDraw.hit(board, t, x, y) ?: return
-            if (th.part == TableHit.TITLE || th.part == TableHit.HEAD) view.select(listOf(t)) else tableUi.onTap(t, th, view.lastTapByPen)
+            if (th.part == TableHit.TITLE || (th.part == TableHit.HEAD && th.col == null)) view.select(listOf(t)) else tableUi.onTap(t, th, view.lastTapByPen)
             return
         }
         if (tool == Tool.TABLE) {
