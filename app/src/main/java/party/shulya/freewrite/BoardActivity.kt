@@ -1197,7 +1197,7 @@ class BoardActivity : Activity(), BoardView.Host {
         }
         board.tables.lastOrNull { view.tableDraw.bounds(board, it, android.graphics.RectF()).contains(x, y) }?.let { t ->
             val th = view.tableDraw.hit(board, t, x, y) ?: return
-            if (th.part == TableHit.TITLE || (th.part == TableHit.HEAD && th.col != TableCol.ZAH)) view.select(listOf(t)) else tableUi.onTap(t, th, view.lastTapByPen)
+            if (th.part == TableHit.TITLE || (th.part == TableHit.HEAD && th.col == null)) view.select(listOf(t)) else tableUi.onTap(t, th, view.lastTapByPen)
             return
         }
         if (tool == Tool.TABLE) {

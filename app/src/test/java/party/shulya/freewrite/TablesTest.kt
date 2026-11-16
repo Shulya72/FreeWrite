@@ -141,8 +141,8 @@ class TablesTest {
         assertEquals("", IdTables.parseDate("бетон"))
         assertTrue(IdTables.naturalCompare("КЖ6.1.2", "КЖ6.1.10") < 0)
         assertEquals(41, IdTables.daysSince("2026-10-01", "2026-11-11"))
-        assertTrue(RowFilter(igs = setOf(IdTables.IGS_PTO)).matches(b.recs[0]))
-        assertTrue(!RowFilter(text = "бетон 3").matches(b.recs[0]) && RowFilter(text = "бетон 3").matches(b.recs[7]))
+        assertTrue(RowFilter(mapOf(TableCol.IGS to setOf(IdTables.IGS_PTO))).matches(b, b.recs[0]))
+        assertTrue(!RowFilter(text = "бетон 3").matches(b, b.recs[0]) && RowFilter(text = "бетон 3").matches(b, b.recs[7]))
     }
 
     @Test

@@ -61,6 +61,8 @@ class TableHit(val part: Int, val rec: BoardRec?, val col: String?) {
         const val PLAN_ELEM = 13
         /** «План захваток ▾» (0.26.2): меню листа — обрезать, название, ещё лист, убрать лист. */
         const val PLAN_MENU = 14
+        /** «✕ снять» у надписи «отбор: 8 из 20» в шапке таблицы (0.27.3): снять отбор со всех столбцов. */
+        const val FILTER_CLEAR = 15
         /** Подпись шапки плана — с «▾»: касание открывает меню листа. */
         const val PLAN_TITLE = "План захваток ▾"
     }
@@ -89,6 +91,8 @@ class TableDraw {
         const val ROW_H = 30f
         const val FOOT_H = 30f
         const val PAD = 9f
+        /** Место под кнопку отбора «▾» в шапке столбца (0.27.3). */
+        const val FBTN = 20f
         const val FONT = 13f
         const val HEAD_FONT = 11f
         const val TITLE_FONT = 19f
@@ -194,10 +198,10 @@ class TableDraw {
         val allN = if (!filtered) rows.size else IdTables.allRows(b, t).size
         val done = rows.count { IdTables.status(b, BoardStatus.ID, it.igs).done }
         var info = "${Ui.plural(rows.size, "схема", "схемы", "схем")} · сдано в ПТО $done"
-        if (filtered) info = "отбор: ${rows.size} из $allN · сдано $done"
+        if (filtered) info = "отбор: ${rows.size} из $allN · сдано $done   ✕ снять"
         val widths = FloatArray(cols.size)
         for ((ci, c) in cols.withIndex()) {
-            var w = tw(headTitle(c), HEAD_FONT, true) + 2 * PAD
+            var w = tw(c.title(), HEAD_FONT, true) + 2 * PAD + FBTN
             if (c.isStatus) {
                 val seen = HashSet<String>()
                 for (r in rows) { val n = IdTables.cellText(b, r, c.k); if (seen.add(n)) w = max(w, tw(n, FONT, true) + 22f + 2 * PAD) }
@@ -279,8 +283,29 @@ class TableDraw {
             if (vol != null) vparts else emptyList(), volFilter).also { t.lay = it; t.layFrame = frame }
     }
 
-    /** Название столбца в шапке: у «Захватки» — «▾» (касание — отбор по захваткам, 0.27.3). */
-    fun headTitle(c: TableCol): String = if (c.k == TableCol.ZAH) c.title() + " ▾" else c.title()
+    /** Кнопка отбора «▾» у столбца в шапке (0.27.3, как в Excel): квадрат у правого края названия. */
+    private fun drawFilterButton(canvas: Canvas, x1: Float, cy: Float, on: Boolean, k: Float) {
+        val sz = 15f * k
+        rect.set(x1 - sz, cy - sz / 2f, x1, cy + sz / 2f)
+        if (on) {
+            fill.color = Ui.ACCENT
+            canvas.drawRoundRect(rect, 3.5f * k, 3.5f * k, fill)
+        } else {
+            fill.color = Color.WHITE
+            canvas.drawRoundRect(rect, 3.5f * k, 3.5f * k, fill)
+            line.color = Color.rgb(176, 186, 204); line.strokeWidth = 1f * k
+            canvas.drawRoundRect(rect, 3.5f * k, 3.5f * k, line)
+        }
+        // Треугольник «▾» (у отобранного — белый).
+        val p = android.graphics.Path()
+        val w = 7f * k; val h = 4.5f * k
+        p.moveTo(rect.centerX() - w / 2f, rect.centerY() - h / 2f)
+        p.lineTo(rect.centerX() + w / 2f, rect.centerY() - h / 2f)
+        p.lineTo(rect.centerX(), rect.centerY() + h / 2f)
+        p.close()
+        fill.color = if (on) Color.WHITE else Color.rgb(96, 108, 130)
+        canvas.drawPath(p, fill)
+    }
 
     fun sheetName(t: BoardTable, i: Int): String = t.sheets.getOrNull(i)?.name?.ifEmpty { null } ?: "Лист ${i + 1}"
 
@@ -315,7 +340,11 @@ class TableDraw {
         val u = (x - t.x) / t.scale
         val v = (y - t.y) / t.scale
         if (u < 0f || u > l.w || v < 0f || v > l.h) return null
-        if (v < TITLE_H) return TableHit(TableHit.TITLE, null, null)
+        if (v < TITLE_H) {
+            // «✕ снять» в конце надписи «отбор: …» — снять отбор (0.27.3).
+            if (t.filter?.isEmpty == false && u > l.w - PAD * 1.4f - tw("✕ снять", 12f, false) - 10f) return TableHit(TableHit.FILTER_CLEAR, null, null)
+            return TableHit(TableHit.TITLE, null, null)
+        }
         var col: String? = l.cols.lastOrNull()?.k
         var colI = l.cols.size - 1
         for (i in l.cols.indices) if (u < l.colX[i + 1]) { col = l.cols[i].k; colI = i; break }
@@ -472,20 +501,26 @@ class TableDraw {
             val g = "Объём по схеме"
             canvas.drawText(fit(g, gr - gl - 2 * PAD * k), (gl + gr) / 2f - min(text.measureText(g), gr - gl - 2 * PAD * k) / 2f, y0 + (TITLE_H + l.headH / 4f) * k + text.textSize * 0.36f, text)
         }
+        // Кнопка отбора «▾» у каждого столбца (как в Excel); столбец с отбором — название и кнопка цветом.
+        val flt = t.filter
         for ((ci, c) in l.cols.withIndex()) {
             val cw = (l.colX[ci + 1] - l.colX[ci]) * k
+            val on = flt?.on(c.k) == true
+            val bx = x0 + l.colX[ci + 1] * k - PAD * 0.6f * k
             if (c.part != null) {
-                text.color = GRP_FG
-                val tt = fit(c.title(), cw - 2 * PAD * k)
-                canvas.drawText(tt, x0 + l.colX[ci + 1] * k - PAD * k - text.measureText(tt), y0 + (TITLE_H + l.headH * 0.75f) * k + text.textSize * 0.36f, text)
+                val cy = y0 + (TITLE_H + l.headH * 0.75f) * k
+                text.color = if (on) Ui.ACCENT else GRP_FG
+                val tt = fit(c.title(), cw - 2 * PAD * k - FBTN * k)
+                canvas.drawText(tt, bx - FBTN * k - text.measureText(tt), cy + text.textSize * 0.36f, text)
+                drawFilterButton(canvas, bx, cy, on, k)
                 text.color = Ui.INK2
                 continue
             }
-            // Отбор по захваткам — заголовок «Захватка ▾» цветом акцента.
-            val zf = c.k == TableCol.ZAH && t.filter?.zah?.isNotEmpty() == true
-            if (zf) text.color = Ui.ACCENT
-            canvas.drawText(fit(headTitle(c), cw - 2 * PAD * k), x0 + (l.colX[ci] + PAD) * k, y0 + (TITLE_H + l.headH / 2f) * k + text.textSize * 0.36f, text)
-            if (zf) text.color = Ui.INK2
+            val cy = y0 + (TITLE_H + l.headH / 2f) * k
+            if (on) text.color = Ui.ACCENT
+            canvas.drawText(fit(c.title(), cw - 2 * PAD * k - FBTN * k), x0 + (l.colX[ci] + PAD) * k, cy + text.textSize * 0.36f, text)
+            text.color = Ui.INK2
+            drawFilterButton(canvas, bx, cy, on, k)
         }
         // Шифр раздела, название таблицы (подраздел) и сводка.
         var tx = x0 + PAD * 1.4f * k

@@ -3,6 +3,7 @@ package party.shulya.freewrite
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.RectF
 import android.os.Looper
 import android.os.SystemClock
 import android.view.InputDevice
@@ -11,6 +12,7 @@ import android.view.View
 import android.widget.CheckBox
 import android.widget.EditText
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -28,8 +30,9 @@ import java.io.File
 import java.time.Duration
 
 /**
- * Отбор по захваткам и объёмы по отбору (0.27.3, Владимир: «выбрать, например, захватки 1, 2, 3, 4 — и объём суммарный
- * показывался только по ним»).
+ * Отбор как в Excel (0.27.3, Владимир: «выбрать захватки 1, 2, 3, 4 — и объём суммарный только по ним»; «фильтрация не
+ * отдельной кнопкой, а у каждой таблицы, как в Excel»): у каждого столбца в шапке «▾» — значения с галочками, поиск,
+ * «(Выделить всё)»; столбцы складываются; объёмы — по видимым строкам.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w1280dp-h800dp-land-xhdpi")
@@ -56,6 +59,8 @@ class TableFilterTest {
             zah = z.toString(); work = w
             vp["w"] = IdTables.volKey(10.0 * z)
             if (z % 2 == 0) vp["c"] = IdTables.volKey(1.0 * z)
+            if (z <= 3) igs = IdTables.IGS_WORK
+            if (z == 1) date = "2026-11-02"
         }
         t.plan[IdTables.planKey("Бетон", "w")] = VolPlan("Бетон", "550", "м³", "w")
         return b
@@ -65,31 +70,44 @@ class TableFilterTest {
         TableDraw().layout(b, t).vol!!.first { it.work == work && it.part == part }.fact
 
     @Test
-    fun volumesFollowZahFilter() {
+    fun columnFiltersLikeExcel() {
         val b = sample()
         val t = b.tables[0]
-        // Без отбора — вся таблица: стены 10 + 20 + … + 100 = 550.
+        // Значения столбца: по порядку «по-человечески», с числом строк.
+        val zv = IdTables.filterValues(b, t, TableCol.ZAH)
+        assertEquals((1..10).map { it.toString() }, zv.map { it.label })
+        assertTrue(zv.all { it.count == 2 })
         assertEquals(550.0, fact(b, t, "Бетон", "w"), 1e-6)
-        assertEquals("", TableDraw().layout(b, t).volFilter)
         // Захватки 1, 2, 3, 4: стены 100, колонны 2 + 4 = 6; строки — только их.
-        t.filter = RowFilter(zah = setOf("1", "2", "3", "4"))
+        t.filter = RowFilter().with(TableCol.ZAH, setOf("1", "2", "3", "4"))
         val l = TableDraw().layout(b, t)
         assertEquals(8, l.rows.size)
         assertEquals(100.0, fact(b, t, "Бетон", "w"), 1e-6)
         assertEquals(6.0, fact(b, t, "Опалубка", "c"), 1e-6)
-        assertEquals("по отбору: захватки 1, 2, 3, 4 — 8 из 20 схем", l.volFilter)
-        // Проект остаётся проектом всей таблицы (доля — 100 из 550).
-        assertEquals(550.0, l.vol!!.first { it.work == "Бетон" && it.part == "w" }.plan!!, 1e-6)
-        // Порядок захваток в подписи — «по-человечески», и вместе с другим отбором.
-        t.filter = RowFilter(igs = setOf(IdTables.IGS_NONE), zah = setOf("10", "2", "1"))
-        assertEquals("захватки 1, 2, 10 · ${IdTables.status(b, BoardStatus.ID, IdTables.IGS_NONE).name}", IdTables.filterText(b, t))
-        // Захватки с участком: «LM1 · 3» и «LM2 · 3» — разные.
-        b.recs.filter { it.zah == "3" }.forEachIndexed { i, r -> r.uch = if (i == 0) "LM1" else "LM2" }
-        t.filter = RowFilter(zah = setOf(IdTables.zkey("LM1", "3")))
-        assertEquals(1, IdTables.rowsOf(b, t).size)
-        assertEquals("захватка LM1 · 3", IdTables.filterText(b, t))
-        // Ничего не подошло — объёмы пустые, но блок на месте (видно, что отбор есть).
-        t.filter = RowFilter(zah = setOf("99"))
+        assertEquals("по отбору: Захватка: 1, 2, 3, 4 — 8 из 20 схем", l.volFilter)
+        assertEquals(550.0, l.vol!!.first { it.work == "Бетон" && it.part == "w" }.plan!!, 1e-6) // проект — всей таблицы
+        // Ещё столбец — складываются («и»): только бетон этих захваток. Список значений захватки — с учётом вида работ (как в Excel).
+        t.filter = t.filter!!.with(TableCol.WORK, setOf("бетон"))
+        assertEquals(4, IdTables.rowsOf(b, t).size)
+        assertTrue(IdTables.filterValues(b, t, TableCol.ZAH).all { it.count == 1 })
+        assertEquals(listOf("Опалубка", "Бетон").sorted(), IdTables.filterValues(b, t, TableCol.WORK).map { it.label }.sorted())
+        // Статусы — по названию, в порядке списка; даты — «(Пустые)» в конце.
+        val iv = IdTables.filterValues(b, t, TableCol.IGS)
+        assertEquals(IdTables.status(b, BoardStatus.ID, IdTables.IGS_WORK).name, iv.first { it.key == IdTables.IGS_WORK }.label)
+        t.filter = null
+        val dv = IdTables.filterValues(b, t, TableCol.DATE)
+        assertEquals(listOf("02.11.26", IdTables.EMPTY_LABEL), dv.map { it.label })
+        // Снять отбор столбца; снято всё — null.
+        val f = RowFilter().with(TableCol.ZAH, setOf("1"))!!
+        assertNull(f.with(TableCol.ZAH, null))
+        assertTrue(f.with(TableCol.WORK, setOf("бетон"))!!.on(TableCol.ZAH))
+        // Новая строка при отборе не прячется.
+        val nr = BoardRec(t.id, 99.0).apply { zah = "11"; work = "Бетон" }
+        b.recs += nr
+        t.filter = f.including(b, nr)
+        assertTrue(IdTables.rowsOf(b, t).contains(nr))
+        // Ничего не подошло — объёмы пустые, но блок на месте.
+        t.filter = RowFilter().with(TableCol.ZAH, setOf("99"))
         val l0 = TableDraw().layout(b, t)
         assertEquals(0, l0.rows.size)
         assertNotNull(l0.vol)
@@ -111,92 +129,120 @@ class TableFilterTest {
         idle()
     }
 
-    private fun shot(v: View, name: String) {
+    private fun save(bmp: Bitmap, name: String) {
+        File("build/screenshots").mkdirs()
+        File("build/screenshots/$name").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
+    private fun shot(v: View, name: String, popup: View? = null, px: Float = 0f, py: Float = 0f) {
         val bmp = Bitmap.createBitmap(v.width, v.height, Bitmap.Config.ARGB_8888)
-        v.draw(Canvas(bmp))
-        File("build/screenshots").mkdirs()
-        File("build/screenshots/$name").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        val c = Canvas(bmp)
+        v.draw(c)
+        // Окно отбора — поверх доски, у шапки столбца (как на планшете).
+        if (popup != null) {
+            val w = (300 * v.resources.displayMetrics.density).toInt()
+            popup.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(v.height, View.MeasureSpec.AT_MOST))
+            popup.layout(0, 0, popup.measuredWidth, popup.measuredHeight)
+            popup.jumpDrawablesToCurrentState() // галочки — сразу в конечном виде (без анимации)
+            c.save(); c.translate(px.coerceIn(0f, (v.width - w).toFloat()), py.coerceIn(0f, (v.height - popup.measuredHeight).toFloat().coerceAtLeast(0f))); popup.draw(c); c.restore()
+        }
+        save(bmp, name)
     }
 
-    /** Снимок окна (для показа Владимиру): разметить по ширине [w] пикселей. */
-    private fun shotDialog(d: android.app.AlertDialog, name: String, w: Int = 1100) {
-        val root = d.window!!.decorView
-        root.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(2200, View.MeasureSpec.AT_MOST))
-        root.layout(0, 0, root.measuredWidth, root.measuredHeight)
-        val bmp = Bitmap.createBitmap(root.measuredWidth, root.measuredHeight, Bitmap.Config.ARGB_8888)
-        Canvas(bmp).drawColor(android.graphics.Color.rgb(120, 120, 120))
-        root.draw(Canvas(bmp))
-        File("build/screenshots").mkdirs()
-        File("build/screenshots/$name").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    private class Screen(val a: BoardActivity, val view: BoardView) {
+        val b get() = a.board()
+        val t get() = b.tables[0]
+        fun sx(x: Float) = (x - b.camX) * b.camZ
+        fun sy(y: Float) = (y - b.camY) * b.camZ
+        /** Середина шапки столбца на экране и её низ-лево (куда встаёт окно). */
+        fun head(col: String): FloatArray {
+            val l = view.tableDraw.layout(b, t)
+            val ci = l.cols.indexOfFirst { it.k == col }
+            val x = t.x + (l.colX[ci] + l.colX[ci + 1]) / 2f * t.scale
+            val y = t.y + (view.tableDraw.rowsTop(l) - l.headH / 2f) * t.scale
+            return floatArrayOf(sx(x), sy(y), sx(t.x + l.colX[ci] * t.scale), sy(t.y + view.tableDraw.rowsTop(l) * t.scale))
+        }
+        fun pop(): View = a.tableUi.popup!!.contentView
     }
 
-    @Test
-    fun tapZahHeaderChooseFourAndSeeTheirVolume() {
+    private fun open(): Screen {
         val b0 = sample()
         BoardStore(ctx).save(b0)
         val a = Robolectric.buildActivity(BoardActivity::class.java, Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b0.id)).setup().get()
         idle()
         val view = BoardActivity::class.java.getDeclaredField("view").apply { isAccessible = true }.get(a) as BoardView
-        val b = a.board()
-        val t = b.tables[0]
-        val tb = view.tableDraw.bounds(b, t, android.graphics.RectF())
+        val s = Screen(a, view)
+        val tb = view.tableDraw.bounds(s.b, s.t, RectF())
         view.fitRect(tb.left - 40f, tb.top - 40f, tb.right + 40f, tb.top + 900f)
         idle(); pause(800)
-        shot(view, "table-filter-before.png")
-        // Касание «Захватка ▾» в шапке — окно отбора с захватками кнопками.
-        val l = view.tableDraw.layout(b, t)
-        val ci = l.cols.indexOfFirst { it.k == TableCol.ZAH }
-        val hx = t.x + (l.colX[ci] + l.colX[ci + 1]) / 2f * t.scale
-        val hy = t.y + (view.tableDraw.rowsTop(l) - l.headH / 2f) * t.scale
-        tap(view, (hx - b.camX) * b.camZ, (hy - b.camY) * b.camZ)
-        val d = ShadowAlertDialog.getLatestAlertDialog()
-        assertNotNull("окно отбора", d)
-        val root = d.window!!.decorView
-        for (i in 0 until 4) root.findViewWithTag<CheckBox>("flt_zah_$i").isChecked = true
-        assertEquals("10", root.findViewWithTag<CheckBox>("flt_zah_9").text.toString()) // 1, 2 … 10, не 1, 10, 2
-        shotDialog(d, "table-filter-dialog.png")
-        d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+        return s
+    }
+
+    @Test
+    fun tapColumnHeaderChooseZahvatkiThenWork() {
+        val s = open()
+        shot(s.view, "table-filter-before.png")
+        // «▾» у «Захватки»: окно у шапки — все значения отмечены, «(Выделить всё)» тоже.
+        val h = s.head(TableCol.ZAH)
+        tap(s.view, h[0], h[1])
+        val p = s.pop()
+        assertTrue(p.findViewWithTag<CheckBox>("flt_all").isChecked)
+        assertEquals("10", p.findViewWithTag<CheckBox>("flt_val_9").text.toString()) // 1, 2 … 10, не 1, 10, 2
+        // Снять всё → отметить 1–4 → ОК.
+        p.findViewWithTag<CheckBox>("flt_all").isChecked = false
+        assertTrue((0 until 10).none { p.findViewWithTag<CheckBox>("flt_val_$it").isChecked })
+        for (i in 0 until 4) p.findViewWithTag<CheckBox>("flt_val_$i").isChecked = true
+        assertFalse(p.findViewWithTag<CheckBox>("flt_all").isChecked)
+        shot(s.view, "table-filter-popup.png", p, h[2], h[3])
+        p.findViewWithTag<View>("flt_ok").performClick()
         idle(); pause(300)
-        assertEquals(setOf("1", "2", "3", "4"), t.filter!!.zah)
-        val lf = view.tableDraw.layout(b, t)
-        assertEquals(8, lf.rows.size)
-        assertEquals(100.0, lf.vol!!.first { it.work == "Бетон" && it.part == "w" }.fact, 1e-6)
-        shot(view, "table-filter-zah.png")
+        assertEquals(setOf("1", "2", "3", "4"), s.t.filter!!.cols[TableCol.ZAH])
+        val l = s.view.tableDraw.layout(s.b, s.t)
+        assertEquals(8, l.rows.size)
+        assertEquals(100.0, l.vol!!.first { it.work == "Бетон" && it.part == "w" }.fact, 1e-6)
+        shot(s.view, "table-filter-zah.png")
+
+        // «▾» у «Вида работ»: поиск «бет» — найдено только «Бетон», ОК — только бетон захваток 1–4.
+        val hw = s.head(TableCol.WORK)
+        tap(s.view, hw[0], hw[1])
+        val p2 = s.pop()
+        p2.findViewWithTag<EditText>("flt_search").setText("бет")
+        idle()
+        val vals = (0 until 2).map { p2.findViewWithTag<CheckBox>("flt_val_$it") }
+        assertEquals(1, vals.count { (it.parent as View).visibility == View.VISIBLE })
+        p2.findViewWithTag<View>("flt_ok").performClick()
+        idle(); pause(300)
+        assertEquals(4, s.view.tableDraw.layout(s.b, s.t).rows.size)
+        assertEquals(setOf("бетон"), s.t.filter!!.cols[TableCol.WORK])
+        shot(s.view, "table-filter-two.png")
 
         // Правка и «Отменить» — отбор остаётся.
-        a.pushUndo(); b.recs.first().note = "x"; a.changed()
-        a.undo(); idle()
-        assertEquals(setOf("1", "2", "3", "4"), a.board().tables[0].filter?.zah)
+        s.a.pushUndo(); s.b.recs.first().note = "x"; s.a.changed()
+        s.a.undo(); idle()
+        assertEquals(2, s.t.filter!!.cols.size)
 
-        // «Все» / «Снять» в окне; «Показать всё» — снова вся таблица.
-        a.tableUi.filterDialog(a.board().tables[0])
-        val d2 = ShadowAlertDialog.getLatestAlertDialog()
-        d2.window!!.decorView.findViewWithTag<View>("flt_zah_all").performClick()
-        assertTrue((0 until 10).all { d2.window!!.decorView.findViewWithTag<CheckBox>("flt_zah_$it").isChecked })
-        d2.window!!.decorView.findViewWithTag<View>("flt_zah_none").performClick()
-        assertTrue((0 until 10).none { d2.window!!.decorView.findViewWithTag<CheckBox>("flt_zah_$it").isChecked })
-        d2.getButton(android.app.AlertDialog.BUTTON_NEUTRAL).performClick()
-        idle()
-        assertNull(a.board().tables[0].filter)
-        assertEquals(550.0, view.tableDraw.layout(a.board(), a.board().tables[0]).vol!!.first { it.work == "Бетон" && it.part == "w" }.fact, 1e-6)
+        // «Снять» в окне столбца — снят только он.
+        tap(s.view, hw[0], hw[1])
+        s.pop().findViewWithTag<View>("flt_clear").performClick(); idle()
+        assertEquals(setOf(TableCol.ZAH), s.t.filter!!.cols.keys)
+        // «✕ снять» в шапке таблицы — всё.
+        val l2 = s.view.tableDraw.layout(s.b, s.t)
+        tap(s.view, s.sx(s.t.x + (l2.w - 30f) * s.t.scale), s.sy(s.t.y + TableDraw.TITLE_H / 2f * s.t.scale))
+        assertNull(s.t.filter)
+        assertEquals(550.0, s.view.tableDraw.layout(s.b, s.t).vol!!.first { it.work == "Бетон" && it.part == "w" }.fact, 1e-6)
     }
 
     @Test
     fun newZahvatkaStaysVisibleWhileFiltered() {
-        val b0 = sample()
-        BoardStore(ctx).save(b0)
-        val a = Robolectric.buildActivity(BoardActivity::class.java, Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b0.id)).setup().get()
-        idle()
-        val t = a.board().tables[0]
-        t.filter = RowFilter(zah = setOf("9", "10"))
-        // «+ следующая захватка» — 11; при отборе по захваткам она добавляется к отобранным, а не прячется.
-        a.tableUi.addForm(t, next = true)
+        val s = open()
+        s.t.filter = RowFilter().with(TableCol.ZAH, setOf("9", "10"))
+        // «+ следующая захватка» — 11; при отборе она добавляется к отобранным, а не прячется.
+        s.a.tableUi.addForm(s.t, next = true)
         val d = ShadowAlertDialog.getLatestAlertDialog()
         assertEquals("11", d.window!!.decorView.findViewWithTag<EditText>("add_zah").text.toString())
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()
-        val tt = a.board().tables[0]
-        assertEquals(setOf("9", "10", "11"), tt.filter!!.zah)
-        assertTrue(IdTables.rowsOf(a.board(), tt).any { it.zah == "11" })
+        assertEquals(setOf("9", "10", "11"), s.t.filter!!.cols[TableCol.ZAH])
+        assertTrue(IdTables.rowsOf(s.b, s.t).any { it.zah == "11" })
     }
 }
