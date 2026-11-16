@@ -93,6 +93,47 @@ class BoardZone(var t: String, var s: String, var uch: String, var zah: String, 
     }
     fun copy(): BoardZone = BoardZone(t, s, uch, zah, pts.copyOf(), color).also { it.id = id; it.e = e; it.holes = holes.map { h -> h.copyOf() } }
 
+    // Точки контура и дыр в JSON (0.27.4): числа переводятся в текст один раз — снимок для «Отменить» и сохранение после каждого
+    // штриха больше не форматируют сотни областей заново (на доске с разметкой это были основные 15 мс конца штриха).
+    // Новый текст — если точки или дыры заменили или поменяли (сверка по содержимому — на случай правки на месте).
+    private var geomJson: String? = null
+    private var geomPts: FloatArray? = null
+    private var geomHoles: List<FloatArray>? = null
+    private var geomSum = 0
+
+    private fun geomSum(): Int {
+        var h = pts.contentHashCode()
+        for (r in holes) h = 31 * h + r.contentHashCode()
+        return h
+    }
+
+    // Вся строка области целиком: те же поля и та же геометрия — та же строка (снимок отмены после каждого штриха).
+    private var fullJson: String? = null
+    private var fullKey: String? = null
+
+    internal fun cachedJson(build: () -> String): String {
+        val key = id + '\u0000' + t + '\u0000' + s + '\u0000' + uch + '\u0000' + zah + '\u0000' + color + '\u0000' + e
+        val sum = geomSum()
+        val c = fullJson
+        if (c != null && key == fullKey && geomPts === pts && geomHoles === holes && geomSum == sum) return c
+        val r = build()
+        fullJson = r; fullKey = key
+        return r
+    }
+
+    /** «"pts":[…]» и, если есть, «,"h":[[…]]» — без флага элемента (он между ними, дописывается отдельно). */
+    internal fun geom(build: () -> Pair<String, String>): Pair<String, String> {
+        val sum = geomSum()
+        val cached = geomJson
+        if (cached != null && geomPts === pts && geomHoles === holes && geomSum == sum) {
+            val cut = cached.indexOf('\u0000')
+            return cached.substring(0, cut) to cached.substring(cut + 1)
+        }
+        val r = build()
+        geomJson = r.first + '\u0000' + r.second; geomPts = pts; geomHoles = holes; geomSum = sum
+        return r
+    }
+
     /** Элемент разметки без захватки. */
     val free get() = e && zah.isEmpty() && uch.isEmpty()
 
@@ -191,15 +232,24 @@ object TablePlan {
         t.zoneColor = if (j.optString("zc") == OWN) OWN else ""
     }
 
-    fun zoneJson(z: BoardZone): String {
+    fun zoneJson(z: BoardZone): String = z.cachedJson { buildZoneJson(z) }
+
+    private fun buildZoneJson(z: BoardZone): String {
         val sb = StringBuilder(64 + z.pts.size * 8)
         sb.append("{\"id\":").append(JSONObject.quote(z.id)).append(",\"t\":").append(JSONObject.quote(z.t)).append(",\"s\":").append(JSONObject.quote(z.s))
         if (z.uch.isNotEmpty()) sb.append(",\"u\":").append(JSONObject.quote(z.uch))
-        sb.append(",\"z\":").append(JSONObject.quote(z.zah)).append(",\"color\":").append(z.color).append(",\"pts\":[")
-        for ((i, v) in z.pts.withIndex()) { if (i > 0) sb.append(','); sb.append(frac(v)) }
-        sb.append(']')
+        sb.append(",\"z\":").append(JSONObject.quote(z.zah)).append(",\"color\":").append(z.color)
+        val (ptsJson, holesJson) = z.geom {
+            val p = StringBuilder(z.pts.size * 8).append(",\"pts\":[")
+            for ((i, v) in z.pts.withIndex()) { if (i > 0) p.append(','); p.append(frac(v)) }
+            p.append(']')
+            val h = StringBuilder()
+            if (z.holes.isNotEmpty()) { h.append(",\"h\":"); rings(h, z.holes) }
+            p.toString() to h.toString()
+        }
+        sb.append(ptsJson)
         if (z.e) sb.append(",\"e\":1")
-        if (z.holes.isNotEmpty()) { sb.append(",\"h\":"); rings(sb, z.holes) }
+        sb.append(holesJson)
         sb.append('}')
         return sb.toString()
     }
