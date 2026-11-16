@@ -2,15 +2,16 @@ package party.shulya.freewrite
 
 import android.content.Context
 import org.json.JSONObject
-import java.security.SecureRandom
 import java.util.Locale
 
 /** Короткие случайные номера предметов (12 знаков: буквы и цифры без похожих 0/o, 1/l). */
 object Ids {
     private const val ABC = "abcdefghijkmnpqrstuvwxyz23456789"
-    private val rnd = SecureRandom()
 
+    // Быстрый генератор (0.27.5): номер нужен каждому предмету и при чтении доски (потом его заменяет сохранённый) —
+    // «шифровальный» SecureRandom на 11 тыс. штрихов заметно задерживал открытие. 12 знаков из 32 — 60 бит, повторов нет.
     fun next(n: Int = 12): String {
+        val rnd = java.util.concurrent.ThreadLocalRandom.current()
         val c = CharArray(n)
         for (i in 0 until n) c[i] = ABC[rnd.nextInt(ABC.length)]
         return String(c)

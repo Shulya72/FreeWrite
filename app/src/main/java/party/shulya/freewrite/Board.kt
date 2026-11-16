@@ -861,6 +861,13 @@ class BoardStore(context: Context) {
 
     fun exists(id: String) = File(dir, "$id.json").exists()
 
+    /** Размер файла доски в байтах (0 — нет). Большую доску экран открывает в фоне (0.27.5). */
+    fun fileSize(id: String): Long = File(dir, "$id.json").length()
+
+    /** Название доски из сводки — для экрана «Открываю…», пока доска читается. */
+    fun titleOf(id: String): String =
+        runCatching { BoardMeta.parse(JSONObject(File(dir, "$id.meta").readText())).title }.getOrNull().orEmpty()
+
     /** Список досок для Ежедневника — по сводкам; у старых досок сводка создаётся один раз. */
     fun list(): List<BoardMeta> = dir.listFiles { f -> f.name.endsWith(".json") }
         .orEmpty()
