@@ -97,11 +97,15 @@ class TableDraw {
         const val FOOT_H = 30f
         const val PAD = 9f
         /**
-         * Кнопка отбора «▾» в шапке столбца (0.27.3): размер, когда справа от названия есть место. Ширину столбцов кнопка НЕ
-         * меняет (0.27.4: в 0.27.3 каждый столбец стал шире на 20 — таблицы раздались, листы планов выросли и пометки на них
-         * разошлись с чертежом, приклеенные таблицы и рамки разделов сдвинулись).
+         * Кнопка отбора «▾» в шапке столбца (0.27.3) — у всех столбцов одинаковая. Ширину столбцов она НЕ меняет (0.27.4: в 0.27.3
+         * каждый столбец стал шире на 20 — таблицы раздались, листы планов выросли и пометки на них разошлись с чертежом,
+         * приклеенные таблицы и рамки разделов сдвинулись): место — в поле шапки, длинное название чуть уже (не больше ~5 %).
          */
-        const val FBTN = 15f
+        const val FBTN = 13f
+        /** Поля шапки столбца с кнопкой: слева от названия, между названием и кнопкой, справа от кнопки. */
+        private const val HEAD_LM = 8f
+        private const val HEAD_GAP = 2f
+        private const val HEAD_RM = 1.5f
         const val FONT = 13f
         const val HEAD_FONT = 11f
         const val TITLE_FONT = 19f
@@ -302,17 +306,8 @@ class TableDraw {
             if (vol != null) vparts else emptyList(), volFilter, slots).also { t.lay = it; t.layFrame = frame }
     }
 
-    /** Кнопка отбора «▾» у столбца в шапке (0.27.3, как в Excel): с рамкой (место есть) или только треугольник в правом поле ячейки (название во всю ширину). */
-    private fun drawFilterButton(canvas: Canvas, x1: Float, cy: Float, on: Boolean, k: Float, boxed: Boolean = true) {
-        if (!boxed) {
-            val p = android.graphics.Path()
-            val w = 6f * k; val h = 4f * k
-            val cx = x1 - 3.5f * k
-            p.moveTo(cx - w / 2f, cy - h / 2f); p.lineTo(cx + w / 2f, cy - h / 2f); p.lineTo(cx, cy + h / 2f); p.close()
-            fill.color = if (on) Ui.ACCENT else Color.rgb(120, 132, 152)
-            canvas.drawPath(p, fill)
-            return
-        }
+    /** Кнопка отбора «▾» у столбца в шапке (0.27.3, как в Excel): квадрат с треугольником, у отобранного — залит цветом. */
+    private fun drawFilterButton(canvas: Canvas, x1: Float, cy: Float, on: Boolean, k: Float) {
         val sz = FBTN * k
         rect.set(x1 - sz, cy - sz / 2f, x1, cy + sz / 2f)
         if (on) {
@@ -326,7 +321,7 @@ class TableDraw {
         }
         // Треугольник «▾» (у отобранного — белый).
         val p = android.graphics.Path()
-        val w = 7f * k; val h = 4.5f * k
+        val w = 6.5f * k; val h = 4f * k
         p.moveTo(rect.centerX() - w / 2f, rect.centerY() - h / 2f)
         p.lineTo(rect.centerX() + w / 2f, rect.centerY() - h / 2f)
         p.lineTo(rect.centerX(), rect.centerY() + h / 2f)
@@ -546,28 +541,24 @@ class TableDraw {
         }
         // Кнопка отбора «▾» у каждого столбца (как в Excel); столбец с отбором — название и кнопка цветом.
         val flt = t.filter
-        // Название — как до 0.27.3 (ширина столбца та же); рядом с названием есть место — кнопка с рамкой, нет — треугольник в поле.
+        // У каждого столбца — одинаковая кнопка у правого края; название — в оставшемся месте (ширина столбца та же, что до 0.27.3:
+        // не помещается — набрано чуть уже, не меньше 80 % ширины букв, и только потом «…»).
         for ((ci, c) in l.cols.withIndex()) {
             val cw = (l.colX[ci + 1] - l.colX[ci]) * k
             val on = flt?.on(c.k) == true
             val right = x0 + l.colX[ci + 1] * k
-            val tt = fit(c.title(), cw - 2 * PAD * k)
+            val avail = cw - (HEAD_LM + HEAD_GAP + FBTN + HEAD_RM) * k
+            val full = text.measureText(c.title())
+            if (full > avail && avail > 0f) text.textScaleX = max(0.8f, avail / full)
+            val tt = fit(c.title(), avail)
             val tw0 = text.measureText(tt)
-            val room = cw - 2 * PAD * k - tw0 >= (FBTN + 4f) * k
-            if (c.part != null) {
-                val cy = y0 + (TITLE_H + l.headH * 0.75f) * k
-                text.color = if (on) Ui.ACCENT else GRP_FG
-                val tx = right - PAD * k - tw0 - if (room) (FBTN + 4f) * k else 0f
-                canvas.drawText(tt, tx, cy + text.textSize * 0.36f, text)
-                drawFilterButton(canvas, if (room) right - PAD * k else right, cy, on, k, room)
-                text.color = Ui.INK2
-                continue
-            }
-            val cy = y0 + (TITLE_H + l.headH / 2f) * k
-            if (on) text.color = Ui.ACCENT
-            canvas.drawText(tt, x0 + (l.colX[ci] + PAD) * k, cy + text.textSize * 0.36f, text)
+            val cy = y0 + (TITLE_H + if (c.part != null) l.headH * 0.75f else l.headH / 2f) * k
+            text.color = if (on) Ui.ACCENT else if (c.part != null) GRP_FG else Ui.INK2
+            val tx = if (c.part != null) right - (HEAD_RM + FBTN + HEAD_GAP) * k - tw0 else x0 + (l.colX[ci] + HEAD_LM) * k
+            canvas.drawText(tt, tx, cy + text.textSize * 0.36f, text)
+            text.textScaleX = 1f
             text.color = Ui.INK2
-            drawFilterButton(canvas, if (room) right - PAD * 0.5f * k else right, cy, on, k, room)
+            drawFilterButton(canvas, right - HEAD_RM * k, cy, on, k)
         }
         // Шифр раздела, название таблицы (подраздел) и сводка.
         var tx = x0 + PAD * 1.4f * k
