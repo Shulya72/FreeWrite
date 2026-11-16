@@ -114,6 +114,45 @@ class TableFilterTest {
         assertTrue(l0.volFilter.startsWith("по отбору:"))
     }
 
+    /**
+     * Отбор и кнопки «▾» размеров таблицы не меняют (0.27.4, Владимир после 0.27.3: «открыл доску — все таблицы посъезжали,
+     * наехали на текст»): та же ширина и высота, лист плана на том же месте, столбец по названию — как до кнопок.
+     */
+    @Test
+    fun filterAndButtonsKeepTableSize() {
+        val b = sample()
+        val t = b.tables[0]
+        // Лист плана под таблицей и длинное примечание у строки, которая скроется отбором.
+        val bmp = android.graphics.Bitmap.createBitmap(400, 300, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.WHITE) }
+        val (file, pw, ph) = BoardImages.importBitmap(RuntimeEnvironment.getApplication(), bmp)
+        t.sheets += PlanSheet(file, pw, ph)
+        b.recs.last().note = "Длинное примечание у последней захватки, которое задаёт ширину столбца"
+        val draw = TableDraw()
+        fun size(): FloatArray {
+            val l = draw.layout(b, t)
+            val r = draw.sheetRect(b, t, RectF())!!
+            return floatArrayOf(l.w, l.h, l.volTop, r.left, r.top, r.width(), r.height()) + l.colX
+        }
+        val base = size()
+        for (f in listOf(
+            RowFilter().with(TableCol.ZAH, setOf("1", "2", "3", "4")),
+            RowFilter().with(TableCol.ZAH, setOf("1"))!!.with(TableCol.WORK, setOf("бетон")),
+            RowFilter().with(TableCol.ZAH, setOf("99")), // ничего не подошло
+            RowFilter(text = "бетон 3"),
+        )) {
+            t.filter = f
+            val now = size()
+            for (i in base.indices) assertEquals("отбор не меняет размеров (${i})", base[i], now[i], 0.01f)
+        }
+        // Столбец, ширину которого задаёт название («Отдал заказчику»), — ровно по названию, без места под кнопку.
+        t.filter = null
+        val l = draw.layout(b, t)
+        val ci = l.cols.indexOfFirst { it.k == TableCol.DCUST }
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { textSize = 100f; isFakeBoldText = true }
+        val expected = paint.measureText(l.cols[ci].title()) * TableDraw.HEAD_FONT / 100f * 1.06f + 2f + 2 * TableDraw.PAD
+        assertEquals(expected, l.colX[ci + 1] - l.colX[ci], 0.01f)
+    }
+
     // ------------------------------------------------------------ на экране
 
     private fun event(down: Long, t: Long, action: Int, x: Float, y: Float): MotionEvent {

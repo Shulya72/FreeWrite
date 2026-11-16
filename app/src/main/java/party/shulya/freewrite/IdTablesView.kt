@@ -24,7 +24,12 @@ class TableLayout(val key: Long, val cols: List<TableCol>, val colX: FloatArray,
                   /** Итоги объёмов сеткой: вид работ × часть + «Всего» (0.24). */
                   val volParts: List<TableKinds.Part> = emptyList(),
                   /** Объёмы по отбору (0.27.3): «по отбору: захватки 1, 2, 3, 4 — 12 из 40 схем»; пусто — по всей таблице. */
-                  val volFilter: String = "")
+                  val volFilter: String = "",
+                  /**
+                   * Мест под строки (0.27.4): при отборе — как без него (скрытые строки оставляют пустое место), чтобы таблица и
+                   * лист плана под ней не сдвигались и пометки на плане не расходились с чертежом.
+                   */
+                  val rowSlots: Int = max(1, rows.size))
 
 /**
  * Раскладка плана под таблицей (0.23), в единицах таблицы: шапка с кнопками, вкладки листов, лист, легенда.
@@ -91,8 +96,12 @@ class TableDraw {
         const val ROW_H = 30f
         const val FOOT_H = 30f
         const val PAD = 9f
-        /** Место под кнопку отбора «▾» в шапке столбца (0.27.3). */
-        const val FBTN = 20f
+        /**
+         * Кнопка отбора «▾» в шапке столбца (0.27.3): размер, когда справа от названия есть место. Ширину столбцов кнопка НЕ
+         * меняет (0.27.4: в 0.27.3 каждый столбец стал шире на 20 — таблицы раздались, листы планов выросли и пометки на них
+         * разошлись с чертежом, приклеенные таблицы и рамки разделов сдвинулись).
+         */
+        const val FBTN = 15f
         const val FONT = 13f
         const val HEAD_FONT = 11f
         const val TITLE_FONT = 19f
@@ -163,9 +172,11 @@ class TableDraw {
         val prefix = IdTables.sectionPrefix(b, t)
         val volOn = cols.any { it.isVol }
         // Объёмы — по тем строкам, что видны (0.27.3, Владимир: «выбрать захватки 1, 2, 3, 4 — и объём только по ним»).
+        // Размеры таблицы (ширина столбцов, место под строки и объёмы) — всегда по всем строкам (0.27.4): отбор меняет только
+        // то, что показано, — таблица, лист плана под ней и приклеенные таблицы не сдвигаются.
         val f = t.filter
         val filtered = f != null && !f.isEmpty
-        val all = if (volOn && !filtered) IdTables.allRows(b, t) else rows
+        val allRowsList = if (!filtered) rows else IdTables.allRows(b, t)
         // Значок у номера захватки: цвет заливки на доске или области на плане (0.23, главнее).
         val swatch = TablePlan.zahColorsAll(b, t)
         val hasPlan = t.sheets.isNotEmpty()
@@ -181,13 +192,13 @@ class TableDraw {
         h = 31 * h + t.kind.hashCode()
         for ((zk, c) in swatch) { h = 31 * h + zk.hashCode(); h = 31 * h + c }
         if (volOn) {
-            for (r in all) { h = 31 * h + r.vol.hashCode(); h = 31 * h + r.work.hashCode(); h = 31 * h + r.vp.hashCode() }
+            for (r in allRowsList) { h = 31 * h + r.vol.hashCode(); h = 31 * h + r.work.hashCode(); h = 31 * h + r.vp.hashCode() }
             for (p in t.plan.values) { h = 31 * h + p.work.hashCode(); h = 31 * h + p.value.hashCode(); h = 31 * h + p.unit.hashCode(); h = 31 * h + p.part.hashCode() }
         }
         for (c in cols) { h = 31 * h + c.k.hashCode(); h = 31 * h + c.name.hashCode() }
         for (s in b.statuses) { h = 31 * h + s.id.hashCode(); h = 31 * h + s.name.hashCode(); h = 31 * h + (if (s.done) 1 else 0) }
         h = 31 * h + (f?.hashCode() ?: 0)
-        for (r in rows) {
+        for (r in allRowsList) {
             h = 31 * h + r.id.hashCode()
             for (c in cols) h = 31 * h + r.get(c.k).hashCode()
             h = 31 * h + r.dcust.hashCode() // «На подписи у заказчика от …» (0.25)
@@ -195,21 +206,22 @@ class TableDraw {
         h = 31 * h + b.events.size
         t.lay?.let { if (it.key == h) { t.layFrame = frame; return it } }
 
-        val allN = if (!filtered) rows.size else IdTables.allRows(b, t).size
+        val allN = allRowsList.size
         val done = rows.count { IdTables.status(b, BoardStatus.ID, it.igs).done }
-        var info = "${Ui.plural(rows.size, "схема", "схемы", "схем")} · сдано в ПТО $done"
-        if (filtered) info = "отбор: ${rows.size} из $allN · сдано $done   ✕ снять"
+        // Ширина — по надписи без отбора (0.27.4): отбор размеров таблицы не меняет; при отборе надпись своя, по месту.
+        val doneAll = if (!filtered) done else allRowsList.count { IdTables.status(b, BoardStatus.ID, it.igs).done }
+        var info = "${Ui.plural(allN, "схема", "схемы", "схем")} · сдано в ПТО $doneAll"
         val widths = FloatArray(cols.size)
         for ((ci, c) in cols.withIndex()) {
-            var w = tw(c.title(), HEAD_FONT, true) + 2 * PAD + FBTN
+            var w = tw(c.title(), HEAD_FONT, true) + 2 * PAD
             if (c.isStatus) {
                 val seen = HashSet<String>()
-                for (r in rows) { val n = IdTables.cellText(b, r, c.k); if (seen.add(n)) w = max(w, tw(n, FONT, true) + 22f + 2 * PAD) }
+                for (r in allRowsList) { val n = IdTables.cellText(b, r, c.k); if (seen.add(n)) w = max(w, tw(n, FONT, true) + 22f + 2 * PAD) }
                 w = min(max(w, if (c.k == TableCol.IGS) 120f else 70f), 300f)
             } else {
                 if (c.isDate) w = max(w, tw("00.00.00", FONT, false) + 2 * PAD)
-                else if (c.isVol) for (r in rows) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, false) + 2 * PAD + 4f)
-                else for (r in rows) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, c.k == TableCol.ZAH || c.k == TableCol.UCH) + 2 * PAD +
+                else if (c.isVol) for (r in allRowsList) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, false) + 2 * PAD + 4f)
+                else for (r in allRowsList) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, c.k == TableCol.ZAH || c.k == TableCol.UCH) + 2 * PAD +
                     if (c.k == TableCol.ZAH && (hasPlan || swatch.containsKey(r.zkey()))) SWATCH + 5f else 0f)
                 w = min(max(w, if (c.k == TableCol.ZAH || c.k == TableCol.UCH) 64f else 56f), if (c.k == TableCol.NOTE) 260f else 230f)
             }
@@ -231,8 +243,11 @@ class TableDraw {
         val need = PAD * 2 + titleW + 24f + tw(info, 12f, false) + PAD
         val addW = PAD + tw("+ строка", FONT, true) + PAD * 2
         val need2 = addW + tw("+ следующая захватка", FONT, true) + PAD * 2
-        val vol = if (volOn && (all.isNotEmpty() || filtered)) IdTables.volumes(b, t, all) else null
+        val vol = if (volOn && allRowsList.isNotEmpty()) IdTables.volumes(b, t, rows) else null
+        // Место под объёмы — как без отбора (строки видов работ и примечание о схемах без объёма).
+        val volSize = if (filtered && vol != null) IdTables.volumes(b, t, allRowsList) else vol
         val volFilter = if (vol != null && filtered) "по отбору: ${IdTables.filterText(b, t)} — ${rows.size} из ${Ui.plural(allN, "схемы", "схем", "схем")}" else ""
+        val slots = max(1, allN)
         val planAddW = tw("+ план", FONT, true) + PAD * 2
         val chipText = arrayOf(if (t.zoneColor == TablePlan.OWN) "Цвет: свой ▾" else "Цвет: по ИГС ▾", "+ лист", "Элементы ▾", "Обвести захватку")
         val chipW = chipText.map { tw(it, 13f, true) + 24f }
@@ -240,21 +255,25 @@ class TableDraw {
         val pctText = pct?.let { "выполнено ≈ $it %" } ?: ""
         val planHeadNeed = PAD * 2 + tw(TableHit.PLAN_TITLE, 16f, true) + 30f + chipW.sum() + 8f * chipW.size + (if (pct != null) tw(pctText, 14f, true) + 24f else 0f)
         var needAll = max(max(need, need2 + if (hasPlan) 0f else planAddW + PAD), if (vol != null) VOL_MIN_W else 0f)
-        // Шапка объёмов по отбору: «Объёмы · …» + что отобрано + «+ проект» — в одну строку.
-        if (volFilter.isNotEmpty()) needAll = max(needAll, 28f + tw("Объёмы · ${t.title.ifEmpty { "таблица" }}", 15f, true) + 12f +
-            tw(volFilter, 12.5f, true) + 24f + tw("+ проект", 13.5f, true))
         if (hasPlan) needAll = max(needAll, max(PLAN_MIN_W, planHeadNeed))
         if (cols.isNotEmpty() && needAll > total) { widths[widths.size - 1] += needAll - total; total = needAll }
         if (cols.isEmpty()) total = needAll
         val colX = FloatArray(cols.size + 1)
         for (i in cols.indices) colX[i + 1] = colX[i] + widths[i]
-        val volTop = TITLE_H + headH + max(1, rows.size) * ROW_H
+        val volTop = TITLE_H + headH + slots * ROW_H
+        if (filtered) {
+            // Надпись при отборе — в то же место, что без отбора: длинная не помещается — короче.
+            val room = total - (PAD * 2 + titleW + 24f + PAD)
+            info = listOf("отбор: ${rows.size} из $allN · сдано $done   ✕ снять", "отбор: ${rows.size} из $allN   ✕ снять", "✕ снять отбор")
+                .firstOrNull { tw(it, 12f, false) <= room } ?: "✕ снять отбор"
+        }
         val missing = vol?.flatMap { it.missing } ?: emptyList()
+        val missingSize = volSize?.any { it.missing.isNotEmpty() } == true
         val vparts = t.parts()
         val volH = when {
-            vol == null -> 0f
-            vparts.isNotEmpty() -> VOL_HEAD + VOLP_HEAD + max(1, vol.map { IdTables.norm(it.work) }.distinct().size) * VOLP_ROW + (if (missing.isNotEmpty()) VOL_NOTE else 0f) + VOL_PAD
-            else -> VOL_HEAD + max(1, vol.size) * VOL_ROW + (if (missing.isNotEmpty()) VOL_NOTE else 0f) + VOL_PAD
+            volSize == null -> 0f
+            vparts.isNotEmpty() -> VOL_HEAD + VOLP_HEAD + max(1, volSize.map { IdTables.norm(it.work) }.distinct().size) * VOLP_ROW + (if (missingSize) VOL_NOTE else 0f) + VOL_PAD
+            else -> VOL_HEAD + max(1, volSize.size) * VOL_ROW + (if (missingSize) VOL_NOTE else 0f) + VOL_PAD
         }
         var height = volTop + volH + FOOT_H
         var plan: PlanLayout? = null
@@ -280,12 +299,21 @@ class TableDraw {
         }
         val planSplit = if (hasPlan) Float.MAX_VALUE else total - planAddW
         return TableLayout(h, cols, colX, rows, total, height, info, addW, prefix, vol, volTop, volH, missing, swatch, plan, planSplit, headH,
-            if (vol != null) vparts else emptyList(), volFilter).also { t.lay = it; t.layFrame = frame }
+            if (vol != null) vparts else emptyList(), volFilter, slots).also { t.lay = it; t.layFrame = frame }
     }
 
-    /** Кнопка отбора «▾» у столбца в шапке (0.27.3, как в Excel): квадрат у правого края названия. */
-    private fun drawFilterButton(canvas: Canvas, x1: Float, cy: Float, on: Boolean, k: Float) {
-        val sz = 15f * k
+    /** Кнопка отбора «▾» у столбца в шапке (0.27.3, как в Excel): с рамкой (место есть) или только треугольник в правом поле ячейки (название во всю ширину). */
+    private fun drawFilterButton(canvas: Canvas, x1: Float, cy: Float, on: Boolean, k: Float, boxed: Boolean = true) {
+        if (!boxed) {
+            val p = android.graphics.Path()
+            val w = 6f * k; val h = 4f * k
+            val cx = x1 - 3.5f * k
+            p.moveTo(cx - w / 2f, cy - h / 2f); p.lineTo(cx + w / 2f, cy - h / 2f); p.lineTo(cx, cy + h / 2f); p.close()
+            fill.color = if (on) Ui.ACCENT else Color.rgb(120, 132, 152)
+            canvas.drawPath(p, fill)
+            return
+        }
+        val sz = FBTN * k
         rect.set(x1 - sz, cy - sz / 2f, x1, cy + sz / 2f)
         if (on) {
             fill.color = Ui.ACCENT
@@ -351,7 +379,10 @@ class TableDraw {
         if (v < rowsTop(l)) return TableHit(TableHit.HEAD, null, col)
         val ri = ((v - rowsTop(l)) / ROW_H).toInt()
         if (ri < l.rows.size) return TableHit(TableHit.CELL, l.rows[ri], col).also { if (colI >= 0) it.cx = u - l.colX[colI] }
-        if (v < rowsTop(l) + max(1, l.rows.size) * ROW_H) return TableHit(TableHit.ADD, null, col) // пустая таблица — «+ строка»
+        if (v < rowsTop(l) + l.rowSlots * ROW_H) {
+            // Пустая таблица — «+ строка»; место скрытых отбором строк — как шапка (выделить таблицу).
+            return if (l.rows.isEmpty() && t.filter?.isEmpty != false) TableHit(TableHit.ADD, null, col) else TableHit(TableHit.TITLE, null, null)
+        }
         val vol = l.vol
         if (vol != null && v < l.volTop + l.volH && l.volParts.isNotEmpty()) {
             // Сетка по частям (0.24): ячейка вид работ × часть — проект этой части.
@@ -477,6 +508,18 @@ class TableDraw {
         line.color = Ui.RULE
         line.strokeWidth = 1f * k
         val bottom = top + max(1, l.rows.size) * ROW_H * k
+        val slotsBottom = top + l.rowSlots * ROW_H * k
+        if (slotsBottom > bottom + 0.5f) {
+            // Скрытые отбором строки — пустое место той же высоты (0.27.4): таблица и план под ней не сдвигаются.
+            fill.color = Color.rgb(246, 247, 250)
+            canvas.drawRect(x0, bottom, x0 + w, slotsBottom, fill)
+            val hidden = l.rowSlots - l.rows.size
+            if (hidden > 0 && !far) {
+                text.textSize = FONT * k; text.isFakeBoldText = false; text.color = Ui.MUTED
+                val msg = "Скрыто отбором: ${Ui.plural(hidden, "строка", "строки", "строк")} · «✕ снять» в шапке таблицы"
+                canvas.drawText(fit(msg, w - 2 * PAD * k), x0 + PAD * k, bottom + (if (l.rows.isEmpty()) ROW_H * k else 0f) + ROW_H / 2f * k + text.textSize * 0.36f, text)
+            }
+        }
         for (i in 1 until l.cols.size) canvas.drawLine(x0 + l.colX[i] * k, y0 + TITLE_H * k, x0 + l.colX[i] * k, bottom, line)
         canvas.drawLine(x0, y0 + TITLE_H * k, x0 + w, y0 + TITLE_H * k, line)
         canvas.drawLine(x0, top, x0 + w, top, line)
@@ -503,24 +546,28 @@ class TableDraw {
         }
         // Кнопка отбора «▾» у каждого столбца (как в Excel); столбец с отбором — название и кнопка цветом.
         val flt = t.filter
+        // Название — как до 0.27.3 (ширина столбца та же); рядом с названием есть место — кнопка с рамкой, нет — треугольник в поле.
         for ((ci, c) in l.cols.withIndex()) {
             val cw = (l.colX[ci + 1] - l.colX[ci]) * k
             val on = flt?.on(c.k) == true
-            val bx = x0 + l.colX[ci + 1] * k - PAD * 0.6f * k
+            val right = x0 + l.colX[ci + 1] * k
+            val tt = fit(c.title(), cw - 2 * PAD * k)
+            val tw0 = text.measureText(tt)
+            val room = cw - 2 * PAD * k - tw0 >= (FBTN + 4f) * k
             if (c.part != null) {
                 val cy = y0 + (TITLE_H + l.headH * 0.75f) * k
                 text.color = if (on) Ui.ACCENT else GRP_FG
-                val tt = fit(c.title(), cw - 2 * PAD * k - FBTN * k)
-                canvas.drawText(tt, bx - FBTN * k - text.measureText(tt), cy + text.textSize * 0.36f, text)
-                drawFilterButton(canvas, bx, cy, on, k)
+                val tx = right - PAD * k - tw0 - if (room) (FBTN + 4f) * k else 0f
+                canvas.drawText(tt, tx, cy + text.textSize * 0.36f, text)
+                drawFilterButton(canvas, if (room) right - PAD * k else right, cy, on, k, room)
                 text.color = Ui.INK2
                 continue
             }
             val cy = y0 + (TITLE_H + l.headH / 2f) * k
             if (on) text.color = Ui.ACCENT
-            canvas.drawText(fit(c.title(), cw - 2 * PAD * k - FBTN * k), x0 + (l.colX[ci] + PAD) * k, cy + text.textSize * 0.36f, text)
+            canvas.drawText(tt, x0 + (l.colX[ci] + PAD) * k, cy + text.textSize * 0.36f, text)
             text.color = Ui.INK2
-            drawFilterButton(canvas, bx, cy, on, k)
+            drawFilterButton(canvas, if (room) right - PAD * 0.5f * k else right, cy, on, k, room)
         }
         // Шифр раздела, название таблицы (подраздел) и сводка.
         var tx = x0 + PAD * 1.4f * k
@@ -769,7 +816,14 @@ class TableDraw {
         val L = x0 + 14f * k
         val hy = top + (VOL_HEAD / 2f + 3f) * k + 5f * k
         val hw = txt("Объёмы · ${t.title.ifEmpty { "таблица" }}", L, hy, 15f, Ui.INK, bold = true)
-        if (l.volFilter.isNotEmpty()) txt(l.volFilter, L + hw + 12f * k, hy, 12.5f, Ui.ACCENT, bold = true)
+        if (l.volFilter.isNotEmpty()) {
+            // Что отобрано — в место между заголовком и «+ проект» (ширину таблицы отбор не меняет).
+            text.textSize = 12.5f * k; text.isFakeBoldText = true
+            val avail = x0 + w - 14f * k - text.measureText("+ проект") * 1.1f - 20f * k - (L + hw + 12f * k)
+            val f = fit(l.volFilter, avail)
+            text.isFakeBoldText = false
+            txt(f, L + hw + 12f * k, hy, 12.5f, Ui.ACCENT, bold = true)
+        }
         else txt("факт — сумма по схемам; проект — для каждой части (рамка ✎)", L + hw + 12f * k, hy, 12.5f, Ui.MUTED)
         val plus = "+ проект"
         text.textSize = 13.5f * k; text.isFakeBoldText = true
@@ -874,7 +928,14 @@ class TableDraw {
         val L = x0 + 14f * k
         val hy = top + (VOL_HEAD / 2f + 3f) * k + 5f * k
         val hw = txt("Объёмы · ${t.title.ifEmpty { "таблица" }}", L, hy, 15f, Ui.INK, bold = true)
-        if (l.volFilter.isNotEmpty()) txt(l.volFilter, L + hw + 12f * k, hy, 12.5f, Ui.ACCENT, bold = true)
+        if (l.volFilter.isNotEmpty()) {
+            // Что отобрано — в место между заголовком и «+ проект» (ширину таблицы отбор не меняет).
+            text.textSize = 12.5f * k; text.isFakeBoldText = true
+            val avail = x0 + w - 14f * k - text.measureText("+ проект") * 1.1f - 20f * k - (L + hw + 12f * k)
+            val f = fit(l.volFilter, avail)
+            text.isFakeBoldText = false
+            txt(f, L + hw + 12f * k, hy, 12.5f, Ui.ACCENT, bold = true)
+        }
         else txt("факт — сумма столбца «${t.colName(TableCol.VOL)}», проект — вписываете", L + hw + 12f * k, hy, 12.5f, Ui.MUTED)
         val plus = "+ проект"
         text.textSize = 13.5f * k; text.isFakeBoldText = true
