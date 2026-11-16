@@ -275,11 +275,14 @@ object Vedoms {
     }
 
     /**
-     * Ведомость сегодняшней сборки (0.25, Владимир): заведена сегодня, ещё на столе (не передана), не список. Новые
-     * «Сборки» дня ложатся в неё сами.
+     * Ведомость сборки (0.25; с 0.27.1 — не только сегодняшняя, Владимир: «если таблица сборки создана и висит не закрытой, то всё,
+     * что я добавляю в любой день, должно попадать туда»): ещё на столе (не передана, состояние «Сборка»), не список. Новые
+     * «Сборки» ложатся в неё сами, в какой бы день её ни завели. Таких несколько — сегодняшняя, иначе самая свежая.
      */
-    fun assemblyOf(b: Board, day: String): BoardVedom? =
-        b.vedoms.lastOrNull { it.isDraft && it.kind != LIST && it.made == day }
+    fun assemblyOf(b: Board, day: String): BoardVedom? {
+        val open = b.vedoms.filter { it.isDraft && it.kind != LIST }
+        return open.lastOrNull { it.made == day } ?: open.maxWithOrNull(compareBy { it.made })
+    }
 
     /** Схемы в «Сборке», которых нет ни в одной ведомости на столе или в ожидании ответа. */
     fun looseAssembly(b: Board): List<BoardRec> =

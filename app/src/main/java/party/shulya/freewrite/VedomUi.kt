@@ -190,8 +190,8 @@ class VedomUi(private val a: BoardActivity) {
     private fun declinedToday(day: String) = a.getSharedPreferences("igs", Context.MODE_PRIVATE).getString(declinedKey(), "") == day
 
     /**
-     * В таблице поставили «Сборку» (Владимир, 13.11.2026): есть ведомость сегодняшней сборки — схемы ложатся в неё сами;
-     * нет — первая «Сборка» дня: предложить завести ведомость от сегодня и положить в неё все схемы в «Сборке», которых нет
+     * В таблице поставили «Сборку» (Владимир, 13.11.2026): есть ведомость в сборке (не унесли — в любой день, 0.27.1) — схемы
+     * ложатся в неё сами; нет — предложить завести ведомость от сегодня и положить в неё все схемы в «Сборке», которых нет
      * в ведомостях.
      */
     fun onAssembly(recs: List<BoardRec>) {
@@ -211,9 +211,9 @@ class VedomUi(private val a: BoardActivity) {
         val anName = IdTables.status(b, BoardStatus.ID, IdTables.IGS_AN).name
         val d = AlertDialog.Builder(a)
             .setTitle("Сборка — ведомость от ${IdTables.dateLong(today)}?")
-            .setMessage("Первая «Сборка» сегодня. Завести ведомость сборки от сегодняшнего дня и положить в неё " +
+            .setMessage("Ведомости в сборке сейчас нет. Завести ведомость сборки от сегодняшнего дня и положить в неё " +
                 (if (more > 0) "все схемы в «Сборке» без ведомости — ${loose.size}" else Ui.plural(loose.size, "схему", "схемы", "схем")) +
-                "? Дальше сегодня «Сборка» в таблице — схема сама ляжет в эту ведомость. Какие идут на АН — в ведомости коснитесь " +
+                "? Дальше «Сборка» в таблице (в любой день, пока ведомость не унесли) — схема сама ляжет в неё. Какие идут на АН — в ведомости коснитесь " +
                 "«ИГС сейчас» → «$anName». Унесли — смените состояние ведомости на «На подписи у заказчика».")
             .setPositiveButton("Создать") { _, _ -> placeAssembly(Vedoms.CUST, today) }
             .setNegativeButton("Не сегодня") { _, _ ->
@@ -257,7 +257,7 @@ class VedomUi(private val a: BoardActivity) {
         b.vedoms += nv
         val n = Vedoms.add(b, nv, loose, who())
         a.changed()
-        a.hint("Ведомость ${nv.num} от ${IdTables.dateShort(today)}: ${Ui.plural(n, "схема", "схемы", "схем")}. Сегодняшние «Сборки» лягут в неё сами; " +
+        a.hint("Ведомость ${nv.num} от ${IdTables.dateShort(today)}: ${Ui.plural(n, "схема", "схемы", "схем")}. Следующие «Сборки» лягут в неё сами, пока её не унесли; " +
             "унесли — нажмите «Сборка от …» в шапке ведомости → «${Vedoms.giveLabel(kind)}»", 5000)
     }
 

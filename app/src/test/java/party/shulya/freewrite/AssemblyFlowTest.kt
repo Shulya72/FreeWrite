@@ -74,7 +74,13 @@ class AssemblyFlowTest {
         assertFalse(Vedoms.vedomJson(BoardVedom(0f, 0f, 1f, Vedoms.CUST, "З-2")).contains("made"))
         assertEquals("Сборка от 13.11.26 ▾", Vedoms.stateChip(b, v))
         assertEquals(v, Vedoms.assemblyOf(b, "2026-11-13"))
-        assertEquals(null, Vedoms.assemblyOf(b, "2026-11-14"))
+        // Не унесли — и на следующий день «Сборки» идут в неё (0.27.1); есть сегодняшняя — в сегодняшнюю.
+        assertEquals(v, Vedoms.assemblyOf(b, "2026-11-16"))
+        val older = BoardVedom(2000f, 900f, 1.5f, Vedoms.CUST, "З-0").apply { made = "2026-11-10" }
+        b.vedoms.add(0, older)
+        assertEquals("самая свежая", v, Vedoms.assemblyOf(b, "2026-11-16"))
+        assertEquals(older, Vedoms.assemblyOf(b, "2026-11-10"))
+        b.vedoms.remove(older)
         // Схемы в «Сборке» без ведомости; вывели из «Сборки» — уходит из ведомости на столе.
         val rows = IdTables.allRows(b, t)
         for (r in rows.take(3)) r.igs = IdTables.IGS_ASSEMBLY
@@ -331,6 +337,27 @@ class AssemblyFlowTest {
         assertFalse(ask2.isShowing)
         assertEquals(1, s.b.vedoms.size)
         assertNotNull(s.view)
+        s.a.finish()
+    }
+
+    /** Ведомость сборки заведена вчера и не унесена — сегодняшняя «Сборка» без вопросов ложится в неё (0.27.1). */
+    @Test
+    fun openAssemblyFromYesterdayCollectsToday() {
+        val b0 = sample()
+        val yesterday = java.time.LocalDate.parse(IdTables.today()).minusDays(1).toString()
+        val old = BoardVedom(2600f, 100f, 1.2f, Vedoms.CUST, "З-7").apply { made = yesterday }
+        b0.vedoms += old
+        val s = open(b0)
+        val tb = s.view.tableDraw.bounds(s.b, s.b.tables[0], RectF())
+        s.view.fitRect(tb.left - 40f, tb.top - 40f, tb.right + 1400f, tb.bottom + 300f); idle()
+        pause(1000)
+        setIgs(s, 0, IdTables.IGS_ASSEMBLY)
+        assertEquals("окна «завести ведомость?» нет", null, s.a.vedomUi.asmAsk)
+        val v = s.b.vedoms.single()
+        assertEquals("З-7", v.num); assertEquals(yesterday, v.made)
+        assertEquals(listOf(s.rec(0).id), Vedoms.items(s.b, v).map { it.r })
+        setIgs(s, 1, IdTables.IGS_ASSEMBLY)
+        assertEquals(2, Vedoms.items(s.b, v).size)
         s.a.finish()
     }
 }
