@@ -467,7 +467,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private var mode = Mode.NONE
 
     /** Никакого жеста сейчас нет — доску можно менять извне (правки коллег с сервера). */
-    val isIdle: Boolean get() = mode == Mode.NONE
+    val isIdle: Boolean get() = mode == Mode.NONE && !holding()
     private var activePointer = MotionEvent.INVALID_POINTER_ID
     private var activeIsPen = false
     private var downX = 0f
@@ -491,6 +491,92 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     private var plain = false
 
     private val painter = InkPainter()
+
+    // ---------------------------------------------------------------- письмо без рывков (0.27.4)
+    //
+    // Владимир (16.11): «начинаю писать на доске — жёстко фризит; в начале было классно». Раньше в начале каждого штриха
+    // вся доска (таблицы, листы планов, области захваток) перерисовывалась в картинку без видеокарты, а после штриха —
+    // заново целиком. Теперь живая линия и свежие штрихи рисуются в отдельном прозрачном слое поверх доски ([inkLayer]),
+    // а сама доска, пока пишут, не перерисовывается: один раз — когда перо замерло на [HOLD_MS].
+
+    /** Слой поверх доски: живая линия и свежие штрихи ручкой, ещё не нарисованные доской. Ставится над доской в окне. */
+    val inkLayer: View = object : View(context) {
+        override fun onDraw(canvas: Canvas) = drawInk(canvas)
+    }
+
+    /** Есть ли поля (Kotlin: в конструкторе View их ещё нет, а invalidate() уже зовут). */
+    private val holdReady = true
+    /** Свежие штрихи ручкой: уже в доске, но доска их ещё не нарисовала — их рисует [inkLayer]. */
+    private val dry = ArrayList<Drawing>()
+    /** Где в доске последний из [dry] (дописали ещё штрихи — он на месте; «Отменить» — нет). */
+    private var dryLast = -1
+    /** До какого времени доска не перерисовывается (пишут); 0 — не держим. */
+    private var holdUntil = 0L
+    private var holdBoard: Board? = null
+    private val holdCam = FloatArray(3)
+    private val flushHold = Runnable { flushHoldNow(false) }
+
+    /** Пишут ручкой (штрих идёт или перо замерло меньше [HOLD_MS] назад) — доску не перерисовываем. */
+    private fun holding(): Boolean = holdReady && (mode == Mode.INK || SystemClock.uptimeMillis() < holdUntil)
+
+    private fun startHold() {
+        // Новая серия штрихов (или доску заменили) — запомнить, какую доску и камеру держим.
+        if (!holding() || holdBoard !== b) {
+            holdBoard = b; holdCam[0] = b.camX; holdCam[1] = b.camY; holdCam[2] = b.camZ
+        }
+    }
+
+    /** Перерисовать доску сейчас (и слой — он сбросит свежие штрихи, когда доска их нарисует). */
+    fun releaseHold() {
+        if (!holdReady) return
+        removeCallbacks(flushHold)
+        val was = holdUntil != 0L || dry.isNotEmpty()
+        holdUntil = 0L
+        if (was) super.invalidate()
+        inkLayer.invalidate()
+    }
+
+    private fun flushHoldNow(force: Boolean) {
+        if (!force) {
+            if (mode == Mode.INK) { postDelayed(flushHold, 120); return }
+            val left = holdUntil - SystemClock.uptimeMillis()
+            if (left > 0) { postDelayed(flushHold, left); return }
+        }
+        releaseHold()
+    }
+
+    override fun invalidate() {
+        if (!holding()) { super.invalidate(); return }
+        // Пока пишут: доска ждёт; но если сдвинули камеру, заменили доску («Отменить», правки коллег) или свежего штриха
+        // в доске уже нет — рисуем сразу, иначе слой показал бы не то.
+        val bb = b
+        if (holdBoard !== bb || bb.camX != holdCam[0] || bb.camY != holdCam[1] || bb.camZ != holdCam[2] ||
+            (dry.isNotEmpty() && bb.strokes.getOrNull(dryLast) !== dry[dry.size - 1])) {
+            dry.clear()
+            if (mode != Mode.INK) holdUntil = 0L
+            holdBoard = bb; holdCam[0] = bb.camX; holdCam[1] = bb.camY; holdCam[2] = bb.camZ
+            super.invalidate()
+            inkLayer.invalidate()
+            return
+        }
+        removeCallbacks(flushHold)
+        postDelayed(flushHold, max(16L, holdUntil - SystemClock.uptimeMillis()))
+        inkLayer.invalidate()
+    }
+
+    /** Рисунок слоя: свежие штрихи и живая линия — в тех же координатах доски. */
+    private fun drawInk(canvas: Canvas) {
+        if (!holdReady) return
+        val s = live
+        if (s == null && dry.isEmpty()) return
+        val z = b.camZ
+        canvas.save()
+        canvas.scale(z, z)
+        canvas.translate(-b.camX, -b.camY)
+        for (d in dry) painter.drawing(canvas, d, 255, false, BoardTiles.MIN_PX / z)
+        s?.let { painter.stroke(canvas, it, liveStyle ?: NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z), 255) }
+        canvas.restore()
+    }
     private val gridPaint = Paint().apply { color = Ui.LINE; strokeWidth = 0f; style = Paint.Style.STROKE }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     /** Надпись «…загружается» на месте картинки, которой ещё нет (скачивается с сервера или читается с диска). */
@@ -599,6 +685,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
          * Издалека штрихи — готовыми плитками ([BoardTiles]), так что это не тормозит.
          */
         const val MIN_ZOOM = 0.01f
+        /** Сколько перо должно замереть, чтобы доска перерисовалась со свежими штрихами (0.27.4). */
+        const val HOLD_MS = 400L
         const val MAX_ZOOM = 5f
 
         /** Строка ИД: шрифт и галочка при размере 1 (высота строки — 40). */
@@ -1128,7 +1216,10 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     override fun onTouchEvent(ev: MotionEvent): Boolean {
         for (i in 0 until ev.pointerCount) if (isPen(ev.getToolType(i))) { notePen(); break }
         when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> begin(ev, 0)
+            MotionEvent.ACTION_DOWN -> {
+                begin(ev, 0)
+                if (mode != Mode.INK) releaseHold() // палец двигает доску, выделяют, стирают — доска рисуется как обычно
+            }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 val idx = ev.actionIndex
                 val tool = ev.getToolType(idx)
@@ -1194,6 +1285,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 lasso.clear()
                 mode = Mode.NONE
                 removeCallbacks(longPress)
+                releaseHold()
                 invalidate()
             }
         }
@@ -1211,6 +1303,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         lasso.clear()
         mode = Mode.NONE
         sceneValid = false
+        releaseHold()
         invalidate()
     }
 
@@ -1387,8 +1480,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             mode = Mode.STATUS // касание: метка, строка ИД или надпись
             return
         }
+        startHold() // доска не перерисовывается, пока пишут: линия — в слое поверх (0.27.4)
         mode = Mode.INK
-        sceneValid = false // картинка доски снимется заново в первом кадре штриха
         host.onStrokeStart(x, y)
         clockOffset = System.currentTimeMillis() - SystemClock.uptimeMillis()
         val st = host.strokeStyle()
@@ -1561,8 +1654,27 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 val s = live
                 if (s != null) {
                     add(s, wx(sxp), wy(syp), ev.eventTime, pressure(ev, idx, -1))
+                    val st = liveStyle ?: host.strokeStyle()
+                    val before = b.strokes.size
+                    val last = b.strokes.lastOrNull()
                     live = null
-                    host.onStrokeEnd(s, liveStyle ?: host.strokeStyle(), quick)
+                    host.onStrokeEnd(s, st, quick)
+                    // Ручка: штрих лёг в конец доски — пока его рисует слой, доска перерисуется в паузе (0.27.4).
+                    val bb = b
+                    val appended = st.kind == "pen" && holdBoard === bb && bb.strokes.size > before &&
+                        (before == 0 || bb.strokes[before - 1] === last)
+                    if (appended) {
+                        for (i in before until bb.strokes.size) dry += bb.strokes[i]
+                        dryLast = bb.strokes.size - 1
+                        mode = Mode.NONE
+                        holdUntil = SystemClock.uptimeMillis() + HOLD_MS
+                        removeCallbacks(flushHold)
+                        postDelayed(flushHold, HOLD_MS)
+                        inkLayer.invalidate()
+                    } else {
+                        mode = Mode.NONE
+                        releaseHold()
+                    }
                 }
             }
             Mode.STATUS -> if (quick) {
@@ -1908,6 +2020,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         tableDraw.frame = ++frameNo
         val t0 = System.nanoTime()
         try { drawFrame(canvas) } finally { tableDraw.frame = outer }
+        // Доска нарисовала и свежие штрихи — слою их больше рисовать не надо.
+        if (!capturing && !plain && dry.isNotEmpty() && !holding()) { dry.clear(); inkLayer.invalidate() }
         // Долгий кадр — в журнал для отчёта (0.26.2), не чаще раза в 3 с.
         val ms = (System.nanoTime() - t0) / 1_000_000
         if (ms >= 250 && !capturing && !plain) {
@@ -1945,20 +2059,6 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             drawAim(canvas, z)
             canvas.restore()
             drawLoupe(canvas)
-            return
-        }
-        if (mode == Mode.INK && !plain && !capturing && fading.isEmpty() && (sceneValid || renderScene())) {
-            canvas.drawBitmap(scene!!, 0f, 0f, null)
-            canvas.save()
-            canvas.scale(z, z)
-            canvas.translate(-b.camX, -b.camY)
-            val pendingStyle = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z)
-            live?.let { painter.stroke(canvas, it, liveStyle ?: pendingStyle, 255) }
-            drawInterim(canvas, z)
-            drawFillDraft(canvas, z)
-            canvas.restore()
-            val ms = (System.nanoTime() - t0) / 1e6f
-            frameMs = if (frameMs == 0f) ms else frameMs * 0.8f + ms * 0.2f
             return
         }
         canvas.drawColor(Ui.PAPER)
@@ -2077,7 +2177,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         if (!plain && !capturing) drawFillDraft(canvas, z)
         val pendingStyle = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z)
         for (s in host.pendingStrokes()) painter.stroke(canvas, s, pendingStyle, 255)
-        if (!capturing) live?.let { painter.stroke(canvas, it, liveStyle ?: pendingStyle, 255) }
+        // Живая линия — в слое поверх доски ([inkLayer], 0.27.4).
         val now = SystemClock.uptimeMillis()
         fading.removeAll { now - it.second > NoteInkView.FADE_MS }
         for ((strokes, t0) in fading) {

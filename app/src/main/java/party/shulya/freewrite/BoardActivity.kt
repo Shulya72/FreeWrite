@@ -473,6 +473,8 @@ class BoardActivity : Activity(), BoardView.Host {
         images = BoardImages(this) { view.invalidate() }
         view.images = images
         area.addView(view, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
+        // Слой живой линии поверх доски (0.27.4): пока пишут, перерисовывается только он.
+        area.addView(view.inkLayer, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
         zoomLabel = Ui.mono(this, "100%", 12f, Ui.INK2).apply {
             background = Ui.rounded(this@BoardActivity, Ui.PAPER, Ui.RULE, 8f)
             setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
@@ -572,6 +574,7 @@ class BoardActivity : Activity(), BoardView.Host {
         if (!quiet && view.placing != null) { val c = placeCancel; endPlacing(); c?.invoke() } // выбрали инструмент — место не ищем
         if (t != Tool.WRITE) current?.let { commit(it) }
         if (t != Tool.WRITE) tableUi.deactivate()
+        view.releaseHold() // свежие штрихи — сразу в доску (0.27.4)
         tool = t
         if (t != Tool.FILL && t != Tool.PIPETTE && fillPts.isNotEmpty()) cancelFillDraft()
         if (view.cropping != null) endCrop()
