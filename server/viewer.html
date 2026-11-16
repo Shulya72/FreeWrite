@@ -835,7 +835,52 @@ const VKIND = { an: ["На согласование АН", "А", 0xff7b3fc4 | 0]
 const VCOL = { n: "№", cipher: "Шифр", uch: "Участок", zah: "Захватка", con: "Тип конструкции", work: "Вид работ", nsch: "№ схемы", aosr: "№ АОСР", igs: "ИГС сейчас", res: "Ответ", rd: "Дата ответа" };
 function vKind(v) { return VKIND[v.kind] || VKIND.list; }
 function vAnswers(v) { return (v.kind === "an" || v.kind === "cust") && !!v.given; }
-function vItems(v) { return B.vitems.filter((i) => i.v === v.id).sort((a, b) => ((a.o || 0) - (b.o || 0)) || (a.id < b.id ? -1 : 1)); }
+// Сравнение «по-человечески», как IdTables.naturalCompare в приложении: КЖ 6.1.2 раньше КЖ 6.1.10.
+function natCmp(a, b) {
+  a = String(a || ""); b = String(b || "");
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    const ca = a[i], cb = b[j];
+    if (ca >= "0" && ca <= "9" && cb >= "0" && cb <= "9") {
+      let ie = i; while (ie < a.length && a[ie] >= "0" && a[ie] <= "9") ie++;
+      let je = j; while (je < b.length && b[je] >= "0" && b[je] <= "9") je++;
+      const na = a.substring(i, ie).replace(/^0+/, ""), nb = b.substring(j, je).replace(/^0+/, "");
+      if (na.length !== nb.length) return na.length - nb.length;
+      if (na !== nb) return na < nb ? -1 : 1;
+      i = ie; j = je;
+    } else {
+      const la = ca.toLowerCase(), lb = cb.toLowerCase();
+      if (la !== lb) return la < lb ? -1 : 1;
+      i++; j++;
+    }
+  }
+  return (a.length - i) - (b.length - j);
+}
+// Позиции ведомости (0.27.2, как Vedoms.items): по шифру, внутри — как строки в таблице; удалённые строки — после живых
+// того же шифра, по участку и захватке; без шифра — в конце.
+function vItems(v) {
+  const list = B.vitems.filter((i) => i.v === v.id);
+  if (list.length < 2) return list;
+  const tabs = new Map(); for (const t of B.tables) if (!tabs.has(t.id)) tabs.set(t.id, t);
+  const want = new Set(list.map((i) => i.r));
+  const recs = new Map(); for (const r of B.recs) if (want.has(r.id) && !recs.has(r.id)) recs.set(r.id, r);
+  const titles = new Map();
+  const keys = list.map((i) => {
+    const r = recs.get(i.r), t = r && tabs.get(r.t);
+    if (r && t) {
+      if (!titles.has(t.id)) titles.set(t.id, fullTitle(t).trim());
+      return { i, title: titles.get(t.id), live: 1, t: t.id, ro: r.o || 0, uch: r.u || "", zah: r.z || "" };
+    }
+    return { i, title: String(i.lt || "").trim(), live: 0, t: "", ro: 0, uch: i.lu || "", zah: i.lz || "" };
+  });
+  const cmpS = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+  keys.sort((p, q) => {
+    if (!p.title !== !q.title) return p.title ? -1 : 1;
+    return natCmp(p.title, q.title) || (q.live - p.live) || cmpS(p.t, q.t) || (p.ro - q.ro) || natCmp(p.uch, q.uch) ||
+      natCmp(p.zah, q.zah) || ((p.i.o || 0) - (q.i.o || 0)) || cmpS(p.i.id, q.i.id);
+  });
+  return keys.map((k) => k.i);
+}
 // Схема «через АН» в ведомости заказчику (0.25, i.via === "an") — ответ как у АН.
 function resName(v, res, i) { const an = v.kind === "an" || (i && i.via === "an" && v.kind === "cust");
   return res === "ok" ? (an ? "Согласовано" : "Подписано") : res === "no" ? "Не согласовано" : res === "fix" ? "Замечания" : "Ждём"; }

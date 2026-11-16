@@ -253,8 +253,9 @@ class VedomTest {
         // Строку удалили — в ведомости остаётся подпись (шифр, захватка, вид работ).
         val gone = b.recs[4]
         b.recs.remove(gone)
-        val it0 = Vedoms.items(b, l)[0]
+        val it0 = Vedoms.items(b, l).first { it.r == gone.id }
         assertEquals(null, Vedoms.rec(b, it0))
+        assertEquals("удалённая — после живых того же шифра (0.27.2)", it0, Vedoms.items(b, l).last())
         assertEquals("КЖ 6.1.1 · захв. 3 · Стены · Опалубка", Vedoms.labelText(b, it0))
         // Опись в Excel — правильный XML, шапка, строки, фильтр со строки заголовка.
         val v = BoardVedom(0f, 0f, 1f, Vedoms.CUST, "З-7").also { it.to = "Технадзор"; b.vedoms += it }
