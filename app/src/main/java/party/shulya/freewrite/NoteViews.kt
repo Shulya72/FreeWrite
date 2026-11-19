@@ -12,6 +12,7 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import kotlin.math.hypot
@@ -93,6 +94,16 @@ class RuledSheet(context: Context) : LinearLayout(context) {
  * Координаты штрихов — в системе листа (контента), чтобы рисунок двигался вместе с текстом.
  */
 @SuppressLint("ViewConstructor")
+/** Строка ввода «Клавиатура» в «Записи» (0.27.6): сообщает, куда поставили курсор, — курсор на листе идёт следом. */
+class KeysEdit(context: Context) : EditText(context) {
+    var onSelection: ((Int, Int) -> Unit)? = null
+
+    override fun onSelectionChanged(selStart: Int, selEnd: Int) {
+        super.onSelectionChanged(selStart, selEnd)
+        onSelection?.invoke(selStart, selEnd)
+    }
+}
+
 class NoteInkView(context: Context, private val host: Host) : View(context) {
 
     interface Host {
