@@ -1199,13 +1199,18 @@ class BoardActivity : Activity(), BoardView.Host {
         // Штрихи под ластиком (0.27.6, «как в рисовалке»): стирается только участок под ластиком, куски по краям остаются
         // (`InkEraser`). Сначала рамка штриха (готовая), точки — только у тех, что рядом; новый список — только если что-то
         // стёрто (0.26.2).
-        val keep = InkEraser.eraseIn(board.strokes, x, y, r)
+        val widest = FloatArray(1)
+        val keep = InkEraser.eraseIn(board.strokes, x, y, r, widest)
         val h = view.hitAt(x, y)
         val fi = view.fillBorderAt(x, y, r)
         if (keep != null || fi >= 0 ||
             (h != null && h.kind != BoardView.Kind.IMAGE && h.kind != BoardView.Kind.TABLE && h.kind != BoardView.Kind.VEDOM)) {
             if (!eraseUndoPushed) { pushUndo(); eraseUndoPushed = true }
-            if (keep != null) { board.strokes.clear(); board.strokes.addAll(keep); view.eraseHole(x, y, r); changedAny = true }
+            if (keep != null) {
+                board.strokes.clear(); board.strokes.addAll(keep)
+                view.eraseHole(x, y, r + widest[0] + 1f) // стёртое у толстой линии шире круга ластика
+                changedAny = true
+            }
             when (h?.kind) {
                 BoardView.Kind.TEXT -> { board.texts.removeAt(h.index); changedAny = true }
                 BoardView.Kind.STICKER -> { board.stickers.removeAt(h.index); changedAny = true }

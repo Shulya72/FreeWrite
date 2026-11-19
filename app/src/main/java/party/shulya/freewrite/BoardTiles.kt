@@ -118,10 +118,18 @@ class BoardTiles(private val onReady: () -> Unit) {
      * перерисовываются, когда его отпустят.
      */
     var erasing = false
-    private val clear = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR) }
 
-    /** Ластик вырезал круг ([cx], [cy], [r]) — в координатах доски: вырезать его во всех готовых плитках, где он есть. */
-    fun hole(cx: Float, cy: Float, r: Float) {
+    private val holePainter = InkPainter()
+    private val holePath = android.graphics.Path()
+
+    /**
+     * Ластик стёр всё в круге ([cx], [cy], [r]) — в координатах доски; [r] — с толщиной стёртой линии (0.27.8, Владимир:
+     * «маркер вожу ластиком — не стирается, исчезает, только когда убираю стилус»: вырез был размером с ластик, а у толстой
+     * линии стёртое шире). Во всех готовых плитках, где есть круг: очистить его и нарисовать в нём заново штрихи, что там
+     * остались ([strokes], кроме выделенных — их в плитках нет). Так вырез точный при любой толщине.
+     */
+    fun hole(cx: Float, cy: Float, r: Float, strokes: List<Drawing>, selected: Set<Drawing>) {
+        var near: ArrayList<Drawing>? = null
         for (t in tiles.values) {
             val sc = scale(t.k)
             val s = SIZE / sc
@@ -131,7 +139,24 @@ class BoardTiles(private val onReady: () -> Unit) {
             if (t.inFlight) t.gen++
             val b = t.bmp ?: continue
             if (!b.isMutable) { stale(t); t.holey = false; continue }
-            Canvas(b).drawCircle((cx - x0) * sc, (cy - y0) * sc, r * sc, clear)
+            if (near == null) {
+                near = ArrayList()
+                for (d in strokes) {
+                    if (selected.isNotEmpty() && d in selected) continue
+                    val bb = d.bounds()
+                    if (bb.right >= cx - r && bb.left <= cx + r && bb.bottom >= cy - r && bb.top <= cy + r) near += d
+                }
+            }
+            val c = Canvas(b)
+            c.scale(sc, sc)
+            c.translate(-x0, -y0)
+            holePath.reset()
+            holePath.addCircle(cx, cy, r, android.graphics.Path.Direction.CW)
+            c.clipPath(holePath)
+            c.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+            val minW = MIN_PX / (sc * 0.85f)
+            val fast = sc < 0.6f
+            for (d in near) holePainter.drawRaw(c, d.kind, d.color, d.width, d.pts, d.uniform, fast, minW)
         }
     }
     private val rect = RectF()

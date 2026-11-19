@@ -92,13 +92,16 @@ object InkEraser {
 
     /**
      * Ластик в ([cx], [cy]) по списку штрихов: новый список (стёртое вырезано, куски на месте исходного штриха — порядок
-     * рисования тот же) или null — ничего не задели.
+     * рисования тот же) или null — ничего не задели. [widest] — сюда толщина самой толстой задетой линии (0.27.8: вырез на
+     * экране должен накрыть стёртое целиком, а у маркера оно шире круга ластика).
      */
-    fun eraseIn(strokes: List<Drawing>, cx: Float, cy: Float, r: Float): ArrayList<Drawing>? {
+    fun eraseIn(strokes: List<Drawing>, cx: Float, cy: Float, r: Float, widest: FloatArray? = null): ArrayList<Drawing>? {
         var out: ArrayList<Drawing>? = null
+        if (widest != null) widest[0] = 0f
         for ((i, d) in strokes.withIndex()) {
             val res = cut(d, cx, cy, r)
             if (res == null) { out?.add(d); continue }
+            if (widest != null && d.width > widest[0]) widest[0] = d.width
             if (out == null) { out = ArrayList(strokes.size + 4); for (k in 0 until i) out.add(strokes[k]) }
             out.addAll(res)
         }

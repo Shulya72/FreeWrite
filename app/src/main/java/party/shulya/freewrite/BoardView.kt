@@ -1301,8 +1301,12 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         invalidate()
     }
 
-    /** Ластик вырезал круг — плитки покажут вырез, не перерисовываясь (0.27.7). */
-    fun eraseHole(x: Float, y: Float, r: Float) = tiles.hole(x, y, r)
+    /** Ластик стёр всё в круге (радиус — с толщиной стёртой линии): плитки покажут вырез, не перерисовываясь (0.27.7). */
+    fun eraseHole(x: Float, y: Float, r: Float) {
+        selDrawings.clear()
+        for (o in selection) if (o is Drawing) selDrawings += o
+        tiles.hole(x, y, r, b.strokes, selDrawings)
+    }
 
     /** Отменить начатое пальцем (штрих, выноску, касание метки) — пришёл второй палец. */
     private fun cancelTouchAction() {

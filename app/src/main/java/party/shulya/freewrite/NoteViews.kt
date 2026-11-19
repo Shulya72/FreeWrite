@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PointF
+import android.graphics.RectF
 import android.os.Build
 import android.os.SystemClock
 import android.view.MotionEvent
@@ -147,7 +148,6 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
     private var snapY = 0f
     private var eraseLastX = 0f
     private var eraseLastY = 0f
-    private val clearPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR) }
 
     private fun startEraseSnap() {
         val v = layer ?: return
@@ -170,10 +170,25 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         layer?.invalidate()
     }
 
-    /** Ластик вырезал круг ([x], [y] — координаты листа, радиус [r]): вырезать его и в снимке. */
+    private val holePath = Path()
+
+    /**
+     * Ластик стёр всё в круге ([x], [y] — координаты листа; радиус [r] — с толщиной стёртой линии, 0.27.8): в снимке очистить
+     * круг и нарисовать в нём заново рисунки, что там остались. Так вырез точный и у толстого маркера.
+     */
     fun eraseHole(x: Float, y: Float, r: Float) {
         val snap = eraseSnap ?: return
-        Canvas(snap).drawCircle(x + snapX, y + snapY, r, clearPaint)
+        val c = Canvas(snap)
+        c.translate(snapX, snapY)
+        holePath.reset()
+        holePath.addCircle(x, y, r, Path.Direction.CW)
+        c.clipPath(holePath)
+        c.drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+        for (d in host.drawings()) {
+            val bb = d.bounds()
+            if (bb.right < x - r || bb.left > x + r || bb.bottom < y - r || bb.top > y + r) continue
+            drawDrawing(c, d)
+        }
     }
 
     /** Перерисовать всё: и слой готовых рисунков (так зовут снаружи — рисунки поменялись, лист прокрутили). */
@@ -275,6 +290,47 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
     private var hover: PointF? = null
     private val fading = ArrayList<Pair<List<InkStroke>, Long>>()
     private var fadingStyle = StrokeStyle("pen", Ui.INK, Ui.dpf(context, 2.6f))
+
+    /**
+     * «Улетающие буквы» (0.27.8, Владимир: «эффект как на Samsung — написал слово, и буквы улетели в строчку; лишь бы
+     * приложение не тупило»). Распознанное слово за [FLY_MS] уменьшается и летит на своё место в строке (серое слово у
+     * курсора), по пути гаснет. Рисуется только в этом виде (несколько штрихов поверх, сдвиг и масштаб холста — без
+     * пересчёта точек); лист и слой рисунков не перерисовываются.
+     */
+    private class Fly(val strokes: List<InkStroke>, val style: StrokeStyle, val src: RectF, val dst: RectF, val t0: Long)
+    private val flying = ArrayList<Fly>()
+
+    /** Улететь в строку [target] (координаты листа); null — просто погаснуть на месте. */
+    fun fly(strokes: List<InkStroke>, style: StrokeStyle, target: RectF?) {
+        if (target == null || strokes.isEmpty()) { fade(strokes, style); return }
+        val b = bounds(strokes)
+        if (b[2] - b[0] < 1f && b[3] - b[1] < 1f) { fade(strokes, style); return }
+        flying += Fly(strokes, style, RectF(b[0], b[1], b[2], b[3]), RectF(target), SystemClock.uptimeMillis())
+        layer?.invalidate() // штрихи ушли из «ещё не распознанных»
+        postOnAnimation { invalidateSelf() }
+    }
+
+    /** Буквы ещё летят (для проверок). */
+    val flyingCount: Int get() = flying.size
+
+    private fun drawFlying(canvas: Canvas, now: Long) {
+        flying.removeAll { now - it.t0 > FLY_MS }
+        for (f in flying) {
+            val t = ((now - f.t0).toFloat() / FLY_MS).coerceIn(0f, 1f)
+            val e = t * t * (3f - 2f * t) // плавно: разгон и торможение
+            // Масштаб — к высоте строки (буквы не сплющиваются), центр — к центру места в строке.
+            val k = 1f + (f.dst.height() / max(1f, f.src.height()) - 1f) * e
+            val cx = f.src.centerX() + (f.dst.centerX() - f.src.centerX()) * e
+            val cy = f.src.centerY() + (f.dst.centerY() - f.src.centerY()) * e
+            val a = (255 * (1f - e * e)).toInt().coerceIn(0, 255)
+            canvas.save()
+            canvas.translate(cx, cy)
+            canvas.scale(k, k)
+            canvas.translate(-f.src.centerX(), -f.src.centerY())
+            for (s in f.strokes) drawStroke(canvas, s, f.style, a)
+            canvas.restore()
+        }
+    }
 
     // Перо над экраном: маленькая точка цвета чернил (как у пера Samsung),
     // у ластика — тонкий серый круг размером со стирающую область.
@@ -535,6 +591,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
             val a = (255 * (1f - (now - t0).toFloat() / FADE_MS)).toInt().coerceIn(0, 255)
             for (s in strokes) drawStroke(canvas, s, fadingStyle, a)
         }
+        drawFlying(canvas, now)
         canvas.restore()
         hover?.let {
             if (host.pipetteMode() || mode == Mode.PIPETTE) {
@@ -547,7 +604,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
                 canvas.drawCircle(it.x, it.y, Ui.dpf(context, 2.5f), hoverDot)
             }
         }
-        if (fading.isNotEmpty()) postOnAnimation { invalidateSelf() }
+        if (fading.isNotEmpty() || flying.isNotEmpty()) postOnAnimation { invalidateSelf() }
     }
 
     private val painter = InkPainter()
@@ -560,6 +617,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
 
     companion object {
         const val FADE_MS = 260L
+        const val FLY_MS = 340L
 
         fun toDrawing(s: InkStroke, style: StrokeStyle): Drawing {
             val arr = FloatArray(s.points.size * 3)

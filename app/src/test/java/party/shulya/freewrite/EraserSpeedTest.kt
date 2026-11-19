@@ -207,6 +207,8 @@ class EraserSpeedTest {
     fun erasedTilesLookLikeFreshDrawing() {
         val b0 = Board.create("Вырезы")
         for (k in 0 until 30) b0.strokes += line(100f, 1300f, 200f + k * 22f)
+        // Толстые линии (как маркер, 0.27.8): стёртое у них шире круга ластика.
+        for (k in 0 until 5) b0.strokes += line(100f, 1300f, 230f + k * 130f).let { Drawing("marker", Color.rgb(250, 200, 40), 34f, it.pts) }
         BoardStore(ctx).save(b0)
         val a = Robolectric.buildActivity(BoardActivity::class.java, Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b0.id)).setup().get()
         idle()
@@ -242,5 +244,45 @@ class EraserSpeedTest {
         assertTrue("вырезы как честная прорисовка: $diff из $ink", diff < ink / 50)
         view.dispatchTouchEvent(ev(d, d + 800, MotionEvent.ACTION_UP, sx(920f), sy(880f)))
         idle()
+    }
+
+    @Test
+    fun noteMarkerErasedWhileMoving() {
+        // Владимир, 0.27.7: «маркер вожу ластиком — не всегда стирается, исчезает, только когда убираю стилус».
+        val n = Note.create("Маркер")
+        for (k in 0 until 4) {
+            val p = FloatArray(300 * 3) { i -> when (i % 3) { 0 -> 80f + (i / 3) * 3f; 1 -> 500f + k * 90f; else -> 0.5f } }
+            n.drawings += Drawing("marker", Color.rgb(250, 200, 40), 32f, p)
+        }
+        for (k in 0 until 6) {
+            val p = FloatArray(300 * 3) { i -> when (i % 3) { 0 -> 80f + (i / 3) * 3f; 1 -> 520f + k * 55f + 6f * sin((i / 3) * 0.3f); else -> 0.5f } }
+            n.drawings += Drawing("pen", Color.rgb(20, 40, 90), 5f, p)
+        }
+        NoteStore(ctx).save(n)
+        val a = Robolectric.buildActivity(NoteActivity::class.java, Intent(ctx, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, n.id)).setup().get()
+        idle()
+        val ink = NoteActivity::class.java.getDeclaredField("ink").apply { isAccessible = true }.get(a) as NoteInkView
+        val layer = ink.layer!!
+        a.window.decorView.findViewWithTag<android.view.View>("tool_eraser").performClick()
+        val o = a.contentOffset()
+        val d = android.os.SystemClock.uptimeMillis()
+        // Ластик наискось через маркер и ручку.
+        ink.dispatchTouchEvent(ev(d, d, MotionEvent.ACTION_DOWN, 300f + o.x, 460f + o.y))
+        for (m in 1..60) ink.dispatchTouchEvent(ev(d, d + m * 8L, MotionEvent.ACTION_MOVE, 300f + m * 5f + o.x, 460f + m * 6.5f + o.y))
+        val bmpA = Bitmap.createBitmap(layer.width, layer.height, Bitmap.Config.ARGB_8888)
+        layer.draw(Canvas(bmpA)) // ластик ещё на экране — снимок с вырезами
+        ink.dispatchTouchEvent(ev(d, d + 600, MotionEvent.ACTION_UP, 600f + o.x, 850f + o.y))
+        idle()
+        val bmpB = Bitmap.createBitmap(layer.width, layer.height, Bitmap.Config.ARGB_8888)
+        layer.draw(Canvas(bmpB)) // отпустили — честная прорисовка
+        var diff = 0; var ink2 = 0
+        for (y in 0 until bmpA.height step 2) for (x in 0 until bmpA.width step 2) {
+            val p = bmpA.getPixel(x, y); val q = bmpB.getPixel(x, y)
+            if (Color.alpha(q) > 40) ink2++
+            if (Math.abs(Color.alpha(p) - Color.alpha(q)) > 60) diff++
+        }
+        println("BENCH erase-note-marker diff=$diff ink=$ink2")
+        assertTrue("стёрто", a.drawings().size > 10)
+        assertTrue("маркер стирается сразу, а не после отрыва пера: $diff из $ink2", diff < ink2 / 100 + 20)
     }
 }
