@@ -536,6 +536,77 @@ object Vedoms {
         return out
     }
 
+    // ---------------------------------------------------------------- вернуть по истории (0.27.6)
+
+    /**
+     * Схемы, которые по истории были в этой ведомости, а сейчас их в ней нет (0.27.6, Владимир: «ведомость стала пустая, а в
+     * таблицах у схем — «На подписи у заказчика от …»»). Действия ведомости пишутся в историю схемы с её номером: передача
+     * («унесли заказчику», даты), ответы, «на согласование АН», у ведомости на столе — «в сборке» (и схема всё ещё в сборке).
+     * События раньше дня, когда ведомость завели, не считаются; схема, которую «убрали из сборки», — тоже. Только живые строки.
+     */
+    fun lostFromHistory(b: Board, v: BoardVedom): List<BoardRec> {
+        if (v.kind == LIST || v.num.isEmpty()) return emptyList()
+        val inside = b.vitems.filter { it.v == v.id }.mapTo(HashSet()) { it.r }
+        val give = giveVerb(v.kind).lowercase()
+        val last = HashMap<String, BoardEvent>()
+        val proof = HashSet<String>()
+        for (e in b.events) {
+            if (e.vn != v.num || e.r in inside) continue
+            if (v.made.isNotEmpty() && IdTables.isoOf(e.at) < v.made) continue
+            val p = last[e.r]
+            if (p == null || e.at > p.at) last[e.r] = e
+            val passed = e.note == give || e.note.startsWith("ответ:") || e.note == "на согласование АН" ||
+                (e.k == TableCol.DCUST || e.k == TableCol.DPTO) && e.note.isEmpty()
+            if (passed || (v.isDraft && e.note == "в сборке")) proof += e.r
+        }
+        val recs = HashMap<String, BoardRec>()
+        for (r in b.recs) recs.putIfAbsent(r.id, r)
+        val out = ArrayList<BoardRec>()
+        for ((rid, e) in last) {
+            if (rid !in proof || e.note == "убрана из сборки") continue
+            val r = recs[rid] ?: continue
+            if (IdTables.tableOf(b, r) == null) continue
+            if (v.isDraft && r.igs != IdTables.IGS_ASSEMBLY && r.igs != IdTables.IGS_AN) continue
+            out += r
+        }
+        val titles = HashMap<String, String>()
+        return out.sortedWith(Comparator { p, q ->
+            val tp = titles.getOrPut(p.t) { IdTables.tableOf(b, p)?.let { IdTables.fullTitle(b, it) }.orEmpty() }
+            val tq = titles.getOrPut(q.t) { IdTables.tableOf(b, q)?.let { IdTables.fullTitle(b, it) }.orEmpty() }
+            var c = IdTables.naturalCompare(tp, tq)
+            if (c == 0) c = p.o.compareTo(q.o)
+            c
+        })
+    }
+
+    /**
+     * Вернуть схемы в ведомость по истории: статусы и даты схем не меняются (они и так верные). Ответ — по нынешнему статусу,
+     * если в истории есть ответ по этой ведомости. Возвращает, сколько вернули.
+     */
+    fun restoreFromHistory(b: Board, v: BoardVedom, recs: List<BoardRec>): Int {
+        var o = endOrder(b, v)
+        var n = 0
+        val have = b.vitems.filter { it.v == v.id }.mapTo(HashSet()) { it.r }
+        for (r in recs) {
+            if (!have.add(r.id)) continue
+            val i = BoardVItem(v.id, r.id, o)
+            remember(b, i)
+            val evs = b.events.filter { it.r == r.id && it.vn == v.num }
+            if (evs.any { it.note == "на согласование АН" || it.note.endsWith("(АН)") } && v.kind == CUST && r.igs == IdTables.IGS_AN) i.via = AN
+            if (!v.isDraft && evs.any { it.note.startsWith("ответ:") }) {
+                when (kindOf(v, i)) {
+                    CUST -> when (r.igs) { IdTables.IGS_PTO -> { i.res = OK; i.rd = r.dpto }; IdTables.IGS_BACK -> { i.res = FIX; i.rd = "" } }
+                    AN -> when (r.igs) { IdTables.IGS_AN_NO -> i.res = NO; IdTables.IGS_BACK -> i.res = FIX }
+                }
+            }
+            if (v.kind == PTO && !v.isDraft) { i.res = OK; i.rd = r.dpto.ifEmpty { v.given } }
+            b.vitems += i
+            o += 1.0
+            n++
+        }
+        return n
+    }
+
     /** Убрать ведомость вместе с позициями (история схем остаётся). */
     fun remove(b: Board, v: BoardVedom) {
         b.vedoms.removeAll { it === v }

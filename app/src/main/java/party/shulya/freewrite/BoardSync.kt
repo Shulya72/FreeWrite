@@ -8,12 +8,33 @@ import java.util.Locale
 object Ids {
     private const val ABC = "abcdefghijkmnpqrstuvwxyz23456789"
 
-    // Быстрый генератор (0.27.5): номер нужен каждому предмету и при чтении доски (потом его заменяет сохранённый) —
-    // «шифровальный» SecureRandom на 11 тыс. штрихов заметно задерживал открытие. 12 знаков из 32 — 60 бит, повторов нет.
+    /**
+     * Номера предметов (0.27.6). В 0.27.5 номера брались из ThreadLocalRandom ради скорости — а на Android он заготавливается
+     * один раз при включении планшета (в «зиготе», общей заготовке всех приложений), и каждый запуск FreeWrite выдавал ту же
+     * череду номеров заново. Новые предметы получали номера прежних: ведомость теряла свои схемы, удаление одного предмета
+     * удаляло и «тёзку» на общей доске. Теперь основа — 64 случайных бита из SecureRandom, один раз на запуск, дальше —
+     * счётчик, перемешанный SplitMix64: так же быстро, номера разные в каждом запуске и на каждом планшете.
+     */
+    private val state = java.util.concurrent.atomic.AtomicLong(java.security.SecureRandom().nextLong())
+
+    private fun mix(): Long {
+        var z = state.addAndGet(0x9E3779B97F4A7C15uL.toLong())
+        z = (z xor (z ushr 30)) * 0xBF58476D1CE4E5B9uL.toLong()
+        z = (z xor (z ushr 27)) * 0x94D049BB133111EBuL.toLong()
+        return z xor (z ushr 31)
+    }
+
+    /** 12 знаков из 32 — 60 случайных бит. */
     fun next(n: Int = 12): String {
-        val rnd = java.util.concurrent.ThreadLocalRandom.current()
         val c = CharArray(n)
-        for (i in 0 until n) c[i] = ABC[rnd.nextInt(ABC.length)]
+        var bits = 0L
+        var left = 0
+        for (i in 0 until n) {
+            if (left < 5) { bits = mix(); left = 60 }
+            c[i] = ABC[(bits and 31L).toInt()]
+            bits = bits ushr 5
+            left -= 5
+        }
         return String(c)
     }
 }

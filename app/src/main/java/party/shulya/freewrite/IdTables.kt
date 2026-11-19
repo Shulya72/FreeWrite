@@ -661,8 +661,12 @@ object IdTables {
     fun iso(y: Int, m: Int, d: Int): String =
         if (m in 1..12 && d in 1..31 && y in 1900..2200) String.format(Locale.US, "%04d-%02d-%02d", y, m, d) else ""
 
-    fun today(): String {
+    fun today(): String = isoOf(System.currentTimeMillis())
+
+    /** День «2026-11-19» по времени (по календарю этого планшета). */
+    fun isoOf(at: Long): String {
         val c = java.util.Calendar.getInstance()
+        c.timeInMillis = at
         return iso(c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH) + 1, c.get(java.util.Calendar.DAY_OF_MONTH))
     }
 

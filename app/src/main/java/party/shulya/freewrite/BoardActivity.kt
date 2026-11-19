@@ -1196,21 +1196,10 @@ class BoardActivity : Activity(), BoardView.Host {
         if (first) eraseUndoPushed = false
         val r = Ui.dpf(this, 14f) / board.camZ
         var changedAny = false
-        // Штрихи под ластиком (0.26.2): сначала рамка штриха (готовая), точки — только у тех, что рядом; новый список —
-        // только если что-то стёрто. Раньше на каждой точке движения перебирались все точки всех штрихов доски.
-        var hitIdx: ArrayList<Int>? = null
-        for ((si, d) in board.strokes.withIndex()) {
-            val rr = r + d.width / 2
-            val bb = d.bounds()
-            if (x < bb.left - rr || x > bb.right + rr || y < bb.top - rr || y > bb.bottom + rr) continue
-            var i = 0
-            while (i + 1 < d.pts.size) {
-                val dx = d.pts[i] - x; val dy = d.pts[i + 1] - y
-                if (dx * dx + dy * dy < rr * rr) { (hitIdx ?: ArrayList<Int>().also { hitIdx = it }).add(si); break }
-                i += 3
-            }
-        }
-        val keep = hitIdx?.let { idx -> val set = idx.toHashSet(); board.strokes.filterIndexed { i, _ -> i !in set } }
+        // Штрихи под ластиком (0.27.6, «как в рисовалке»): стирается только участок под ластиком, куски по краям остаются
+        // (`InkEraser`). Сначала рамка штриха (готовая), точки — только у тех, что рядом; новый список — только если что-то
+        // стёрто (0.26.2).
+        val keep = InkEraser.eraseIn(board.strokes, x, y, r)
         val h = view.hitAt(x, y)
         val fi = view.fillBorderAt(x, y, r)
         if (keep != null || fi >= 0 ||

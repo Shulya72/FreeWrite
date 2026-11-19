@@ -1026,6 +1026,8 @@ class VedomUi(private val a: BoardActivity) {
                 if (wait.isNotEmpty()) resultPopup(x, wait)
             }
             if (x.kind == Vedoms.AN && Vedoms.approvedForCustomer(b, x).isNotEmpty()) out += pill("Согласованные → заказчику", "sel_tocust") { toCustomer(x) }
+            val lost = Vedoms.lostFromHistory(b, x)
+            if (lost.isNotEmpty()) out += Ui.pill(a, "Вернуть схемы (${lost.size})", Color.WHITE, Ui.ACCENT).apply { tag = "sel_vrestore"; setOnClickListener { restoreDialog(x) } }
             out += pill("Изменить", "sel_vedit") { editDialog(x) }
             out += pill("В Excel", "sel_vexcel") { exportVedom(x) }
             out += pill("Все ведомости", "sel_vlist") { listDialog() }
@@ -1039,6 +1041,39 @@ class VedomUi(private val a: BoardActivity) {
         if (sel.isNotEmpty() && sel.all { it is BoardRec }) out += pill("В ведомость", "sel_tovedom") { toVedom(sel.map { it as BoardRec }) }
         return out
     }
+
+    /**
+     * «Вернуть схемы» (0.27.6): схемы, что по истории были в этой ведомости, а сейчас их в ней нет (пропали из-за повтора номеров
+     * в 0.27.5). Список с галочками; статусы и даты не меняются; «Отменить» вернёт как было.
+     */
+    fun restoreDialog(x: BoardVedom) {
+        val lost = Vedoms.lostFromHistory(b, x)
+        if (lost.isEmpty()) { a.hint("Все схемы из истории уже в ведомости", 1800); return }
+        val labels = lost.map { r ->
+            val t = IdTables.tableOf(b, r)?.let { IdTables.fullTitle(b, it) }.orEmpty()
+            listOf(t, r.uch, r.zah.takeIf { it.isNotEmpty() }?.let { "захв. $it" }.orEmpty(), r.work,
+                b.statuses(BoardStatus.ID).firstOrNull { it.id == r.igs }?.name.orEmpty()).filter { it.isNotBlank() }.joinToString(" · ")
+        }.toTypedArray()
+        val on = BooleanArray(lost.size) { true }
+        val d = AlertDialog.Builder(a)
+            .setTitle("Вернуть в ${Vedoms.title(x)}: ${Ui.plural(lost.size, "схема", "схемы", "схем")} по истории")
+            .setMultiChoiceItems(labels, on) { _, k, c -> on[k] = c }
+            .setPositiveButton("Вернуть") { _, _ ->
+                val pick = lost.filterIndexed { k, _ -> on[k] }
+                if (pick.isEmpty()) return@setPositiveButton
+                a.pushUndo()
+                val n = Vedoms.restoreFromHistory(b, x, pick)
+                a.changed()
+                a.hint("Вернули в ведомость: $n. Статусы и даты не менялись", 2200)
+            }
+            .setNegativeButton("Отмена", null)
+            .create()
+        restoreDlg = d
+        d.show()
+    }
+
+    /** Окно «Вернуть схемы» (для проверок). */
+    internal var restoreDlg: AlertDialog? = null
 
     /** «В ведомость» для строк таблицы: в черновик или список (выбрать) или новую. */
     fun toVedom(recs: List<BoardRec>) {
