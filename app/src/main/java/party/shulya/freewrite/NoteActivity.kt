@@ -1602,11 +1602,12 @@ class NoteActivity : Activity(), NoteInkView.Host {
         if (first) eraseUndoPushed = false
         val r = Ui.dpf(this, 14f)
         // Как в рисовалке (0.27.6): стирается только участок под ластиком, куски по краям остаются.
-        val keep = InkEraser.eraseIn(note.drawings, x, y, r) ?: return
+        val widest = FloatArray(1)
+        val keep = InkEraser.eraseIn(note.drawings, x, y, r, widest) ?: return
         if (!eraseUndoPushed) { pushUndo(); eraseUndoPushed = true } // одно движение ластиком — один шаг «Отменить»
         note.drawings.clear()
         note.drawings.addAll(keep)
-        ink.eraseHole(x, y, r)
+        ink.eraseHole(x, y, r + widest[0] + 1f) // стёртое у маркера шире круга ластика
         changed(render = false)
         ink.invalidate()
     }
@@ -1685,6 +1686,16 @@ class NoteActivity : Activity(), NoteInkView.Host {
         val ru = engine.language("ru")
         val n = g.strokes.size
         if (n == 0) return
+        testRecognizer?.let { h ->
+            // Проверки: распознавание без ML Kit (в Robolectric его нет).
+            val text = h(ArrayList(g.strokes))?.trim()?.takeIf { it.isNotEmpty() }
+            g.candidates = if (text != null) listOf(Candidate(text, null)) else emptyList()
+            g.error = null
+            g.resultFor = n
+            if (g === current) { interim = text.orEmpty(); refreshCaretText() }
+            if (g.committing) flush()
+            return
+        }
         if (ru.state != HandwritingEngine.State.READY) {
             updateBanner()
             if (g.committing) {
@@ -1758,8 +1769,34 @@ class NoteActivity : Activity(), NoteInkView.Host {
         val bb = NoteInkView.bounds(g.strokes)
         wordHeights += bb[3] - bb[1]
         while (wordHeights.size > 15) wordHeights.removeAt(0)
-        ink.fade(g.strokes, style)
+        ink.fly(g.strokes, style, flyTarget(best))
         insertAtCaret(best)
+    }
+
+    /**
+     * Куда улетают буквы (0.27.8): место слова в строке с курсором — серое слово (оно и есть распознанное) или, если его нет,
+     * сразу за курсором; координаты листа. null — строки с курсором нет на экране.
+     */
+    private fun flyTarget(word: String): android.graphics.RectF? {
+        val tv = caretTextView ?: return null
+        val layout = tv.layout ?: return null
+        val len = tv.text.length
+        val start = shownInsertAt.coerceIn(0, len)
+        val end = (shownInsertAt + shownInsertLen - 1).coerceIn(start, len) // без знака курсора
+        val line = layout.getLineForOffset(start)
+        val x0 = layout.getPrimaryHorizontal(start)
+        var x1 = if (end > start && layout.getLineForOffset(end) == line) layout.getPrimaryHorizontal(end) else 0f
+        if (x1 <= x0) x1 = x0 + tv.paint.measureText(" $word")
+        val base = layout.getLineBaseline(line).toFloat()
+        val fm = tv.paint.fontMetrics
+        var ox = tv.paddingLeft.toFloat()
+        var oy = tv.paddingTop.toFloat()
+        var v: View = tv
+        while (v !== sheet) {
+            ox += v.left; oy += v.top
+            v = v.parent as? View ?: return null
+        }
+        return android.graphics.RectF(ox + x0, oy + base + fm.ascent * 0.8f, ox + x1, oy + base + fm.descent * 0.6f)
     }
 
     /** Выполнить действие после того, как недописанные слова станут текстом (чтобы не сбить порядок). */
