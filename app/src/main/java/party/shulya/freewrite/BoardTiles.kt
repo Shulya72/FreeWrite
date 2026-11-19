@@ -90,6 +90,11 @@ class BoardTiles(private val onReady: () -> Unit) {
         var used = 0L
         /** Сколько раз подряд не удалось нарисовать (ошибка) — после двух рисуем напрямую, не мучаем фон. */
         var failures = 0
+        /**
+         * Устарела только из-за ластика (0.27.7): старая картинка с вырезанными кружками ([hole]) показывает ровно то, что
+         * осталось, — рисовать заново не нужно, пока идёт ластик (перерисуется в фоне, когда его отпустят).
+         */
+        var holey = false
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -104,6 +109,31 @@ class BoardTiles(private val onReady: () -> Unit) {
     private var inFlight = 0
     private val want = ArrayList<Tile>()
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+
+    /**
+     * Ластик (0.27.7, Владимир: «стирает как нужно, но подтормаживает — тык-тык-тык»). С 0.27.6 ластик режет линию почти на
+     * каждом движении: плитки устаревали, и все их штрихи рисовались заново напрямую — на каждом движении (35 мс на кадр).
+     * Теперь круг ластика вырезается прямо в картинках плиток ([hole]) — под ластиком стираются все штрихи (`InkEraser`),
+     * так что вырез и есть то, что осталось. Пока ластик идёт ([erasing]), такие плитки показываются как есть; в фоне
+     * перерисовываются, когда его отпустят.
+     */
+    var erasing = false
+    private val clear = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR) }
+
+    /** Ластик вырезал круг ([cx], [cy], [r]) — в координатах доски: вырезать его во всех готовых плитках, где он есть. */
+    fun hole(cx: Float, cy: Float, r: Float) {
+        for (t in tiles.values) {
+            val sc = scale(t.k)
+            val s = SIZE / sc
+            val x0 = t.ix * s; val y0 = t.iy * s
+            if (cx + r < x0 || cx - r > x0 + s || cy + r < y0 || cy - r > y0 + s) continue
+            // Плитка рисуется в фоне по старым штрихам — её результат уже неверен.
+            if (t.inFlight) t.gen++
+            val b = t.bmp ?: continue
+            if (!b.isMutable) { stale(t); t.holey = false; continue }
+            Canvas(b).drawCircle((cx - x0) * sc, (cy - y0) * sc, r * sc, clear)
+        }
+    }
     private val rect = RectF()
 
     /** Сколько плиток с картинками сейчас в памяти (для проверок и замеров). */
@@ -170,7 +200,7 @@ class BoardTiles(private val onReady: () -> Unit) {
             for (t in tiles.values) stale(t)
         } else if (dirty.isNotEmpty()) {
             for (t in tiles.values) {
-                if (!t.valid && !t.inFlight) continue
+                if (!t.valid && !t.inFlight && !t.holey) continue
                 val s = SIZE / scale(t.k)
                 val x0 = t.ix * s; val y0 = t.iy * s
                 for (r in dirty) if (r.right >= x0 && r.left <= x0 + s && r.bottom >= y0 && r.top <= y0 + s) { stale(t); break }
@@ -179,6 +209,8 @@ class BoardTiles(private val onReady: () -> Unit) {
     }
 
     private fun stale(t: Tile) {
+        // Пока идёт ластик — старая картинка с вырезами верна; любая другая правка — рисуем как раньше.
+        t.holey = erasing && t.bmp != null && (t.valid || t.holey)
         t.valid = false
         t.gen++
         t.failures = 0
@@ -212,6 +244,12 @@ class BoardTiles(private val onReady: () -> Unit) {
             rect.set(ix * s, iy * s, (ix + 1) * s, (iy + 1) * s)
             if (t.valid) {
                 t.bmp?.let { canvas.drawBitmap(it, null, rect, bitmapPaint) }
+                continue
+            }
+            val hb = t.bmp
+            if (t.holey && hb != null && !complete) {
+                canvas.drawBitmap(hb, null, rect, bitmapPaint) // с вырезами ластика — верна
+                if (!erasing && !t.inFlight && t.failures < 2) want += t // ластик отпустили — перерисовать в фоне
                 continue
             }
             if (!t.inFlight && t.failures < 2) want += t
@@ -306,6 +344,7 @@ class BoardTiles(private val onReady: () -> Unit) {
             t.bmp = result as Bitmap?
             t.valid = true
             t.rendered = true
+            t.holey = false
         }
         onReady()
     }
@@ -350,6 +389,7 @@ class BoardTiles(private val onReady: () -> Unit) {
             t.bmp = null
             t.valid = false
             t.rendered = false
+            t.holey = false
         }
     }
 

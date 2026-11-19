@@ -1271,6 +1271,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             }
             MotionEvent.ACTION_UP -> {
                 if (ev.getPointerId(ev.actionIndex) == activePointer) finish(ev, ev.actionIndex)
+                endErase()
                 mode = Mode.NONE
                 removeCallbacks(longPress)
                 removeCallbacks(placeLong)
@@ -1283,6 +1284,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
                 editStarted = false
                 live = null
                 lasso.clear()
+                endErase()
                 mode = Mode.NONE
                 removeCallbacks(longPress)
                 releaseHold()
@@ -1292,9 +1294,20 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         return true
     }
 
+    /** Ластик отпустили: плитки с вырезами перерисуются в фоне (0.27.7). */
+    private fun endErase() {
+        if (!tiles.erasing) return
+        tiles.erasing = false
+        invalidate()
+    }
+
+    /** Ластик вырезал круг — плитки покажут вырез, не перерисовываясь (0.27.7). */
+    fun eraseHole(x: Float, y: Float, r: Float) = tiles.hole(x, y, r)
+
     /** Отменить начатое пальцем (штрих, выноску, касание метки) — пришёл второй палец. */
     private fun cancelTouchAction() {
         removeCallbacks(longPress)
+        endErase()
         if (mode == Mode.INK && live != null) {
             live = null
             host.onStrokeCancel()
@@ -1472,6 +1485,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         }
         if (tool == MotionEvent.TOOL_TYPE_ERASER || t == BoardActivity.Tool.ERASER) {
             mode = Mode.ERASE
+            tiles.erasing = true
             eraseX = x; eraseY = y
             host.onErase(x, y, true)
             return

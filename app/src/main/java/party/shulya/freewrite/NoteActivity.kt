@@ -50,7 +50,7 @@ import kotlin.math.min
  */
 class NoteActivity : Activity(), NoteInkView.Host {
 
-    enum class Tool { WRITE, KEYS, PEN, MARKER, SHAPE, ERASER, HAND, PIPETTE }
+    enum class Tool { WRITE, KEYS, PEN, MARKER, SHAPE, ERASER, HAND, SELECT, PIPETTE }
 
     private lateinit var store: NoteStore
     private lateinit var note: Note
@@ -226,6 +226,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         addTool(row, Tool.SHAPE, R.drawable.ic_shapes, "Фигуры")
         addTool(row, Tool.ERASER, R.drawable.ic_eraser, "Ластик")
         addTool(row, Tool.HAND, R.drawable.ic_hand, "Указка")
+        addTool(row, Tool.SELECT, R.drawable.ic_lasso, "Выделить")
         // Три последних цвета и «Цвет» — палитра из 24 цветов и пипетка.
         for (i in 0 until 3) {
             val v = View(this).apply {
@@ -338,6 +339,29 @@ class NoteActivity : Activity(), NoteInkView.Host {
             visibility = View.GONE
         }
         area.addView(imageBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+            gravity = Gravity.TOP or Gravity.END
+            setMargins(0, dp(10f), dp(14f), 0)
+        })
+        // Панель выделенного рукописного (0.27.7): «В текст», «Удалить», «Готово».
+        selLabel = Ui.text(this, "", 13f, Ui.INK2).apply { setPadding(0, 0, dp(10f), 0) }
+        selBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ui.rounded(this@NoteActivity, Ui.PAPER, Ui.RULE, 14f)
+            elevation = dp(6f).toFloat()
+            setPadding(dp(14f), dp(6f), dp(6f), dp(6f))
+            tag = "sel_bar"
+            visibility = View.GONE
+            addView(selLabel)
+            fun pill(text: String, tag: String, fg: Int, bg: Int, f: () -> Unit) = addView(Ui.pill(this@NoteActivity, text, fg, bg).apply {
+                this.tag = tag
+                setOnClickListener { f() }
+            }, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { marginStart = dp(6f) })
+            pill("В текст", "sel_totext", Color.WHITE, Ui.ACCENT) { convertSelection() }
+            pill("Удалить", "sel_delete", Ui.BAD, Ui.BAD_SOFT) { deleteSelection() }
+            pill("Готово", "sel_done", Ui.INK, Ui.DESK) { clearSelection() }
+        }
+        area.addView(selBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.TOP or Gravity.END
             setMargins(0, dp(10f), dp(14f), 0)
         })
@@ -545,6 +569,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     private fun setTool(t: Tool) {
         if (t != Tool.WRITE) current?.let { commit(it) }
+        if (t != Tool.SELECT && t != Tool.PIPETTE) clearSelection()
         val wasKeys = tool == Tool.KEYS
         tool = t
         if (t == Tool.KEYS && !wasKeys) {
@@ -847,7 +872,194 @@ class NoteActivity : Activity(), NoteInkView.Host {
         if (!::imageBar.isInitialized) return
         imageBar.visibility = if (selectedImage != null) View.VISIBLE else View.GONE
         mini.visibility = if (selectedImage == null && tool == Tool.WRITE) View.VISIBLE else View.GONE
+        if (::selBar.isInitialized) {
+            pruneSelection()
+            val on = selection.isNotEmpty() && selectedImage == null
+            selBar.visibility = if (on) View.VISIBLE else View.GONE
+            if (on) selLabel.text = "Выделено: " + Ui.plural(selection.size, "штрих", "штриха", "штрихов")
+        }
     }
+
+    // ---------------------------------------------------------------- «Выделить» и «В текст» (0.27.7)
+
+    /**
+     * Выделить написанное ручкой и превратить в напечатанный текст (Владимир: «как в приложении, с которого начали: выделил
+     * то, что написал ручкой, — «преобразовать в текст»»). Перо обводит штрихи (штрих выбран, если внутри больше половины его
+     * точек); «В текст» — распознать построчно (строки — по высоте, слова в строке — слева направо), каждая строка — строкой
+     * текста у курсора; штрихи распознанных строк убираются. Один шаг «Отменить».
+     */
+    private val selection = ArrayList<Drawing>()
+    private lateinit var selBar: LinearLayout
+    private lateinit var selLabel: TextView
+    private var converting = false
+
+    private fun pruneSelection() {
+        if (selection.isEmpty()) return
+        val alive = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Drawing, Boolean>())
+        alive.addAll(note.drawings)
+        selection.retainAll { it in alive }
+    }
+
+    private fun clearSelection() {
+        if (selection.isEmpty()) return
+        selection.clear()
+        updateImageBar()
+        ink.invalidate()
+    }
+
+    override fun lassoMode(): Boolean = tool == Tool.SELECT
+
+    override fun selectionRect(): android.graphics.RectF? {
+        if (selection.isEmpty()) return null
+        val r = android.graphics.RectF(selection[0].bounds())
+        for (d in selection) r.union(d.bounds())
+        return r
+    }
+
+    override fun onLasso(pts: FloatArray) {
+        selection.clear()
+        if (pts.size >= 6) {
+            for (d in note.drawings) {
+                val n = d.pts.size / 3
+                if (n == 0) continue
+                var inside = 0
+                for (i in 0 until n) if (insidePolygon(pts, d.pts[i * 3], d.pts[i * 3 + 1])) inside++
+                if (inside * 2 > n) selection += d
+            }
+        }
+        if (selection.isEmpty() && pts.size >= 6) hint("Обведите пером то, что написали ручкой", 2200)
+        updateImageBar()
+        ink.invalidate()
+    }
+
+    private fun insidePolygon(p: FloatArray, x: Float, y: Float): Boolean {
+        var c = false
+        val n = p.size / 2
+        var j = n - 1
+        for (i in 0 until n) {
+            val xi = p[i * 2]; val yi = p[i * 2 + 1]; val xj = p[j * 2]; val yj = p[j * 2 + 1]
+            if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi + 1e-9f) + xi) c = !c
+            j = i
+        }
+        return c
+    }
+
+    private fun deleteSelection() {
+        pruneSelection()
+        if (selection.isEmpty()) return
+        pushUndo()
+        val gone = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Drawing, Boolean>())
+        gone.addAll(selection)
+        note.drawings.removeAll { it in gone }
+        selection.clear()
+        changed(render = false)
+        updateImageBar()
+        ink.invalidate()
+    }
+
+    /** Строки выделенного: по высоте; в строке — слова слева направо, внутри слова — как писали. */
+    private fun selectionLines(sel: List<Drawing>): List<List<Drawing>> {
+        val order = java.util.IdentityHashMap<Drawing, Int>()
+        for ((i, d) in note.drawings.withIndex()) order[d] = i
+        val hs = sel.map { it.bounds().height() }.sorted()
+        val mh = max(hs[hs.size / 2], Ui.dpf(this, 10f))
+        val byY = sel.sortedBy { it.bounds().centerY() }
+        val lines = ArrayList<ArrayList<Drawing>>()
+        var cy = 0f
+        for (d in byY) {
+            val y = d.bounds().centerY()
+            val cur = lines.lastOrNull()
+            if (cur == null || y - cy > 0.8f * mh) {
+                lines += arrayListOf(d); cy = y
+            } else {
+                cur += d
+                cy = (cy * (cur.size - 1) + y) / cur.size
+            }
+        }
+        return lines.map { line ->
+            val byX = line.sortedBy { it.bounds().left }
+            val words = ArrayList<ArrayList<Drawing>>()
+            var right = -Float.MAX_VALUE
+            for (d in byX) {
+                val bb = d.bounds()
+                if (words.isEmpty() || bb.left > right + 0.45f * mh) { words += arrayListOf(d); right = bb.right } else { words.last() += d; right = max(right, bb.right) }
+            }
+            words.flatMap { w -> w.sortedBy { order[it] ?: 0 } }
+        }
+    }
+
+    private fun inkOf(line: List<Drawing>): List<InkStroke> {
+        var t = 1_000L
+        return line.map { d ->
+            InkStroke(MotionEvent.TOOL_TYPE_STYLUS).apply {
+                for (i in 0 until d.pts.size / 3) { points += InkPoint(d.pts[i * 3], d.pts[i * 3 + 1], t, d.pts[i * 3 + 2]); t += 8 }
+                t += 120
+            }
+        }
+    }
+
+    private fun recognizeLine(strokes: List<InkStroke>, done: (String?) -> Unit) {
+        testRecognizer?.let { done(it(strokes)?.trim()?.takeIf { s -> s.isNotEmpty() }); return }
+        val ru = engine.language("ru")
+        engine.recognize(ru, strokes, "", ink.width.toFloat(), lineHeightFor(strokes)) { out ->
+            done(out.candidates.firstOrNull()?.text?.trim()?.takeIf { it.isNotEmpty() })
+        }
+    }
+
+    private fun convertSelection() {
+        pruneSelection()
+        if (selection.isEmpty() || converting) return
+        if (testRecognizer == null && engine.language("ru").state != HandwritingEngine.State.READY) {
+            updateBanner()
+            hint("Для «В текст» нужна русская модель распознавания — нажмите «Скачать» сверху", 3000)
+            return
+        }
+        converting = true
+        val lines = selectionLines(selection.toList())
+        val texts = arrayOfNulls<String>(lines.size)
+        var left = lines.size
+        hint("Распознаю…", 1200)
+        for ((k, line) in lines.withIndex()) {
+            recognizeLine(inkOf(line)) { text ->
+                texts[k] = text
+                if (--left == 0) finishConvert(lines, texts)
+            }
+        }
+    }
+
+    private fun finishConvert(lines: List<List<Drawing>>, texts: Array<String?>) {
+        converting = false
+        val ok = lines.indices.filter { texts[it] != null }
+        if (ok.isEmpty()) { hint("Не разобрал выделенное — осталось рисунком", 2500); return }
+        runAfterCommit {
+            pushUndo()
+            val gone = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Drawing, Boolean>())
+            for (k in ok) gone.addAll(lines[k])
+            note.drawings.removeAll { it in gone }
+            // Строки — у курсора: пустая строка курсора — первая из них, дальше — новые строки ниже.
+            var at = note.caret
+            val cur = note.blocks.getOrNull(at)
+            var first = true
+            for (k in ok) {
+                val t = texts[k]!!
+                if (first && cur != null && blockText(cur)?.isBlank() == true) {
+                    setBlockText(cur, t)
+                } else {
+                    note.blocks.add(at + 1, Block.Para(t))
+                    at += 1
+                }
+                first = false
+            }
+            note.caret = at
+            note.caretOffset = -1
+            selection.clear()
+            changed()
+            ink.invalidate()
+            val words = ok.sumOf { texts[it]!!.split(Regex("\\s+")).size }
+            hint("В текст: " + Ui.plural(words, "слово", "слова", "слов") + if (ok.size < lines.size) " (часть строк не разобрал — осталась рисунком)" else "", 2500)
+        }
+    }
+
 
     private fun deleteSelectedImage() {
         val i = note.blocks.indexOfFirst { it === selectedImage }
@@ -1354,7 +1566,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         handler.removeCallbacks(interimRunnable)
         handler.removeCallbacks(commitRunnable)
         val g = current
-        if (g != null && g.strokes.isNotEmpty() && isFar(g, x, y)) commit(g)
+        if (g != null && g.strokes.isNotEmpty() && (isFar(g, x, y) || isNextWord(g, x, y))) commit(g)
         if (current == null) current = Group(++groupSeq)
     }
 
@@ -1394,6 +1606,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         if (!eraseUndoPushed) { pushUndo(); eraseUndoPushed = true } // одно движение ластиком — один шаг «Отменить»
         note.drawings.clear()
         note.drawings.addAll(keep)
+        ink.eraseHole(x, y, r)
         changed(render = false)
         ink.invalidate()
     }
@@ -1432,6 +1645,20 @@ class NoteActivity : Activity(), NoteInkView.Host {
         val h = b[3] - b[1]
         val pad = max(Ui.dpf(this, 60f), h * 2.2f)
         return x < b[0] - pad || x > b[2] + pad || y < b[1] - pad || y > b[3] + pad
+    }
+
+    /**
+     * Перо оторвали и начали следующее слово (0.27.7, Владимир: «написал слово, отрываю ручку — как пробел — и пишу следующее;
+     * логично, чтобы предыдущее сразу становилось текстом, а не занимало страницу»). Раньше слово ждало паузы в 1 с или
+     * прыжка дальше 60 dp — обычный промежуток между словами меньше, и вся строка копилась одной надписью.
+     * Новое слово: штрих начат правее надписи на промежуток ≥ 0,45 высоты букв (между буквами — меньше), или строкой ниже,
+     * или заметно левее/выше. Точки над «ё», «й» и перекладины — над словом или внутри него, слово не рвут.
+     */
+    private fun isNextWord(g: Group, x: Float, y: Float): Boolean {
+        val b = NoteInkView.bounds(g.strokes)
+        val typical = if (wordHeights.isNotEmpty()) wordHeights.sorted()[wordHeights.size / 2] * 0.8f else 0f
+        val h = maxOf(b[3] - b[1], typical, Ui.dpf(this, 14f))
+        return x > b[2] + 0.45f * h || y > b[3] + 0.6f * h || y < b[1] - 1.0f * h || x < b[0] - 0.8f * h
     }
 
     private fun lineHeightFor(strokes: List<InkStroke>): Float {
@@ -1544,5 +1771,8 @@ class NoteActivity : Activity(), NoteInkView.Host {
     companion object {
         const val EXTRA_ID = "note_id"
         private const val REQ_IMAGE = 41
+
+        /** Для проверок: распознавание выделенного без ML Kit (в Robolectric его нет). */
+        internal var testRecognizer: ((List<InkStroke>) -> String?)? = null
     }
 }

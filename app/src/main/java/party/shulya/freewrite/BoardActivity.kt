@@ -1205,7 +1205,7 @@ class BoardActivity : Activity(), BoardView.Host {
         if (keep != null || fi >= 0 ||
             (h != null && h.kind != BoardView.Kind.IMAGE && h.kind != BoardView.Kind.TABLE && h.kind != BoardView.Kind.VEDOM)) {
             if (!eraseUndoPushed) { pushUndo(); eraseUndoPushed = true }
-            if (keep != null) { board.strokes.clear(); board.strokes.addAll(keep); changedAny = true }
+            if (keep != null) { board.strokes.clear(); board.strokes.addAll(keep); view.eraseHole(x, y, r); changedAny = true }
             when (h?.kind) {
                 BoardView.Kind.TEXT -> { board.texts.removeAt(h.index); changedAny = true }
                 BoardView.Kind.STICKER -> { board.stickers.removeAt(h.index); changedAny = true }
