@@ -110,7 +110,8 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         fun strokeStyle(): StrokeStyle
         fun onStrokeStart(x: Float, y: Float)
         fun onStrokeEnd(stroke: InkStroke, style: StrokeStyle, tap: Boolean)
-        fun onErase(x: Float, y: Float)
+        /** Ластик в (x, y); [first] — начало движения ластиком (один шаг «Отменить» на движение). */
+        fun onErase(x: Float, y: Float, first: Boolean)
         fun drawings(): List<Drawing>
         fun pendingStrokes(): List<InkStroke>
     }
@@ -286,7 +287,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         hover = null
         if (host.isEraser() || ev.getToolType(idx) == MotionEvent.TOOL_TYPE_ERASER) {
             mode = Mode.ERASE
-            host.onErase(x, y)
+            host.onErase(x, y, true)
             return
         }
         mode = Mode.INK
@@ -311,8 +312,8 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         if (idx < 0) return
         val o = host.contentOffset()
         if (mode == Mode.ERASE) {
-            for (h in 0 until ev.historySize) host.onErase(ev.getHistoricalX(idx, h) - o.x, ev.getHistoricalY(idx, h) - o.y)
-            host.onErase(ev.getX(idx) - o.x, ev.getY(idx) - o.y)
+            for (h in 0 until ev.historySize) host.onErase(ev.getHistoricalX(idx, h) - o.x, ev.getHistoricalY(idx, h) - o.y, false)
+            host.onErase(ev.getX(idx) - o.x, ev.getY(idx) - o.y, false)
             return
         }
         val s = live ?: return

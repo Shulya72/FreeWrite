@@ -1100,26 +1100,18 @@ class NoteActivity : Activity(), NoteInkView.Host {
         ink.invalidate()
     }
 
-    override fun onErase(x: Float, y: Float) {
+    private var eraseUndoPushed = false
+
+    override fun onErase(x: Float, y: Float, first: Boolean) {
+        if (first) eraseUndoPushed = false
         val r = Ui.dpf(this, 14f)
-        val keep = note.drawings.filterNot { d ->
-            var hit = false
-            var i = 0
-            while (i + 1 < d.pts.size && !hit) {
-                val dx = d.pts[i] - x
-                val dy = d.pts[i + 1] - y
-                if (dx * dx + dy * dy < (r + d.width / 2) * (r + d.width / 2)) hit = true
-                i += 3
-            }
-            hit
-        }
-        if (keep.size != note.drawings.size) {
-            pushUndo()
-            note.drawings.clear()
-            note.drawings.addAll(keep)
-            changed(render = false)
-            ink.invalidate()
-        }
+        // Как в рисовалке (0.27.6): стирается только участок под ластиком, куски по краям остаются.
+        val keep = InkEraser.eraseIn(note.drawings, x, y, r) ?: return
+        if (!eraseUndoPushed) { pushUndo(); eraseUndoPushed = true } // одно движение ластиком — один шаг «Отменить»
+        note.drawings.clear()
+        note.drawings.addAll(keep)
+        changed(render = false)
+        ink.invalidate()
     }
 
     override fun drawings(): List<Drawing> = note.drawings
