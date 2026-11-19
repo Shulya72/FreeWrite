@@ -527,17 +527,19 @@ class Board(
             return k
         }
         for (st in statuses) used += st.id
+        // Сначала предметы, на которые ссылаются другие (0.27.6): при повторе номера новый номер получает не таблица, строка,
+        // ведомость или раздел (их строки, схемы, области потерялись бы), а штрих, надпись и прочие — на них никто не ссылается.
+        for (t in tables) fix(t.id) { IdTables.tableJson(t) }?.let { t.id = it }
+        for (r in recs) fix(r.id) { IdTables.recJson(r) }?.let { r.id = it }
+        for (v in vedoms) fix(v.id) { Vedoms.vedomJson(v) }?.let { v.id = it }
+        for (fr in frames) fix(fr.id) { frameJson(fr) }?.let { fr.id = it }
         for (d in strokes) fix(d.id) { d.json() }?.let { d.id = it }
         for (t in texts) fix(t.id) { textJson(t) }?.let { t.id = it }
         for (m in images) fix(m.id) { imageJson(m) }?.let { m.id = it }
         for (s in stickers) fix(s.id) { stickerJson(s) }?.let { s.id = it }
         for (fl in fills) fix(fl.id) { fl.json() }?.let { fl.id = it }
         for (c in callouts) fix(c.id) { calloutJson(c) }?.let { c.id = it }
-        for (fr in frames) fix(fr.id) { frameJson(fr) }?.let { fr.id = it }
         for (r in rows) fix(r.id) { rowJson(r) }?.let { r.id = it }
-        for (t in tables) fix(t.id) { IdTables.tableJson(t) }?.let { t.id = it }
-        for (r in recs) fix(r.id) { IdTables.recJson(r) }?.let { r.id = it }
-        for (v in vedoms) fix(v.id) { Vedoms.vedomJson(v) }?.let { v.id = it }
         for (i in vitems) fix(i.id) { Vedoms.itemJson(i) }?.let { i.id = it }
         for (e in events) fix(e.id) { e.json() }?.let { e.id = it }
         for (z in zones) fix(z.id) { TablePlan.zoneJson(z) }?.let { z.id = it }
@@ -788,6 +790,7 @@ class Board(
             IdTables.upgrade(b)
             b.sync = BoardSync.parse(o.optJSONObject("sync"))
             b.fixIds()
+            BoardRepair.run(b)
             return b
         }
 

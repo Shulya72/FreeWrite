@@ -159,6 +159,8 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         val s = b.sync
         val authors = HashMap<String, Int>()
         val n = if (pulled.rows.isEmpty()) 0 else Remote.apply(b, pulled.rows, authors, refresh)
+        // Пришла пустая копия ведомости или «повисшие» схемы с планшета, где ещё 0.27.5, — сразу на место (0.27.6).
+        if (n > 0) BoardRepair.run(b)
         s.remoteSeq = maxOf(s.remoteSeq, pulled.next)
         if (refresh) {
             s.readBy = Remote.appVersion

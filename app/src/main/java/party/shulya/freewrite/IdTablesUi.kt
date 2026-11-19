@@ -46,12 +46,33 @@ class TableUi(private val a: BoardActivity) {
         val old = r.get(col)
         if (!Vedoms.set(b, r, col, value, who())) return false
         if (col == TableCol.IGS) {
+            // Дата — как при ответе в ведомости (0.27.6, Владимир: «ставлю в таблице «Сдано в ПТО» — дата не ставится»):
+            // «Сдано в ПТО» → дата «Сдано в ПТО» сегодня, «На подписи у заказчика» → «Отдал заказчику» сегодня. Уже вписанная
+            // дата остаётся, если она не старая (схема с тех пор уходила из этого статуса — тогда сегодня).
+            when (value) {
+                IdTables.IGS_PTO -> autoDate(r, TableCol.DPTO, value)
+                IdTables.IGS_CUST -> autoDate(r, TableCol.DCUST, value)
+            }
             // В ведомости на столе: «Сборка» — заказчику, «На согласовании АН» — через АН; другой статус — схема уходит из ведомости.
             val gone = Vedoms.followTable(b, r)
             if (gone.isNotEmpty()) a.hint("Схема убрана из ведомости ${gone.joinToString()} — она больше не в сборке", 2200)
             if (value == IdTables.IGS_ASSEMBLY) queueAssembly(r)
         }
         return true
+    }
+
+    /** Поставить сегодняшнюю дату в столбец [k], если там пусто или дата устарела (после неё схема уходила из статуса [status]). */
+    private fun autoDate(r: BoardRec, k: String, status: String) {
+        val cur = r.get(k)
+        val today = IdTables.today()
+        if (cur == today) return
+        if (cur.isNotEmpty()) {
+            val left = b.events.any { e ->
+                e.r == r.id && e.k == TableCol.IGS && e.from == status && IdTables.isoOf(e.at) > cur
+            }
+            if (!left) return
+        }
+        Vedoms.set(b, r, k, today, who(), note = "статус в таблице")
     }
 
     // Схемы, которым только что поставили «Сборку» (несколько сразу — лассо): одним заходом после правки.
