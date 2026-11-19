@@ -85,15 +85,6 @@ class RuledSheet(context: Context) : LinearLayout(context) {
     }
 }
 
-/**
- * Прозрачный слой пера поверх листа.
- *
- * Перо (и мышь) рисуют здесь. Касания пальцем передаются листу под слоем: так работают прокрутка
- * с инерцией, нажатия на галочки и перенос курсора. Если сначала легла ладонь, а потом коснулось
- * перо, жест ладони отменяется и начинается штрих пера.
- * Координаты штрихов — в системе листа (контента), чтобы рисунок двигался вместе с текстом.
- */
-@SuppressLint("ViewConstructor")
 /** Строка ввода «Клавиатура» в «Записи» (0.27.6): сообщает, куда поставили курсор, — курсор на листе идёт следом. */
 class KeysEdit(context: Context) : EditText(context) {
     var onSelection: ((Int, Int) -> Unit)? = null
@@ -104,7 +95,57 @@ class KeysEdit(context: Context) : EditText(context) {
     }
 }
 
+/**
+ * Прозрачный слой пера поверх листа.
+ *
+ * Перо (и мышь) рисуют здесь. Касания пальцем передаются листу под слоем: так работают прокрутка
+ * с инерцией, нажатия на галочки и перенос курсора. Если сначала легла ладонь, а потом коснулось
+ * перо, жест ладони отменяется и начинается штрих пера.
+ * Координаты штрихов — в системе листа (контента), чтобы рисунок двигался вместе с текстом.
+ */
+@SuppressLint("ViewConstructor")
 class NoteInkView(context: Context, private val host: Host) : View(context) {
+
+    /**
+     * Слой под пером (0.27.6, Владимир: «спустя несколько слов ручка начала тупить»): готовые рисунки и ещё не распознанные
+     * штрихи. Раньше на каждое движение пера заново рисовались все прежние штрихи по точкам — чем больше написано, тем
+     * медленнее. Теперь слой — готовая картинка видеочипа (LAYER_TYPE_HARDWARE), перерисовывается, только когда рисунки
+     * поменялись или лист прокрутили; живой штрих рисуется поверх, в этом виде. Добавить в разметку под этим видом.
+     */
+    var layer: View? = null
+        private set
+
+    private val pendingStyle = StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f))
+
+    init {
+        layer = object : View(context) {
+            override fun onDraw(canvas: Canvas) = drawStatic(canvas, this)
+        }.apply { setLayerType(LAYER_TYPE_HARDWARE, null) }
+    }
+
+    /** Перерисовать всё: и слой готовых рисунков (так зовут снаружи — рисунки поменялись, лист прокрутили). */
+    override fun invalidate() {
+        super.invalidate()
+        layer?.invalidate()
+    }
+
+    /** Перерисовать только этот вид: живой штрих, указатель пера, гаснущие штрихи. */
+    private fun invalidateSelf() = super.invalidate()
+
+    /** Готовые рисунки — только те, что на экране, — и нераспознанные штрихи. */
+    private fun drawStatic(canvas: Canvas, v: View) {
+        val o = host.contentOffset()
+        canvas.save()
+        canvas.translate(o.x, o.y)
+        val l = -o.x; val t = -o.y; val r = l + v.width; val b = t + v.height
+        for (d in host.drawings()) {
+            val bb = d.bounds()
+            if (bb.right < l || bb.left > r || bb.bottom < t || bb.top > b) continue
+            drawDrawing(canvas, d)
+        }
+        for (s in host.pendingStrokes()) drawStroke(canvas, s, pendingStyle, 255)
+        canvas.restore()
+    }
 
     interface Host {
         /** Где начало листа относительно этого слоя (учитывает прокрутку). */
@@ -179,7 +220,8 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
     fun fade(strokes: List<InkStroke>, style: StrokeStyle) {
         fadingStyle = style
         fading += strokes to SystemClock.uptimeMillis()
-        postInvalidateOnAnimation()
+        layer?.invalidate() // штрихи ушли из «ещё не распознанных»
+        postOnAnimation { invalidateSelf() }
     }
 
     private fun isPen(tool: Int) = tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER
@@ -235,7 +277,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
                 if (mode == Mode.FORWARD) host.forwardToSheet(ev)
                 live = null
                 mode = Mode.NONE
-                invalidate()
+                invalidateSelf()
             }
         }
         return true
@@ -248,18 +290,18 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
                 mode = Mode.PIPETTE
                 parent?.requestDisallowInterceptTouchEvent(true)
                 hover = PointF(ev.x, ev.y)
-                invalidate()
+                invalidateSelf()
             }
             MotionEvent.ACTION_UP -> {
                 mode = Mode.NONE
                 hover = null
                 host.onPipettePick(ev.x, ev.y)
-                invalidate()
+                invalidateSelf()
             }
             MotionEvent.ACTION_CANCEL -> {
                 mode = Mode.NONE
                 hover = null
-                invalidate()
+                invalidateSelf()
             }
         }
         return true
@@ -268,7 +310,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
     override fun onHoverEvent(event: MotionEvent): Boolean {
         if (host.pipetteMode()) {
             hover = if (event.actionMasked == MotionEvent.ACTION_HOVER_EXIT) null else PointF(event.x, event.y)
-            invalidate()
+            invalidateSelf()
             return true
         }
         if (isPen(event.getToolType(0))) {
@@ -281,7 +323,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         }
         if (!isPen(event.getToolType(0)) || host.passThrough()) return super.onHoverEvent(event)
         hover = if (event.actionMasked == MotionEvent.ACTION_HOVER_EXIT) null else PointF(event.x, event.y)
-        invalidate()
+        invalidateSelf()
         return true
     }
 
@@ -308,7 +350,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         s.points.add(InkPoint(x, y, ev.eventTime + clockOffset, pressureOf(ev, idx, -1)))
         live = s
         liveStyle = host.strokeStyle()
-        invalidate()
+        invalidateSelf()
     }
 
     private fun pressureOf(ev: MotionEvent, idx: Int, h: Int): Float {
@@ -332,7 +374,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
             add(s, ev.getHistoricalX(idx, h) - o.x, ev.getHistoricalY(idx, h) - o.y, ev.getHistoricalEventTime(h), pressureOf(ev, idx, h))
         }
         add(s, ev.getX(idx) - o.x, ev.getY(idx) - o.y, ev.eventTime, pressureOf(ev, idx, -1))
-        invalidate()
+        invalidateSelf()
     }
 
     private fun add(s: InkStroke, x: Float, y: Float, t: Long, p: Float) {
@@ -353,7 +395,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         live = null
         mode = Mode.NONE
         host.onStrokeEnd(s, liveStyle ?: host.strokeStyle(), tap)
-        invalidate()
+        invalidateSelf()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -361,9 +403,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         val o = host.contentOffset()
         canvas.save()
         canvas.translate(o.x, o.y)
-        for (d in host.drawings()) drawDrawing(canvas, d)
-        val pendingStyle = StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f))
-        for (s in host.pendingStrokes()) drawStroke(canvas, s, pendingStyle, 255)
+        // Готовые рисунки и нераспознанные штрихи — на слое под этим (layer): пока пишут, перерисовывается только живой штрих.
         live?.let { drawStroke(canvas, it, liveStyle ?: pendingStyle, 255) }
         val now = SystemClock.uptimeMillis()
         fading.removeAll { now - it.second > FADE_MS }
@@ -383,7 +423,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
                 canvas.drawCircle(it.x, it.y, Ui.dpf(context, 2.5f), hoverDot)
             }
         }
-        if (fading.isNotEmpty()) postInvalidateOnAnimation()
+        if (fading.isNotEmpty()) postOnAnimation { invalidateSelf() }
     }
 
     private val painter = InkPainter()

@@ -204,6 +204,39 @@ class Note(
 
     fun copy(): Note = fromJson(toJson())
 
+    /**
+     * Текст файла записи (0.27.6): то же, что [toJson], но рисунки — готовыми строками [Drawing.json] (переводятся в текст один
+     * раз, пока не менялись). Раньше каждая точка каждого рисунка заново шла через JSONArray — после каждого штриха.
+     */
+    fun toJsonString(): String {
+        val sb = StringBuilder(4096 + drawings.size * 400)
+        sb.append("{\"v\":1,\"id\":").append(JSONObject.quote(id))
+        sb.append(",\"title\":").append(JSONObject.quote(title))
+        sb.append(",\"created\":").append(created).append(",\"updated\":").append(updated)
+        sb.append(",\"caret\":").append(caret).append(",\"caretOff\":").append(caretOffset)
+        sb.append(",\"blocks\":[")
+        for ((i, b) in blocks.withIndex()) {
+            if (i > 0) sb.append(',')
+            when (b) {
+                is Block.Para -> sb.append("{\"t\":\"p\",\"text\":").append(JSONObject.quote(b.text)).append('}')
+                is Block.Task -> sb.append("{\"t\":\"task\",\"text\":").append(JSONObject.quote(b.text)).append(",\"done\":").append(b.done).append('}')
+                is Block.Image -> {
+                    sb.append("{\"t\":\"img\",\"file\":").append(JSONObject.quote(b.file)).append(",\"w\":").append(b.width).append(",\"h\":").append(b.height)
+                    if (b.wf > 0f) sb.append(",\"wf\":").append(b.wf.toDouble())
+                    if (b.xa > 0f) sb.append(",\"xa\":").append(b.xa.toDouble())
+                    sb.append('}')
+                }
+            }
+        }
+        sb.append("],\"drawings\":[")
+        for ((i, d) in drawings.withIndex()) {
+            if (i > 0) sb.append(',')
+            sb.append(d.json())
+        }
+        sb.append("]}")
+        return sb.toString()
+    }
+
     companion object {
         fun create(title: String): Note {
             val now = System.currentTimeMillis()
@@ -231,7 +264,9 @@ class Note(
                 val j = dr.getJSONObject(i)
                 val pa = j.optJSONArray("pts") ?: JSONArray()
                 val pts = FloatArray(pa.length()) { pa.optDouble(it).toFloat() }
-                drawings += Drawing(j.optString("kind", "pen"), j.optInt("color"), j.optDouble("w", 3.0).toFloat(), pts)
+                drawings += Drawing(j.optString("kind", "pen"), j.optInt("color"), j.optDouble("w", 3.0).toFloat(), pts).apply {
+                    j.optString("id").takeIf { it.isNotEmpty() }?.let { id = it } // с 0.27.6 номер рисунка тоже в файле
+                }
             }
             return Note(
                 id = o.getString("id"),
@@ -259,11 +294,19 @@ class NoteStore(context: Context) {
     fun load(id: String): Note? =
         runCatching { Note.fromJson(JSONObject(File(dir, "$id.json").readText())) }.getOrNull()
 
-    fun save(note: Note) {
+    fun save(note: Note) = write(note.id, prepare(note))
+
+    /** Текст файла записи (главный поток: запись не должна меняться, пока его собирают). */
+    fun prepare(note: Note): String {
         note.updated = System.currentTimeMillis()
-        val tmp = File(dir, "${note.id}.json.tmp")
-        tmp.writeText(note.toJson().toString())
-        val target = File(dir, "${note.id}.json")
+        return note.toJsonString()
+    }
+
+    /** Записать готовый текст (можно в фоне). */
+    fun write(id: String, text: String) {
+        val tmp = File(dir, "$id.json.tmp")
+        tmp.writeText(text)
+        val target = File(dir, "$id.json")
         if (!tmp.renameTo(target)) {
             target.writeText(tmp.readText())
             tmp.delete()

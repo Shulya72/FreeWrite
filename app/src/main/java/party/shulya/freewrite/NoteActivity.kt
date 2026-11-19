@@ -87,8 +87,11 @@ class NoteActivity : Activity(), NoteInkView.Host {
     private var caretOn = true
     private val bitmapCache = HashMap<String, Bitmap>()
 
-    private val undoStack = ArrayDeque<String>()
-    private val redoStack = ArrayDeque<String>()
+    // Снимки для «Отменить» (0.27.6): строки копируются, рисунки — те же (в записи рисунки не меняют, только добавляют, стирают
+    // и заменяют новыми). Раньше снимок был всей записью в JSON — после каждого штриха, и чем больше написано, тем дольше.
+    private class Snap(val title: String, val blocks: List<Block>, val drawings: List<Drawing>, val caret: Int, val caretOffset: Int)
+    private val undoStack = ArrayDeque<Snap>()
+    private val redoStack = ArrayDeque<Snap>()
 
     private var lineHeightPx = 0
 
@@ -163,7 +166,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
     override fun onPause() {
         handler.removeCallbacks(caretBlink)
         current?.let { commit(it) }
-        saveNow()
+        saveNow(wait = true)
         super.onPause()
     }
 
@@ -176,7 +179,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     @Deprecated("Activity.onBackPressed")
     override fun onBackPressed() {
-        val finishNow = Runnable { saveNow(); finish() }
+        val finishNow = Runnable { saveNow(wait = true); finish() }
         handler.postDelayed(finishNow, 2500) // если распознавание зависло — всё равно выходим
         runAfterCommit {
             handler.removeCallbacks(finishNow)
@@ -294,6 +297,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         }
         area.addView(scroll, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
         ink = NoteInkView(this, this)
+        area.addView(ink.layer, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH)) // готовые рисунки — слоем под пером
         area.addView(ink, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
 
         mini = LinearLayout(this).apply {
@@ -632,13 +636,60 @@ class NoteActivity : Activity(), NoteInkView.Host {
         tv.minHeight = lineHeightPx
     }
 
+    // Что сейчас на листе (0.27.6): строки те же и на тех же местах — меняется только текст, лист не собирается заново.
+    // Раньше после каждого распознанного слова пересоздавались все строки записи — чем длиннее запись, тем дольше.
+    private var shownKey: List<Any?> = emptyList()
+    private val lineViews = ArrayList<TextView?>()
+    private var titleBig: TextView? = null
+    private var taskTextView: TextView? = null
+
+    /** Строки (сами строки — по ссылке), галочки задач, размер и место картинок, выбранная картинка. */
+    private fun structureKey(): List<Any?> {
+        val k = ArrayList<Any?>(note.blocks.size * 2 + 1)
+        k += selectedImage
+        for (b in note.blocks) {
+            k += b
+            when (b) {
+                is Block.Task -> k += b.done
+                is Block.Image -> { k += b.wf; k += b.xa }
+                else -> Unit
+            }
+        }
+        return k
+    }
+
+    /** Лист не меняли местами — обновить только текст строк. false — надо собрать лист заново. */
+    private fun renderTextsOnly(): Boolean {
+        val key = structureKey()
+        if (key != shownKey || lineViews.size != note.blocks.size) return false
+        caretTextView = null
+        var changedText = false
+        for ((i, b) in note.blocks.withIndex()) {
+            val tv = lineViews[i] ?: continue
+            val t = blockText(b) ?: continue
+            if (i == note.caret) { caretTextView = tv; changedText = true; continue } // строку курсора пишет refreshCaretText
+            if (tv.text.toString() != t) { tv.text = t; changedText = true }
+        }
+        titleBig?.let { if (it.text.toString() != note.title) it.text = note.title }
+        if (changedText) sheet.invalidate() // линейки листа — по новым строкам (строка могла стать в две)
+        return true
+    }
+
     private fun renderBlocks() {
         if (selectedImage != null && note.blocks.none { it === selectedImage }) selectedImage = null
         updateImageBar()
+        if (renderTextsOnly()) {
+            refreshCaretText()
+            ink.invalidate()
+            if (tool == Tool.KEYS && !keysTyping) loadKeysLine()
+            return
+        }
         sheet.removeAllViews()
         blockViews.clear()
+        lineViews.clear()
         caretTextView = null
         val title = Ui.text(this, note.title, 26f, Ui.INK, bold = true).apply { setPadding(0, 0, 0, dp(2f)) }
+        titleBig = title
         sheet.addView(title)
         sheet.addView(Ui.mono(this, Ui.noteMeta(note.created), 12f).apply { setPadding(0, 0, 0, dp(10f)) })
         note.blocks.forEachIndexed { i, b ->
@@ -653,6 +704,11 @@ class NoteActivity : Activity(), NoteInkView.Host {
                 is Block.Image -> imageView(b, i)
             }
             blockViews += v
+            lineViews += when (b) {
+                is Block.Para -> v as TextView
+                is Block.Task -> taskTextView
+                else -> null
+            }
             val lp = LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP)
             if (v is NoteImageView) {
                 // Вид картинки чуть шире текста — уголки у края листа не обрезаются.
@@ -667,6 +723,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
             setOnClickListener { setCaret(lastTextBlock()) }
         }
         sheet.addView(spacer, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        shownKey = structureKey()
         refreshCaretText()
         ink.invalidate()
         if (tool == Tool.KEYS && !keysTyping) loadKeysLine()
@@ -698,6 +755,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
             caretOnTap(this, i)
             if (i == note.caret) caretTextView = this
         }
+        taskTextView = text
         row.addView(text, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         val state = Ui.chip(this, if (b.done) "сдано" else "не сдано", if (b.done) Ui.OK else Ui.BAD, if (b.done) Ui.OK_SOFT else Ui.BAD_SOFT)
         state.setOnClickListener { toggleTask(i) }
@@ -1108,8 +1166,20 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     // ---------------------------------------------------------------- отмена и сохранение
 
+    private fun copyBlock(b: Block): Block = when (b) {
+        is Block.Para -> Block.Para(b.text)
+        is Block.Task -> Block.Task(b.text, b.done)
+        is Block.Image -> Block.Image(b.file, b.width, b.height, b.wf, b.xa)
+    }
+
+    private fun snap() = Snap(note.title, note.blocks.map { copyBlock(it) }, ArrayList(note.drawings), note.caret, note.caretOffset)
+
+    private fun restore(x: Snap): Note =
+        Note(note.id, x.title, note.created, note.updated, x.blocks.mapTo(ArrayList()) { copyBlock(it) }, ArrayList(x.drawings), x.caret)
+            .apply { caretOffset = x.caretOffset }
+
     private fun pushUndo() {
-        undoStack.addLast(note.toJson().toString())
+        undoStack.addLast(snap())
         while (undoStack.size > 60) undoStack.removeFirst()
         redoStack.clear()
     }
@@ -1129,16 +1199,16 @@ class NoteActivity : Activity(), NoteInkView.Host {
             return
         }
         if (commitQueue.isNotEmpty() || undoStack.isEmpty()) return
-        redoStack.addLast(note.toJson().toString())
-        note = Note.fromJson(JSONObject(undoStack.removeLast()))
+        redoStack.addLast(snap())
+        note = restore(undoStack.removeLast())
         titleView.text = note.title
         changed()
     }
 
     private fun redo() {
         if (redoStack.isEmpty() || commitQueue.isNotEmpty() || current != null) return
-        undoStack.addLast(note.toJson().toString())
-        note = Note.fromJson(JSONObject(redoStack.removeLast()))
+        undoStack.addLast(snap())
+        note = restore(redoStack.removeLast())
         titleView.text = note.title
         changed()
     }
@@ -1151,13 +1221,22 @@ class NoteActivity : Activity(), NoteInkView.Host {
         handler.postDelayed(saveRunnable, 400)
     }
 
-    private fun saveNow() {
+    /**
+     * Сохранить запись. Текст файла собирается здесь (рисунки — готовыми строками, быстро), пишется в фоне (0.27.6: раньше
+     * запись целиком переводилась в JSON и писалась на главном потоке после каждой паузы в письме — перо замирало).
+     * [wait] — дождаться записи (уход с экрана). Один фоновый поток — файлы пишутся по порядку.
+     */
+    private fun saveNow(wait: Boolean = false) {
         handler.removeCallbacks(saveRunnable)
-        try {
-            store.save(note)
-        } catch (t: Throwable) {
-            Toast.makeText(this, "Не удалось сохранить: ${t.message}", Toast.LENGTH_LONG).show()
-        }
+        val text = try { store.prepare(note) } catch (t: Throwable) { saveFailed(t); return }
+        val id = note.id
+        val job = try { io.submit { try { store.write(id, text) } catch (t: Throwable) { handler.post { saveFailed(t) } } } } catch (t: Throwable) { null }
+        if (job == null) { try { store.write(id, text) } catch (t: Throwable) { saveFailed(t) }; return }
+        if (wait) try { job.get() } catch (_: Throwable) {}
+    }
+
+    private fun saveFailed(t: Throwable) {
+        Toast.makeText(this, "Не удалось сохранить: ${t.message}", Toast.LENGTH_LONG).show()
     }
 
     // ---------------------------------------------------------------- картинки и итоги
