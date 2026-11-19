@@ -2,6 +2,7 @@ package party.shulya.freewrite
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -119,8 +120,60 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
 
     init {
         layer = object : View(context) {
-            override fun onDraw(canvas: Canvas) = drawStatic(canvas, this)
+            override fun onDraw(canvas: Canvas) {
+                val snap = eraseSnap
+                val o = host.contentOffset()
+                if (snap != null && o.x == snapX && o.y == snapY && snap.width == width && snap.height == height) {
+                    // Идёт ластик (0.27.7): готовые рисунки — снимком с вырезанными кружками, не по точкам заново.
+                    canvas.drawBitmap(snap, 0f, 0f, null)
+                    canvas.save()
+                    canvas.translate(o.x, o.y)
+                    for (s in host.pendingStrokes()) drawStroke(canvas, s, pendingStyle, 255)
+                    canvas.restore()
+                } else drawStatic(canvas, this)
+            }
         }.apply { setLayerType(LAYER_TYPE_HARDWARE, null) }
+    }
+
+    /**
+     * Ластик без подтормаживаний (0.27.7, Владимир: «стирает как нужно, но подтормаживает — тык-тык-тык»): с 0.27.6 ластик
+     * режет линию почти на каждом движении, и слой каждый раз рисовал все рисунки заново. Теперь в начале движения ластиком
+     * рисунки снимаются в картинку один раз, дальше в ней только вырезаются кружки стёртого ([eraseHole]); когда ластик
+     * отпустили — слой рисуется как обычно.
+     */
+    private var eraseSnap: Bitmap? = null
+    private var snapBmp: Bitmap? = null
+    private var snapX = 0f
+    private var snapY = 0f
+    private var eraseLastX = 0f
+    private var eraseLastY = 0f
+    private val clearPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR) }
+
+    private fun startEraseSnap() {
+        val v = layer ?: return
+        if (v.width <= 0 || v.height <= 0) return
+        val bmp = snapBmp?.takeIf { it.width == v.width && it.height == v.height }
+            ?: runCatching { Bitmap.createBitmap(v.width, v.height, Bitmap.Config.ARGB_8888) }.getOrNull() ?: return
+        snapBmp = bmp
+        bmp.eraseColor(Color.TRANSPARENT)
+        val o = host.contentOffset()
+        snapX = o.x; snapY = o.y
+        val c = Canvas(bmp)
+        c.translate(o.x, o.y)
+        drawDrawingsIn(c, v)
+        eraseSnap = bmp
+    }
+
+    private fun endEraseSnap() {
+        if (eraseSnap == null) return
+        eraseSnap = null
+        layer?.invalidate()
+    }
+
+    /** Ластик вырезал круг ([x], [y] — координаты листа, радиус [r]): вырезать его и в снимке. */
+    fun eraseHole(x: Float, y: Float, r: Float) {
+        val snap = eraseSnap ?: return
+        Canvas(snap).drawCircle(x + snapX, y + snapY, r, clearPaint)
     }
 
     /** Перерисовать всё: и слой готовых рисунков (так зовут снаружи — рисунки поменялись, лист прокрутили). */
@@ -132,17 +185,23 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
     /** Перерисовать только этот вид: живой штрих, указатель пера, гаснущие штрихи. */
     private fun invalidateSelf() = super.invalidate()
 
-    /** Готовые рисунки — только те, что на экране, — и нераспознанные штрихи. */
-    private fun drawStatic(canvas: Canvas, v: View) {
+    /** Готовые рисунки, что на экране (canvas уже сдвинут в координаты листа). */
+    private fun drawDrawingsIn(canvas: Canvas, v: View) {
         val o = host.contentOffset()
-        canvas.save()
-        canvas.translate(o.x, o.y)
         val l = -o.x; val t = -o.y; val r = l + v.width; val b = t + v.height
         for (d in host.drawings()) {
             val bb = d.bounds()
             if (bb.right < l || bb.left > r || bb.bottom < t || bb.top > b) continue
             drawDrawing(canvas, d)
         }
+    }
+
+    /** Готовые рисунки — только те, что на экране, — и нераспознанные штрихи. */
+    private fun drawStatic(canvas: Canvas, v: View) {
+        val o = host.contentOffset()
+        canvas.save()
+        canvas.translate(o.x, o.y)
+        drawDrawingsIn(canvas, v)
         for (s in host.pendingStrokes()) drawStroke(canvas, s, pendingStyle, 255)
         canvas.restore()
     }
@@ -166,11 +225,28 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         fun onErase(x: Float, y: Float, first: Boolean)
         fun drawings(): List<Drawing>
         fun pendingStrokes(): List<InkStroke>
+        /** «Выделить» (0.27.7): перо обводит написанное. */
+        fun lassoMode(): Boolean = false
+        /** Обвели: контур (x, y подряд, координаты листа). */
+        fun onLasso(pts: FloatArray) {}
+        /** Рамка выделенного (координаты листа) или null. */
+        fun selectionRect(): android.graphics.RectF? = null
     }
 
     class StrokeStyle(val kind: String, val color: Int, val width: Float)
 
-    private enum class Mode { NONE, FORWARD, INK, ERASE, PIPETTE, PALM }
+    private enum class Mode { NONE, FORWARD, INK, ERASE, PIPETTE, PALM, LASSO }
+
+    // Обводка «Выделить» (0.27.7): точки в координатах листа.
+    private val lassoPts = ArrayList<Float>()
+    private val lassoPath = Path()
+    private val lassoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Ui.ACCENT
+        strokeWidth = Ui.dpf(context, 1.6f)
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(Ui.dpf(context, 7f), Ui.dpf(context, 5f)), 0f)
+    }
+    private val selFill = Paint().apply { style = Paint.Style.FILL; color = Color.argb(28, Color.red(Ui.ACCENT), Color.green(Ui.ACCENT), Color.blue(Ui.ACCENT)) }
 
     // Защита от ладони: пока перо над экраном (и ещё 0,7 с после), касание пальцем — это ладонь,
     // листу его не передаём (не листает, не двигает картинку). Ладонь легла чуть раньше пера —
@@ -261,14 +337,14 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
             }
             MotionEvent.ACTION_MOVE -> when (mode) {
                 Mode.FORWARD -> host.forwardToSheet(ev)
-                Mode.INK, Mode.ERASE -> moveInk(ev)
+                Mode.INK, Mode.ERASE, Mode.LASSO -> moveInk(ev)
                 Mode.NONE, Mode.PIPETTE, Mode.PALM -> Unit
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
                 if (mode == Mode.FORWARD) {
                     host.forwardToSheet(ev)
                     if (ev.actionMasked == MotionEvent.ACTION_UP) mode = Mode.NONE
-                } else if ((mode == Mode.INK || mode == Mode.ERASE) && ev.getPointerId(ev.actionIndex) == activePointer) {
+                } else if ((mode == Mode.INK || mode == Mode.ERASE || mode == Mode.LASSO) && ev.getPointerId(ev.actionIndex) == activePointer) {
                     finishInk(ev, ev.actionIndex)
                 }
                 if (ev.actionMasked == MotionEvent.ACTION_UP) mode = Mode.NONE
@@ -276,6 +352,8 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
             MotionEvent.ACTION_CANCEL -> {
                 if (mode == Mode.FORWARD) host.forwardToSheet(ev)
                 live = null
+                endEraseSnap()
+                lassoPts.clear()
                 mode = Mode.NONE
                 invalidateSelf()
             }
@@ -338,8 +416,17 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         downX = ev.getX(idx)
         downY = ev.getY(idx)
         hover = null
+        if (host.lassoMode() && ev.getToolType(idx) != MotionEvent.TOOL_TYPE_ERASER) {
+            mode = Mode.LASSO
+            lassoPts.clear()
+            lassoPts += x; lassoPts += y
+            invalidateSelf()
+            return
+        }
         if (host.isEraser() || ev.getToolType(idx) == MotionEvent.TOOL_TYPE_ERASER) {
             mode = Mode.ERASE
+            startEraseSnap()
+            eraseLastX = x; eraseLastY = y
             host.onErase(x, y, true)
             return
         }
@@ -364,9 +451,15 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         val idx = ev.findPointerIndex(activePointer)
         if (idx < 0) return
         val o = host.contentOffset()
+        if (mode == Mode.LASSO) {
+            for (h in 0 until ev.historySize) { lassoPts += ev.getHistoricalX(idx, h) - o.x; lassoPts += ev.getHistoricalY(idx, h) - o.y }
+            lassoPts += ev.getX(idx) - o.x; lassoPts += ev.getY(idx) - o.y
+            invalidateSelf()
+            return
+        }
         if (mode == Mode.ERASE) {
-            for (h in 0 until ev.historySize) host.onErase(ev.getHistoricalX(idx, h) - o.x, ev.getHistoricalY(idx, h) - o.y, false)
-            host.onErase(ev.getX(idx) - o.x, ev.getY(idx) - o.y, false)
+            for (h in 0 until ev.historySize) eraseStep(ev.getHistoricalX(idx, h) - o.x, ev.getHistoricalY(idx, h) - o.y)
+            eraseStep(ev.getX(idx) - o.x, ev.getY(idx) - o.y)
             return
         }
         val s = live ?: return
@@ -383,9 +476,27 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         s.points.add(InkPoint(x, y, t + clockOffset, p))
     }
 
+    /** Точки ластика — не чаще чем через 4 dp (ластик 14 dp — ничего не пропустит), как на доске. */
+    private fun eraseStep(x: Float, y: Float) {
+        val step = Ui.dpf(context, 4f)
+        val dx = x - eraseLastX; val dy = y - eraseLastY
+        if (dx * dx + dy * dy < step * step) return
+        eraseLastX = x; eraseLastY = y
+        host.onErase(x, y, false)
+    }
+
     private fun finishInk(ev: MotionEvent, idx: Int) {
+        if (mode == Mode.LASSO) {
+            mode = Mode.NONE
+            val pts = lassoPts.toFloatArray()
+            lassoPts.clear()
+            host.onLasso(pts)
+            invalidateSelf()
+            return
+        }
         if (mode == Mode.ERASE) {
             mode = Mode.NONE
+            endEraseSnap()
             return
         }
         val s = live ?: return
@@ -405,6 +516,19 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         canvas.translate(o.x, o.y)
         // Готовые рисунки и нераспознанные штрихи — на слое под этим (layer): пока пишут, перерисовывается только живой штрих.
         live?.let { drawStroke(canvas, it, liveStyle ?: pendingStyle, 255) }
+        // «Выделить»: обводка и рамка выделенного.
+        if (mode == Mode.LASSO && lassoPts.size >= 4) {
+            lassoPath.reset()
+            lassoPath.moveTo(lassoPts[0], lassoPts[1])
+            var i = 2
+            while (i + 1 < lassoPts.size) { lassoPath.lineTo(lassoPts[i], lassoPts[i + 1]); i += 2 }
+            canvas.drawPath(lassoPath, lassoPaint)
+        }
+        host.selectionRect()?.let { r ->
+            val pad = Ui.dpf(context, 6f)
+            canvas.drawRect(r.left - pad, r.top - pad, r.right + pad, r.bottom + pad, selFill)
+            canvas.drawRect(r.left - pad, r.top - pad, r.right + pad, r.bottom + pad, lassoPaint)
+        }
         val now = SystemClock.uptimeMillis()
         fading.removeAll { now - it.second > FADE_MS }
         for ((strokes, t0) in fading) {
