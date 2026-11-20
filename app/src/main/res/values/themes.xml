@@ -11,4 +11,13 @@
         <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowBackground">#EDF2F5</item>
     </style>
+
+    <!-- Главный экран до первого кадра (0.29.2): тёмно-синий, как заставка при запуске (Splash.kt). В onCreate — обычная тема. -->
+    <style name="Theme.FreeWrite.Launch" parent="Theme.FreeWrite">
+        <item name="android:windowBackground">#0A2133</item>
+        <item name="android:statusBarColor">#0A2133</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">#0A2133</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
 </resources>

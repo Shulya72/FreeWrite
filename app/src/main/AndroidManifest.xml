@@ -49,6 +49,7 @@
         <activity
             android:name=".HomeActivity"
             android:exported="true"
+            android:theme="@style/Theme.FreeWrite.Launch"
             android:windowSoftInputMode="stateHidden|adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|uiMode">
             <intent-filter>

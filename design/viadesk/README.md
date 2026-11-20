@@ -16,3 +16,7 @@
 (радиус знака — 30 % стороны: безопасная зона значка Android — круг 66 из 108 dp). Из неё —
 `res/drawable-*/ic_launcher_foreground.png` (108…432 px, без прозрачности) и `res/drawable/ic_launcher_background.xml`
 (тот же градиент под ней). Прежний знак — `viadesk-znak.svg`, `viadesk-znachok.svg` (до 0.29.2).
+
+Заставка при запуске (0.29.2) — баннер Владимира `viadesk-banner.jpg`. В приложении —
+`res/drawable-nodpi/splash_banner.jpg`: тот же баннер, края плавно переходят в фон #0A2133, на нём и показывается
+(во всю ширину экрана, посередине; код — `Splash.kt`).
