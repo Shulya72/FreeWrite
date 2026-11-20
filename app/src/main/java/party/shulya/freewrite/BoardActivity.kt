@@ -67,7 +67,7 @@ class BoardActivity : Activity(), BoardView.Host {
     private var pipetteSnap: ColorKit.Snapshot? = null
 
     private var tool = Tool.PEN
-    private var penColor = Ui.INK
+    private var penColor = Ui.PEN_INK
     private var fingerWrites = false
     /** На этом устройстве уже касались пером (планшет с пером). Нет — палец работает инструментом. */
     private var stylus = false
@@ -154,7 +154,7 @@ class BoardActivity : Activity(), BoardView.Host {
     private fun openingView(title: String): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER
-        setBackgroundColor(Ui.DESK)
+        setBackgroundColor(Ui.BG)
         tag = "board_opening"
         addView(android.widget.ProgressBar(this@BoardActivity))
         addView(Ui.text(this@BoardActivity, title.ifEmpty { "Доска" }, 20f, Ui.INK, bold = true).apply {
@@ -419,7 +419,7 @@ class BoardActivity : Activity(), BoardView.Host {
     // ---------------------------------------------------------------- интерфейс
 
     private fun buildUi() {
-        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Ui.DESK) }
+        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Ui.BG) }
         val phone = Input.isPhone(this)
         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         top.addView(Ui.ToolButton(this, R.drawable.ic_back, "Назад").apply {
@@ -471,9 +471,11 @@ class BoardActivity : Activity(), BoardView.Host {
             add(icon(R.drawable.ic_cloud, "Совместно", "board_cloud") { cloudDialog() }, 44f)
             add(moreButton, 40f)
         }
-        top.setBackgroundColor(Ui.PAPER)
+        // Панели — белые с тонкой границей над доской (0.29.3, тема «Светлая целиком»).
+        top.setBackgroundColor(Ui.BAR)
         top.setPadding(dp(4f), dp(2f), dp(4f), dp(2f))
         root.addView(top, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        if (phone) root.addView(Ui.barLine(this), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
 
         // Инструменты (набор Владимира, 0.26.2): Рука | Ручка, Ластик, Выделить, Заливка | Таблица, Выноска, Метка, Текст,
         // Раздел, Картинка. «В текст», «Маркер», «Фигуры» с доски убраны (в «Записи» остаются).
@@ -504,12 +506,12 @@ class BoardActivity : Activity(), BoardView.Host {
             bottomTools = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 tag = "board_bottom_tools"
-                setBackgroundColor(Ui.PAPER)
+                setBackgroundColor(Ui.BAR)
                 addView(r1, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
                 addView(r2, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
             }
         } else {
-            val row = Ui.EvenRow(this).apply { setPadding(dp(6f), 0, dp(6f), dp(4f)); setBackgroundColor(Ui.PAPER) }
+            val row = Ui.EvenRow(this).apply { setPadding(dp(6f), 0, dp(6f), dp(4f)); setBackgroundColor(Ui.BAR) }
             tool(row, Tool.HAND)
             row.addView(Ui.evenSep(this))
             for (t in listOf(Tool.PEN, Tool.ERASER, Tool.SELECT, Tool.FILL)) tool(row, t)
@@ -518,6 +520,7 @@ class BoardActivity : Activity(), BoardView.Host {
             row.addView(imageButton())
             root.addView(View(this).apply { setBackgroundColor(Color.rgb(237, 240, 245)) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
             root.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            root.addView(Ui.barLine(this), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
         }
 
         // Цвета — полоса над доской (планшет — когда выбраны Ручка или Заливка, телефон — по кнопке «Цвет»): три последних,
@@ -656,7 +659,7 @@ class BoardActivity : Activity(), BoardView.Host {
         root.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
         bottomTools?.let { tools ->
             // Телефон: инструменты внизу, под большим пальцем, две строки без прокрутки.
-            root.addView(View(this).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+            root.addView(Ui.barLine(this), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
             root.addView(tools, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         }
         handler.postDelayed({ hint("Пальцем — двигать и масштабировать, пером — писать и рисовать", 3500) }, 300)
@@ -2618,7 +2621,7 @@ class BoardActivity : Activity(), BoardView.Host {
         val z = board.camZ
         val shape = ShapeTool.fromWriting(g.strokes, best, Ui.dpf(this, 150f) / z, Ui.dpf(this, 4f) / z)
         if (shape != null) {
-            board.strokes += ShapeTool.drawingOf(shape, NoteInkView.StrokeStyle("pen", Ui.INK, Ui.dpf(this, 2.4f) / z))
+            board.strokes += ShapeTool.drawingOf(shape, NoteInkView.StrokeStyle("pen", Ui.PEN_INK, Ui.dpf(this, 2.4f) / z))
             changed()
             return
         }

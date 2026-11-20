@@ -125,8 +125,8 @@ class Splash(private val a: Activity) {
     companion object {
         /** Фон заставки — светлый, как лист картинки (#EEF3F6); тот же цвет — у системной заставки и окна до первого кадра. */
         const val COLOR = 0xFFEEF3F6.toInt()
-        /** Строки состояния и навигации в теме (#FBFCFD). */
-        private const val LIGHT = 0xFFFBFCFD.toInt()
+        /** Строки состояния и навигации в теме — белые, как шапки и вкладки (0.29.3, «Светлая целиком»). */
+        private const val LIGHT = 0xFFFFFFFF.toInt()
         private const val FADE_IN = 260L
         /** С начала показа до начала таяния. */
         private const val HOLD = 1300L

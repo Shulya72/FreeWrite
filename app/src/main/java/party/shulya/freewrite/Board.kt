@@ -726,7 +726,7 @@ class Board(
                 .also { it.id = jid(j) }
 
         fun parseText(j: JSONObject) = BoardText(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(), j.optDouble("size", 24.0).toFloat(),
-            j.optString("text"), j.optInt("color", Ui.INK)).also { it.id = jid(j) }
+            j.optString("text"), j.optInt("color", Ui.PEN_INK)).also { it.id = jid(j) }
 
         fun parseImage(j: JSONObject) = BoardImage(j.optString("file"), j.optDouble("x").toFloat(), j.optDouble("y").toFloat(),
             j.optDouble("w").toFloat(), j.optDouble("h").toFloat(), j.optInt("pxW"), j.optInt("pxH")).also { m ->
@@ -753,7 +753,7 @@ class Board(
         fun parseFill(j: JSONObject): BoardFill? {
             val p = floats(j.optJSONArray("pts"))
             if (p.size < 6) return null
-            return BoardFill(p, j.optInt("color", Ui.INK), j.optDouble("alpha", BoardFill.DEFAULT_ALPHA.toDouble()).toFloat())
+            return BoardFill(p, j.optInt("color", Ui.PEN_INK), j.optDouble("alpha", BoardFill.DEFAULT_ALPHA.toDouble()).toFloat())
                 .also { it.id = jid(j); it.lt = j.optString("lt"); it.lu = j.optString("lu"); it.lz = j.optString("lz"); it.ln = j.optInt("ln", 1) != 0 }
         }
 

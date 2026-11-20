@@ -574,7 +574,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
         canvas.scale(z, z)
         canvas.translate(-b.camX, -b.camY)
         for (d in dry) painter.drawing(canvas, d, 255, false, BoardTiles.MIN_PX / z)
-        s?.let { painter.stroke(canvas, it, liveStyle ?: NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z), 255) }
+        s?.let { painter.stroke(canvas, it, liveStyle ?: NoteInkView.StrokeStyle("write", Ui.PEN_INK, Ui.dpf(context, 2.6f) / z), 255) }
         canvas.restore()
     }
     private val gridPaint = Paint().apply { color = Ui.LINE; strokeWidth = 0f; style = Paint.Style.STROKE }
@@ -2193,7 +2193,7 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             canvas.drawRect(min(frameDown.x, frameNow.x), min(frameDown.y, frameNow.y), max(frameDown.x, frameNow.x), max(frameDown.y, frameNow.y), dashPaint)
         }
         if (!plain && !capturing) drawFillDraft(canvas, z)
-        val pendingStyle = NoteInkView.StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f) / z)
+        val pendingStyle = NoteInkView.StrokeStyle("write", Ui.PEN_INK, Ui.dpf(context, 2.6f) / z)
         for (s in host.pendingStrokes()) painter.stroke(canvas, s, pendingStyle, 255)
         // Живая линия — в слое поверх доски ([inkLayer], 0.27.4).
         val now = SystemClock.uptimeMillis()

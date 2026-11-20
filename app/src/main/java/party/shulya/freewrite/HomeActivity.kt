@@ -38,6 +38,10 @@ class HomeActivity : Activity() {
     private lateinit var folderRow: LinearLayout
     private lateinit var countText: TextView
     private lateinit var compose: View
+    /** Поиск заметок — в белой шапке, только на вкладке «Заметки». */
+    private lateinit var searchWrap: View
+    /** Граница под белой шапкой: у «Задач» своя — под днями недели (шапка календаря тоже белая). */
+    private lateinit var headLine: View
     private val pages = LinkedHashMap<String, View>()
     private val tabs = LinkedHashMap<String, LinearLayout>()
     private var release: Updater.Release? = null
@@ -123,7 +127,7 @@ class HomeActivity : Activity() {
     private fun buildUi(): View {
         val side = if (phone) 16f else 28f
         val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setBackgroundColor(Ui.DESK)
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(Ui.BG)
             // Поиск не забирает курсор при открытии — клавиатура только по касанию поля.
             isFocusableInTouchMode = true
             descendantFocusability = android.view.ViewGroup.FOCUS_BEFORE_DESCENDANTS
@@ -167,7 +171,14 @@ class HomeActivity : Activity() {
             setOnClickListener { v -> showMenu(v) }
         }
         head.addView(more, LinearLayout.LayoutParams(dp(40f), dp(40f)).apply { marginStart = dp(4f) })
-        root.addView(centered(head), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        // Шапка белая (тема «Светлая целиком», 0.29.3): название, кружок с инициалами, «⋮», на «Заметках» — поиск.
+        val headBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Ui.BAR); tag = "home_head" }
+        headBox.addView(centered(head), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        searchWrap = centered(FrameLayout(this).apply { setPadding(dp(side), dp(6f), dp(side), dp(12f)); addView(searchField()) })
+        headBox.addView(searchWrap, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        root.addView(headBox, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        headLine = Ui.barLine(this)
+        root.addView(headLine, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
         refreshProfile()
 
         // Плашка обновления
@@ -201,7 +212,7 @@ class HomeActivity : Activity() {
             setImageResource(R.drawable.ic_compose)
             imageTintList = ColorStateList.valueOf(Color.WHITE)
             background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Ui.ACCENT)
+                shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Ui.INK)
             }
             elevation = dp(6f).toFloat()
             setPadding(dp(15f), dp(15f), dp(15f), dp(15f))
@@ -216,14 +227,14 @@ class HomeActivity : Activity() {
         // Вкладки внизу
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Ui.PAPER)
+            setBackgroundColor(Ui.BAR)
             setPadding(dp(8f), dp(6f), dp(8f), dp(8f))
             tag = "home_tabs"
         }
         bar.addView(tabButton(TAB_NOTES, R.drawable.ic_note, "Заметки"), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         bar.addView(tabButton(TAB_TASKS, R.drawable.ic_calendar, "Задачи"), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         bar.addView(tabButton(TAB_BOARDS, R.drawable.ic_board, "Доски"), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        root.addView(View(this).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+        root.addView(Ui.barLine(this), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
         root.addView(bar, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         root.post { root.requestFocus() }
         return root
@@ -258,6 +269,8 @@ class HomeActivity : Activity() {
         }
         titleView.text = when (tab) { TAB_TASKS -> "Задачи"; TAB_BOARDS -> "Доски"; else -> "Заметки" }
         compose.visibility = if (tab == TAB_NOTES) View.VISIBLE else View.GONE
+        searchWrap.visibility = if (tab == TAB_NOTES) View.VISIBLE else View.GONE
+        headLine.visibility = if (tab == TAB_TASKS) View.GONE else View.VISIBLE
         if (tab == TAB_TASKS && ::planner.isInitialized) planner.refresh()
     }
 
@@ -274,12 +287,12 @@ class HomeActivity : Activity() {
 
     // ---------------------------------------------------------------- Заметки
 
-    private fun notesPage(side: Float): View = scrollPage(side) { col ->
-        // Поиск
+    /** Поле поиска заметок (в белой шапке): все слова, без регистра, «ё» = «е». */
+    private fun searchField(): View {
         val search = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = Ui.rounded(this@HomeActivity, Color.argb(16, 9, 38, 56), null, 12f)
+            background = Ui.rounded(this@HomeActivity, Ui.DESK, null, 12f)
             setPadding(dp(10f), 0, dp(10f), 0)
         }
         search.addView(ImageView(this).apply {
@@ -301,12 +314,14 @@ class HomeActivity : Activity() {
             })
         }
         search.addView(edit, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        col.addView(search, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
+        return search
+    }
 
+    private fun notesPage(side: Float): View = scrollPage(side) { col ->
         // Папки
         folderRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; tag = "folder_row" }
         val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(folderRow) }
-        col.addView(hs, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(12f) })
+        col.addView(hs, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8f) })
 
         notesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "notes_list" }
         col.addView(notesList, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
@@ -314,10 +329,11 @@ class HomeActivity : Activity() {
         col.addView(countText, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
     }
 
+    /** Папка-«таблетка»: выбранная — тёмно-синяя, остальные — белые с рамкой. */
     private fun folderChip(label: String, on: Boolean, tag: String): TextView = Ui.text(this, label, 14f, if (on) Color.WHITE else Ui.INK, bold = on).apply {
         this.tag = tag
         isSingleLine = true
-        background = if (on) Ui.rounded(this@HomeActivity, Ui.ACCENT, null, 18f) else Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 18f)
+        background = if (on) Ui.rounded(this@HomeActivity, Ui.INK, null, 18f) else Ui.rounded(this@HomeActivity, Ui.CARD, Ui.CHIP_LINE, 18f)
         setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
         isClickable = true
     }
@@ -337,7 +353,8 @@ class HomeActivity : Activity() {
             }, lp())
         }
         folderRow.addView(folderChip("+ Папка", false, "folder_add").apply {
-            setTextColor(Ui.ACCENT)
+            setTextColor(Ui.INK2)
+            background = Ui.dashed(this@HomeActivity, Ui.DASH_LINE, 18f)
             setOnClickListener { askFolderName("Новая папка", "") { name -> val f = folders.add(name); pickFolder(f.id) } }
         }, lp())
     }
@@ -396,7 +413,7 @@ class HomeActivity : Activity() {
                 else -> "Здесь будут ваши заметки. Кнопка с карандашом внизу справа — новая заметка: пишите от руки, слова соберутся в текст."
             }
             notesList.addView(Ui.text(this, msg, 15f, Ui.INK2).apply {
-                background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
+                background = Ui.rounded(this@HomeActivity, Ui.CARD, Ui.RULE, 16f)
                 setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
             }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(16f) })
         }
@@ -410,7 +427,7 @@ class HomeActivity : Activity() {
             notesList.addView(h)
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
+                background = Ui.rounded(this@HomeActivity, Ui.CARD, Ui.RULE, 16f)
             }
             for ((i, n) in notes.withIndex()) {
                 if (i > 0) card.addView(View(this).apply { setBackgroundColor(Ui.RULE) },
@@ -435,7 +452,7 @@ class HomeActivity : Activity() {
             isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END; tag = "row_title"
         })
         val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(2f), 0, 0) }
-        line.addView(Ui.text(this, NotesList.rowTime(NotesList.edited(n), now), 14f, Ui.INK).apply { setPadding(0, 0, dp(8f), 0) })
+        line.addView(Ui.text(this, NotesList.rowTime(NotesList.edited(n), now), 14f, Ui.ACCENT, bold = true).apply { setPadding(0, 0, dp(8f), 0) })
         line.addView(Ui.text(this, n.preview.ifEmpty { "Нет дополнительного текста" }, 14f, Ui.MUTED).apply {
             isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
@@ -579,7 +596,7 @@ class HomeActivity : Activity() {
     private fun tile(icon: Int, title: String, sub: String, tag: String, onClick: () -> Unit): View {
         val t = LinearLayout(this).apply {
             this.tag = tag
-            background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
+            background = Ui.rounded(this@HomeActivity, Ui.CARD, Ui.RULE, 16f)
             isClickable = true
             setOnClickListener { onClick() }
         }
@@ -616,7 +633,7 @@ class HomeActivity : Activity() {
         if (all.isEmpty()) {
             boardsList.addView(Ui.text(this, "Здесь будут ваши доски: чертежи, таблицы ИД, ведомости и планы. «Новая доска» — начать, " +
                 "«По коду» — подключиться к общей доске коллеги.", 15f, Ui.INK2).apply {
-                background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
+                background = Ui.rounded(this@HomeActivity, Ui.CARD, Ui.RULE, 16f)
                 setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
             }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(16f) })
             return
@@ -641,7 +658,7 @@ class HomeActivity : Activity() {
     private fun entryRow(icon: Int, title: String, time: Long, sub: String, chips: List<TextView>): LinearLayout {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
+            background = Ui.rounded(this@HomeActivity, Ui.CARD, Ui.RULE, 16f)
             setPadding(dp(12f), dp(12f), dp(14f), dp(12f))
             isClickable = true
         }

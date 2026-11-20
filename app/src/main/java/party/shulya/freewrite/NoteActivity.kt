@@ -78,7 +78,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
     private var pipetteSnap: ColorKit.Snapshot? = null
 
     private var tool = Tool.WRITE
-    private var penColor = Ui.INK
+    private var penColor = Ui.PEN_INK
     private var fingerWrites = false
 
     private val blockViews = ArrayList<View>()
@@ -196,10 +196,10 @@ class NoteActivity : Activity(), NoteInkView.Host {
     private fun buildUi() {
         rootView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Ui.DESK)
+            setBackgroundColor(Ui.BG)
         }
 
-        // Полоса инструментов
+        // Полоса инструментов (белая, граница снизу — 0.29.3, тема «Светлая целиком»)
         val row = LinearLayout(this)
         val back = Ui.ToolButton(this, R.drawable.ic_back, "Назад").apply { setOnClickListener { onBackPressed() } }
         back.minimumWidth = dp(44f)
@@ -255,7 +255,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
             setOnCheckedChangeListener { _, on -> fingerWrites = on }
         })
         rootView.addView(Ui.toolbar(this, row), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        rootView.addView(View(this).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+        rootView.addView(Ui.barLine(this), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
 
         // Плашка «скачайте модель»
         banner = LinearLayout(this).apply {
@@ -1777,7 +1777,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         val textSize = if (wordHeights.isNotEmpty()) max(lineHeightPx.toFloat(), wordHeights.sorted()[wordHeights.size / 2]) else lineHeightPx.toFloat()
         ShapeTool.fromWriting(g.strokes, best, textSize * 2.6f, Ui.dpf(this, 4f))?.let { shape ->
             pushUndo()
-            note.drawings += ShapeTool.drawingOf(shape, NoteInkView.StrokeStyle("pen", Ui.INK, Ui.dpf(this, 2.4f)))
+            note.drawings += ShapeTool.drawingOf(shape, NoteInkView.StrokeStyle("pen", Ui.PEN_INK, Ui.dpf(this, 2.4f)))
             changed(render = false)
             return
         }

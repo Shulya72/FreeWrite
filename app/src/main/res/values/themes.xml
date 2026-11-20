@@ -1,15 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- ViaDesk (0.28): ночной синий, бирюза, янтарь. Имя стиля внутреннее — не меняем. -->
+    <!-- ViaDesk (0.28): ночной синий, бирюза, янтарь; с 0.29.3 — тема «Светлая целиком»: строки сверху и снизу белые, как
+         шапки и вкладки, фон экранов #F4F7F9. Имя стиля внутреннее — не меняем. -->
     <style name="Theme.FreeWrite" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:colorPrimary">#092638</item>
-        <item name="android:colorPrimaryDark">#FBFCFD</item>
-        <item name="android:colorAccent">#0A8F82</item>
-        <item name="android:statusBarColor">#FBFCFD</item>
+        <item name="android:colorPrimaryDark">#FFFFFF</item>
+        <item name="android:colorAccent">#087F73</item>
+        <item name="android:statusBarColor">#FFFFFF</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#FBFCFD</item>
+        <item name="android:navigationBarColor">#FFFFFF</item>
         <item name="android:windowLightNavigationBar">true</item>
-        <item name="android:windowBackground">#EDF2F5</item>
+        <item name="android:windowBackground">#F4F7F9</item>
     </style>
 
     <!-- Главный экран до первого кадра (0.29.2): светлый, как заставка при запуске (Splash.kt). В onCreate — обычная тема. -->

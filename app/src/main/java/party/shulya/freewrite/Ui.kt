@@ -22,20 +22,45 @@ import kotlin.math.roundToInt
  * Цвета и мелкие помощники интерфейса. С 0.28 — цвета ViaDesk: ночной синий #092638, бирюза #08C9B5, янтарь #FFB52E.
  * Бирюза на белом плохо читается текстом, поэтому ACCENT (надписи, выбранные кнопки) — её тёмный оттенок, а яркая
  * TEAL — для значков и заливок. Размеры досок и таблиц от цветов не зависят.
+ *
+ * С 0.29.3 — тема «Светлая целиком» (Владимир выбрал вариант 4 макета тем): шапки, вкладки и панели белые ([BAR]) с
+ * тонкой границей ([BAR_LINE]), под ними — светлый фон [BG]; тёмно-синий — надписи и главная кнопка, бирюза — кнопки и
+ * выбранное, янтарь — «сегодня» и важное. Белые поля PDF и картинок на светлом не видны.
  */
 object Ui {
     val NAVY = Color.rgb(9, 38, 56)
     val TEAL = Color.rgb(8, 201, 181)
     val AMBER = Color.rgb(255, 181, 46)
-    val DESK = Color.rgb(237, 242, 245)
+    /** Значок на яркой бирюзе (кнопка «+» в календаре) — почти чёрный синий #04202A. */
+    val ON_TEAL = Color.rgb(4, 32, 42)
+    /** Мягкая заливка кнопок-«таблеток» и полей поиска (#EEF3F6). */
+    val DESK = Color.rgb(238, 243, 246)
+    /** Фон экранов под белыми шапками и вкладками (#F4F7F9). */
+    val BG = Color.rgb(244, 247, 249)
+    /** Шапки, вкладки, панели инструментов — белые. */
+    val BAR = Color.WHITE
+    /** Граница белых панелей (#E1E8ED). */
+    val BAR_LINE = Color.rgb(225, 232, 237)
+    /** Карточки списков (заметки, доски, события) — белые на [BG]. */
+    val CARD = Color.WHITE
+    /** Рамка невыбранных кнопок-«таблеток» на белом (#D2DDE4) и пунктир «+ добавить» (#9FB4C1). */
+    val CHIP_LINE = Color.rgb(210, 221, 228)
+    val DASH_LINE = Color.rgb(159, 180, 193)
     val PAPER = Color.rgb(251, 252, 253)
-    val INK = NAVY
+    /** Надписи интерфейса — тёмно-синий макета (#0A2133). */
+    val INK = Color.rgb(10, 33, 51)
+    /**
+     * Цвет ручки по умолчанию и цвет «по умолчанию» в файлах досок — ночной синий, как до 0.29.3 (не меняется вместе с темой:
+     * штрихи и надписи в файлах и у коллег остаются прежнего цвета).
+     */
+    val PEN_INK = NAVY
     val INK2 = Color.rgb(74, 100, 117)
     val MUTED = Color.rgb(128, 151, 165)
     val RULE = Color.rgb(215, 225, 231)
     val LINE = Color.argb(34, 9, 60, 90)
     val MARGIN = Color.argb(110, 255, 181, 46)
-    val ACCENT = Color.rgb(10, 143, 130)
+    /** Бирюза для надписей и выбранного (#087F73) — читается на белом. */
+    val ACCENT = Color.rgb(8, 127, 115)
     val ACCENT_SOFT = Color.rgb(219, 245, 241)
     val AMBER_SOFT = Color.rgb(255, 241, 214)
     val PEN_BLUE = Color.rgb(31, 79, 209)
@@ -77,7 +102,6 @@ object Ui {
     fun mono(ctx: Context, value: String, sp: Float, color: Int = MUTED): TextView =
         text(ctx, value, sp, color).apply { typeface = Typeface.MONOSPACE }
 
-    /** Кнопка инструмента: значок и подпись под ним. Выбранная — с оранжевым фоном. */
     /** Кнопка инструмента: значок и подпись. [compact] — для панели «две строки» (0.27): узкая, подпись 10,5 sp в одну строку. */
     class ToolButton(ctx: Context, iconRes: Int, label: String, compact: Boolean = false) : LinearLayout(ctx) {
         private val icon = ImageView(ctx)
@@ -214,6 +238,16 @@ object Ui {
         }
     }
 
+    /** Пунктирная рамка (кнопки «+ Папка» и подобные). */
+    fun dashed(ctx: Context, stroke: Int, radiusDp: Float): GradientDrawable = GradientDrawable().apply {
+        setColor(Color.TRANSPARENT)
+        cornerRadius = dpf(ctx, radiusDp)
+        setStroke(dp(ctx, 1f), stroke, dpf(ctx, 4f), dpf(ctx, 3f))
+    }
+
+    /** Граница под белой шапкой или над белой панелью вкладок (1 dp). */
+    fun barLine(ctx: Context): View = View(ctx).apply { setBackgroundColor(BAR_LINE) }
+
     fun separator(ctx: Context): View = View(ctx).apply {
         setBackgroundColor(RULE)
         layoutParams = LinearLayout.LayoutParams(dp(ctx, 1f), MATCH).apply {
@@ -224,7 +258,7 @@ object Ui {
     /** Полоса инструментов, которая прокручивается вбок на узких экранах. */
     fun toolbar(ctx: Context, row: LinearLayout): HorizontalScrollView = HorizontalScrollView(ctx).apply {
         isHorizontalScrollBarEnabled = false
-        setBackgroundColor(PAPER)
+        setBackgroundColor(BAR)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
         row.setPadding(dp(ctx, 10f), dp(ctx, 4f), dp(ctx, 10f), dp(ctx, 4f))

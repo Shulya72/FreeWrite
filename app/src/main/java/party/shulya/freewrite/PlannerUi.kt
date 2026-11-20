@@ -76,9 +76,11 @@ class PlannerPage(private val a: HomeActivity) {
     // ---------------------------------------------------------------- каркас
 
     private fun build() {
+        // Шапка календаря — белая, как шапка главного экрана над ней (0.29.3, «Светлая целиком»), граница — под днями недели.
         monthBox = column()
         monthBox.addView(nav(MONTH))
         monthBox.addView(weekHeader())
+        monthBox.addView(Ui.barLine(a), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
         months = PlanMonthsView(a, this).apply { tag = "plan_months" }
         monthScroll = ScrollView(a).apply { isFillViewport = true; addView(months) }
         monthBox.addView(monthScroll, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
@@ -97,7 +99,8 @@ class PlannerPage(private val a: HomeActivity) {
         dayBox.addView(dayHead)
         allDay = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(6f); setPadding(dp(16f), 0, dp(16f), dp(6f)); tag = "plan_allday" }
         dayBox.addView(allDay)
-        dayBox.addView(View(a).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+        strip.setBackgroundColor(Ui.BAR); dayHead.setBackgroundColor(Ui.BAR); allDay.setBackgroundColor(Ui.BAR)
+        dayBox.addView(Ui.barLine(a), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
         timeline = PlanDayView(a, this).apply { tag = "plan_timeline" }
         dayScroll = ScrollView(a).apply { addView(timeline) }
         dayBox.addView(dayScroll, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
@@ -106,11 +109,12 @@ class PlannerPage(private val a: HomeActivity) {
         searchBox = column()
         val qbar = LinearLayout(a).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16f), dp(6f), dp(8f), dp(6f))
+            setPadding(dp(16f), dp(6f), dp(8f), dp(10f))
+            setBackgroundColor(Ui.BAR)
         }
         val field = LinearLayout(a).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            background = Ui.rounded(a, Ui.PAPER, Ui.RULE, 12f)
+            background = Ui.rounded(a, Ui.DESK, null, 12f)
             setPadding(dp(10f), 0, dp(10f), 0)
         }
         field.addView(ImageView(a).apply { setImageResource(R.drawable.ic_search); imageTintList = ColorStateList.valueOf(Ui.MUTED) },
@@ -131,6 +135,7 @@ class PlannerPage(private val a: HomeActivity) {
             setOnClickListener { qInput.setText(""); hideKeyboard(); show(MONTH) }
         })
         searchBox.addView(qbar)
+        searchBox.addView(Ui.barLine(a), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
         qResults = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; tag = "q_results"; setPadding(dp(16f), 0, dp(16f), dp(96f)) }
         searchBox.addView(ScrollView(a).apply { addView(qResults) }, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
 
@@ -143,6 +148,7 @@ class PlannerPage(private val a: HomeActivity) {
         val row = LinearLayout(a).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(10f), dp(2f), dp(18f), dp(2f))
+            setBackgroundColor(Ui.BAR)
         }
         if (which == MONTH) {
             yearLabel = Ui.text(a, "", 17f, Ui.ACCENT, bold = true).apply { setPadding(dp(8f), dp(8f), dp(8f), dp(8f)) }
@@ -155,8 +161,8 @@ class PlannerPage(private val a: HomeActivity) {
             row.addView(dayBack)
         }
         row.addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
-        row.addView(round(R.drawable.ic_search, "Поиск", if (which == MONTH) "plan_search" else "plan_search_d") { openSearch() })
-        row.addView(round(R.drawable.ic_plus, "Добавить", if (which == MONTH) "plan_add" else "plan_add_d") {
+        row.addView(round(R.drawable.ic_search, "Поиск", if (which == MONTH) "plan_search" else "plan_search_d", Ui.DESK, Ui.INK2) { openSearch() })
+        row.addView(round(R.drawable.ic_plus, "Добавить", if (which == MONTH) "plan_add" else "plan_add_d", Ui.TEAL, Ui.ON_TEAL) {
             val base = if (mode == DAY) sel else today()
             val t = LocalTime.now().let { n -> LocalTime.of(minOf(22, n.hour + 1), 0) }
             openEditor(null, base.atTime(t))
@@ -164,10 +170,11 @@ class PlannerPage(private val a: HomeActivity) {
         return row
     }
 
-    private fun round(icon: Int, label: String, tag: String, click: () -> Unit) = ImageView(a).apply {
+    /** Круглая кнопка шапки: поиск — серая, «+» — бирюзовая с тёмным значком (как в макете темы). */
+    private fun round(icon: Int, label: String, tag: String, fill: Int, tint: Int, click: () -> Unit) = ImageView(a).apply {
         this.tag = tag; contentDescription = label
-        setImageResource(icon); imageTintList = ColorStateList.valueOf(Ui.ACCENT)
-        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Ui.ACCENT_SOFT) }
+        setImageResource(icon); imageTintList = ColorStateList.valueOf(tint)
+        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(fill) }
         setPadding(dp(9f), dp(9f), dp(9f), dp(9f))
         isClickable = true
         setOnClickListener { click() }
@@ -176,7 +183,8 @@ class PlannerPage(private val a: HomeActivity) {
 
     private fun weekHeader() = LinearLayout(a).apply {
         orientation = LinearLayout.HORIZONTAL
-        setPadding(dp(12f), dp(2f), dp(12f), dp(4f))
+        setBackgroundColor(Ui.BAR)
+        setPadding(dp(12f), dp(2f), dp(12f), dp(6f))
         for ((k, w) in Plan.WEEKDAYS.withIndex()) addView(Ui.text(a, w, 12f, if (k >= 5) Ui.MUTED else Ui.INK2, bold = true).apply {
             gravity = Gravity.CENTER
         }, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
@@ -185,7 +193,7 @@ class PlannerPage(private val a: HomeActivity) {
     private fun bottomBar() = LinearLayout(a).apply {
         orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(16f), dp(6f), dp(16f), dp(6f))
-        setBackgroundColor(Ui.DESK)
+        setBackgroundColor(Ui.BG)
         addView(Ui.text(a, "Сегодня", 15f, Ui.ACCENT, bold = true).apply {
             tag = "plan_today"; setPadding(dp(4f), dp(8f), dp(12f), dp(8f)); isClickable = true
             setOnClickListener { goToday() }
@@ -279,10 +287,12 @@ class PlannerPage(private val a: HomeActivity) {
                 setOnClickListener { sel = d; renderDay() }
             }
             cell.addView(Ui.text(a, Plan.WEEKDAYS[k], 11f, if (k >= 5) Ui.MUTED else Ui.INK2).apply { gravity = Gravity.CENTER })
-            cell.addView(Ui.text(a, d.dayOfMonth.toString(), 17f, when { on -> Color.WHITE; d == today -> Ui.ACCENT; else -> Ui.INK }, bold = on || d == today).apply {
+            // Выбранный день — тёмно-синий кружок, сегодня — янтарный ободок (и у выбранного).
+            cell.addView(Ui.text(a, d.dayOfMonth.toString(), 17f, if (on) Color.WHITE else Ui.INK, bold = on || d == today).apply {
                 gravity = Gravity.CENTER
-                if (on) background = android.graphics.drawable.GradientDrawable().apply {
-                    shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(if (d == today) Ui.ACCENT else Ui.INK)
+                if (on || d == today) background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(if (on) Ui.INK else Color.TRANSPARENT)
+                    if (d == today) setStroke(dp(2f), Ui.AMBER)
                 }
             }, LinearLayout.LayoutParams(dp(36f), dp(36f)).apply { gravity = Gravity.CENTER_HORIZONTAL })
             strip.addView(cell, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
@@ -368,7 +378,7 @@ class PlannerPage(private val a: HomeActivity) {
                 head.addView(Ui.text(a, Plan.dayTitle(d), 14f, if (d == today) Ui.ACCENT else Ui.INK, bold = true), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
                 head.addView(Ui.text(a, Plan.relDays(d, today), 13f, Ui.MUTED))
                 qResults.addView(head)
-                group = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; background = Ui.rounded(a, Ui.PAPER, Ui.RULE, 12f) }
+                group = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; background = Ui.rounded(a, Ui.CARD, Ui.RULE, 14f) }
                 qResults.addView(group)
             }
             val o = PlanOcc(it, d)
@@ -802,7 +812,12 @@ class PlanMonthsView(ctx: Context, private val page: PlannerPage) : View(ctx) {
                 val cy = y0 + Ui.dpf(context, 18f)
                 val isToday = d == today
                 val isSel = d == page.sel
-                if (isToday) { fill.color = Ui.ACCENT; c.drawCircle(cx, cy, r, fill) }
+                // Сегодня — тёмно-синий кружок с янтарным ободком (макет темы «Светлая целиком»).
+                if (isToday) {
+                    fill.color = Ui.INK; c.drawCircle(cx, cy, r, fill)
+                    ring.color = Ui.AMBER; val w = ring.strokeWidth; ring.strokeWidth = Ui.dpf(context, 2f)
+                    c.drawCircle(cx, cy, r + Ui.dpf(context, 1.5f), ring); ring.strokeWidth = w
+                }
                 else if (isSel) { ring.color = Ui.INK; c.drawCircle(cx, cy, r, ring) }
                 num.color = when { isToday -> Color.WHITE; idx % 7 >= 5 -> Ui.MUTED; else -> Ui.INK }
                 num.typeface = if (isToday || isSel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
