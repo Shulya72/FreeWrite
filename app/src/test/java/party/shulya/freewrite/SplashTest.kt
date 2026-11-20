@@ -90,7 +90,7 @@ class SplashTest {
 
         pass(1500)
         assertNull("заставка растаяла", decor(a).findViewWithTag<View>("splash"))
-        assertEquals(0xFFFBFCFD.toInt(), a.window.statusBarColor)
+        assertEquals("потом — белая, как шапка", 0xFFFFFFFF.toInt(), a.window.statusBarColor)
         assertNotNull("теперь — «Как вас зовут?»", ShadowAlertDialog.getLatestAlertDialog())
 
         // Тот же запуск приложения — второй раз не показывается.

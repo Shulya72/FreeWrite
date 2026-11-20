@@ -22,7 +22,7 @@ object ColorKit {
 
     /** Палитра: тёмные, яркие, глубокие и бледные (для маркера и заливок). */
     val PALETTE = intArrayOf(
-        Ui.INK, Color.rgb(0, 0, 0), Color.rgb(107, 114, 128), Ui.PEN_BLUE, Ui.PEN_RED, Ui.OK,
+        Ui.PEN_INK, Color.rgb(0, 0, 0), Color.rgb(107, 114, 128), Ui.PEN_BLUE, Ui.PEN_RED, Ui.OK,
         Color.rgb(232, 113, 10), Color.rgb(242, 194, 0), Color.rgb(124, 181, 24), Color.rgb(15, 157, 142), Color.rgb(14, 165, 233), Color.rgb(124, 58, 237),
         Color.rgb(219, 39, 119), Color.rgb(139, 90, 43), Color.rgb(30, 58, 138), Color.rgb(127, 29, 29), Color.rgb(20, 83, 45), Color.rgb(107, 107, 31),
         Color.rgb(255, 236, 140), Color.rgb(200, 242, 194), Color.rgb(191, 227, 255), Color.rgb(255, 201, 217), Color.rgb(255, 216, 168), Color.rgb(227, 211, 255),
@@ -35,7 +35,7 @@ object ColorKit {
     fun recent(ctx: Context): List<Int> {
         val saved = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RECENT, null)
         val list = saved?.split(',')?.mapNotNull { it.toIntOrNull() }.orEmpty().toMutableList()
-        for (c in listOf(Ui.INK, Ui.PEN_BLUE, Ui.PEN_RED)) if (list.size < 3 && c !in list) list += c
+        for (c in listOf(Ui.PEN_INK, Ui.PEN_BLUE, Ui.PEN_RED)) if (list.size < 3 && c !in list) list += c
         return list.take(3)
     }
 

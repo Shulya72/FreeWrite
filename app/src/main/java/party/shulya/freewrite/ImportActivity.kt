@@ -115,7 +115,7 @@ class ImportActivity : Activity() {
     }
 
     private fun buildUi(): View {
-        val outer = FrameLayout(this).apply { setBackgroundColor(Ui.DESK) }
+        val outer = FrameLayout(this).apply { setBackgroundColor(Ui.BG) }
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = Ui.rounded(this@ImportActivity, Ui.PAPER, Ui.RULE, 16f)

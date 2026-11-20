@@ -117,7 +117,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
     var layer: View? = null
         private set
 
-    private val pendingStyle = StrokeStyle("write", Ui.INK, Ui.dpf(context, 2.6f))
+    private val pendingStyle = StrokeStyle("write", Ui.PEN_INK, Ui.dpf(context, 2.6f))
 
     init {
         layer = object : View(context) {
@@ -289,7 +289,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
     private var clockOffset = 0L
     private var hover: PointF? = null
     private val fading = ArrayList<Pair<List<InkStroke>, Long>>()
-    private var fadingStyle = StrokeStyle("pen", Ui.INK, Ui.dpf(context, 2.6f))
+    private var fadingStyle = StrokeStyle("pen", Ui.PEN_INK, Ui.dpf(context, 2.6f))
 
     /**
      * «Улетающие буквы» (0.27.8, Владимир: «эффект как на Samsung — написал слово, и буквы улетели в строчку; лишь бы

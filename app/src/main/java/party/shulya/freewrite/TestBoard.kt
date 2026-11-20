@@ -60,7 +60,7 @@ object TestBoard {
         val rows = (images + cols - 1) / cols
         val fieldW = cols * (w + gap)
         val fieldH = rows.coerceAtLeast(1) * (h + gap)
-        val colors = intArrayOf(Ui.INK, Ui.PEN_BLUE, Ui.PEN_RED, Ui.OK)
+        val colors = intArrayOf(Ui.PEN_INK, Ui.PEN_BLUE, Ui.PEN_RED, Ui.OK)
         for (i in 0 until strokes) {
             val x0 = r.nextFloat() * fieldW
             val y0 = r.nextFloat() * fieldH
