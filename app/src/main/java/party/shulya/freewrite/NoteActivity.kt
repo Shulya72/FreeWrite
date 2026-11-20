@@ -399,7 +399,6 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             topMargin = dp(64f)
         })
-        buildFormatPanel(area)
         rootView.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
         // Нижняя панель — под листом (не поверх): строка с курсором над клавиатурой не прячется под панелью.
         val bottom = FrameLayout(this).apply {
@@ -408,6 +407,17 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         }
         buildBottomBars(bottom)
         rootView.addView(bottom, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        rootView.addView(buildFormatPanel(), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        // Клавиатура выехала (коснулись текста) — «Aa» уходит, как на айфоне.
+        rootView.viewTreeObserver.addOnGlobalLayoutListener {
+            val w = rootView.width
+            val h = rootView.height
+            if (w != layoutW) { layoutW = w; fullH = h }
+            fullH = max(fullH, h)
+            val ime = h < fullH * 0.8f
+            if (ime && !imeShown && fmtScroll.visibility == View.VISIBLE) closeFormat(keyboard = false)
+            imeShown = ime
+        }
         refreshColors()
     }
 
@@ -576,6 +586,9 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
     }
 
     private var stripAtFormat = false
+    private var layoutW = 0
+    private var fullH = 0
+    private var imeShown = false
 
     /** Нижняя панель: клавиатура (или выделили текст) — оформление, иначе — перо; «✓» — пока печатают. */
     private fun updateBars() {
@@ -1247,77 +1260,115 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
     private val fmtButtons = HashMap<String, TextView>()
 
     private fun toggleFormat() {
-        if (fmtScroll.visibility == View.VISIBLE) { fmtScroll.visibility = View.GONE; return }
+        if (fmtScroll.visibility == View.VISIBLE) { closeFormat(); return }
         runAfterCommit {
+            // Как на айфоне: «Aa» — на месте клавиатуры, лист над ним короче, строка с курсором на виду.
+            hideKeyboard()
             refreshFormat()
             fmtScroll.visibility = View.VISIBLE
+            revealCaret()
+        }
+    }
+
+    /** Закрыть «Aa»; печатали — клавиатура возвращается. */
+    private fun closeFormat(keyboard: Boolean = true) {
+        if (fmtScroll.visibility != View.VISIBLE) return
+        fmtScroll.visibility = View.GONE
+        if (keyboard && tool == Tool.KEYS) showKeyboard()
+    }
+
+    /** Строку с курсором — на виду (после того как лист стал короче). */
+    private fun revealCaret() {
+        scroll.post {
+            val e = cur ?: return@post
+            val l = e.layout ?: return@post
+            val line = l.getLineForOffset(e.selectionEnd.coerceIn(0, e.text.length))
+            e.requestRectangleOnScreen(android.graphics.Rect(0, e.totalPaddingTop + l.getLineTop(line) - dp(8f),
+                e.width, e.totalPaddingTop + l.getLineBottom(line) + dp(8f)), false)
         }
     }
 
     /**
-     * Окно «Формат» (как «Aa» в Заметках на айфоне): стиль строки, Ж/К/Ч/З, маркер, цвет текста, списки, цитата, отступ,
-     * шрифт. Лежит над нижней панелью и не забирает клавиатуру. Без выделения Ж/К/Ч/З и цвет — для того, что напечатают дальше.
+     * Окно «Формат» (как «Aa» в Заметках на айфоне): стиль строки, Ж/К/Ч/З, шрифт, маркер, цвет текста, списки, цитата,
+     * отступ. Стоит внизу на месте клавиатуры, лист над ним — короче (не поверх текста, Владимир: «весь текст перекрывается
+     * значками»). Ряды кнопок прокручиваются вбок. Без выделения Ж/К/Ч/З и цвет — для того, что напечатают дальше.
      */
-    private fun buildFormatPanel(area: FrameLayout) {
+    private fun buildFormatPanel(): View {
         fmtPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = Ui.rounded(this@NoteActivity, Ui.BAR, Ui.BAR_LINE, 18f)
-            elevation = dp(10f).toFloat()
-            setPadding(dp(14f), dp(8f), dp(14f), dp(12f))
+            setPadding(dp(12f), dp(2f), dp(12f), dp(8f))
             tag = "fmt_panel"
             isClickable = true
         }
         val head = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        head.addView(Ui.text(this, "Формат", 17f, Ui.INK, bold = true), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        head.addView(Ui.text(this, "✕", 18f, Ui.INK2).apply {
-            tag = "fmt_close"; setPadding(dp(12f), dp(6f), dp(4f), dp(6f)); setOnClickListener { fmtScroll.visibility = View.GONE }
+        head.addView(Ui.text(this, "Формат", 15f, Ui.INK, bold = true), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        head.addView(Ui.text(this, "✕", 17f, Ui.INK2).apply {
+            tag = "fmt_close"; setPadding(dp(14f), dp(6f), dp(4f), dp(4f)); setOnClickListener { closeFormat() }
         })
         fmtPanel.addView(head)
-        fun row(): Ui.FlowRow = Ui.FlowRow(this).apply { hGap = dp(6f); vGap = dp(6f); setPadding(0, dp(4f), 0, dp(4f)) }.also { fmtPanel.addView(it) }
-        fun label(t: String) = fmtPanel.addView(Ui.text(this, t, 12f, Ui.MUTED, bold = true).apply { setPadding(0, dp(8f), 0, dp(2f)) })
-        fun chip(tag: String, text: String, f: () -> Unit): TextView = Ui.pill(this, text, Ui.INK, Ui.DESK).apply {
+        fun row(): LinearLayout {
+            val r = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+            fmtPanel.addView(HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(r, ViewGroup.LayoutParams(Ui.WRAP, Ui.WRAP))
+            }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
+            return r
+        }
+        fun gap(r: LinearLayout) = r.addView(View(this).apply { setBackgroundColor(Ui.CHIP_LINE) },
+            LinearLayout.LayoutParams(dp(1f), dp(24f)).apply { setMargins(dp(6f), 0, dp(6f), 0) })
+        fun label(r: LinearLayout, t: String) = r.addView(Ui.text(this, t, 12f, Ui.MUTED, bold = true).apply { setPadding(0, 0, dp(6f), 0) })
+        fun chip(r: LinearLayout, tag: String, text: String, f: () -> Unit): TextView = Ui.pill(this, text, Ui.INK, Ui.DESK).apply {
             this.tag = tag
+            textSize = 13.5f
+            setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
             setOnClickListener { f() }
             fmtButtons[tag] = this
-        }
+        }.also { r.addView(it, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { marginEnd = dp(6f) }) }
+        fun dotIn(r: LinearLayout, tag: String, color: Int, f: () -> Unit) =
+            r.addView(dot(tag, color, f), LinearLayout.LayoutParams(dp(30f), dp(30f)).apply { marginEnd = dp(6f) })
         val styles = row()
-        styles.addView(chip("fmt_title", "Название") { applyStyle(ParaStyle.TITLE) }.apply { typeface = Typeface.DEFAULT_BOLD })
-        styles.addView(chip("fmt_h1", "Заголовок") { applyStyle(ParaStyle.H1) })
-        styles.addView(chip("fmt_h2", "Подзаголовок") { applyStyle(ParaStyle.H2) })
-        styles.addView(chip("fmt_body", "Основной") { applyStyle(ParaStyle.BODY) })
+        chip(styles, "fmt_title", "Название") { applyStyle(ParaStyle.TITLE) }.apply { typeface = Typeface.DEFAULT_BOLD }
+        chip(styles, "fmt_h1", "Заголовок") { applyStyle(ParaStyle.H1) }
+        chip(styles, "fmt_h2", "Подзаголовок") { applyStyle(ParaStyle.H2) }
+        chip(styles, "fmt_body", "Основной") { applyStyle(ParaStyle.BODY) }
+        chip(styles, "fmt_font_mono", "Моноширинный") { applyFont(ParaStyle.MONO) }.apply { typeface = Typeface.MONOSPACE }
         val marks = row()
-        marks.addView(chip("fmt_b", "Ж") { applyInline(Rich.B) }.apply { typeface = Typeface.DEFAULT_BOLD })
-        marks.addView(chip("fmt_i", "К") { applyInline(Rich.I) }.apply { setTypeface(Typeface.SERIF, Typeface.ITALIC) })
-        marks.addView(chip("fmt_u", "Ч") { applyInline(Rich.U) }.apply { paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG })
-        marks.addView(chip("fmt_s", "З") { applyInline(Rich.S) }.apply { paintFlags = paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG })
-        label("Выделение маркером")
+        chip(marks, "fmt_b", "Ж") { applyInline(Rich.B) }.apply { typeface = Typeface.DEFAULT_BOLD }
+        chip(marks, "fmt_i", "К") { applyInline(Rich.I) }.apply { setTypeface(Typeface.SERIF, Typeface.ITALIC) }
+        chip(marks, "fmt_u", "Ч") { applyInline(Rich.U) }.apply { paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG }
+        chip(marks, "fmt_s", "З") { applyInline(Rich.S) }.apply { paintFlags = paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG }
+        gap(marks)
+        chip(marks, "fmt_font_normal", "Обычный") { applyFont(null) }
+        chip(marks, "fmt_font_serif", "С засечками") { applyFont(Rich.SERIF) }.apply { typeface = Typeface.SERIF }
         val hl = row()
-        for ((i, c) in HIGHLIGHTS.withIndex()) hl.addView(dot("fmt_hl_$i", c) { applyColor(Rich.HL, c) })
-        hl.addView(dot("fmt_hl_none", 0) { applyColor(Rich.HL, 0) })
-        label("Цвет текста")
-        val fc = row()
-        fc.addView(dot("fmt_fc_none", 0) { applyColor(Rich.FC, 0) })
-        for ((i, c) in TEXT_COLORS.withIndex()) fc.addView(dot("fmt_fc_$i", c) { applyColor(Rich.FC, c) })
-        label("Списки и абзац")
+        label(hl, "Маркер")
+        for ((i, c) in HIGHLIGHTS.withIndex()) dotIn(hl, "fmt_hl_$i", c) { applyColor(Rich.HL, c) }
+        dotIn(hl, "fmt_hl_none", 0) { applyColor(Rich.HL, 0) }
+        gap(hl)
+        label(hl, "Цвет")
+        dotIn(hl, "fmt_fc_none", 0) { applyColor(Rich.FC, 0) }
+        for ((i, c) in TEXT_COLORS.withIndex()) dotIn(hl, "fmt_fc_$i", c) { applyColor(Rich.FC, c) }
         val lists = row()
-        lists.addView(chip("fmt_bullet", "•  Список") { applyList(ParaStyle.BULLET) })
-        lists.addView(chip("fmt_dash", "–  Список") { applyList(ParaStyle.DASH) })
-        lists.addView(chip("fmt_num", "1.  Список") { applyList(ParaStyle.NUM) })
-        lists.addView(chip("fmt_check", "○  Чек-лист") { toggleTaskLines() })
-        lists.addView(chip("fmt_quote", "❝ Цитата") { applyList(ParaStyle.QUOTE) })
-        lists.addView(chip("fmt_outdent", "⇤") { applyIndent(-1) })
-        lists.addView(chip("fmt_indent", "⇥") { applyIndent(1) })
-        label("Шрифт")
-        val fonts = row()
-        fonts.addView(chip("fmt_font_normal", "Обычный") { applyFont(null) })
-        fonts.addView(chip("fmt_font_serif", "С засечками") { applyFont(Rich.SERIF) }.apply { typeface = Typeface.SERIF })
-        fonts.addView(chip("fmt_font_mono", "Моноширинный") { applyFont(ParaStyle.MONO) }.apply { typeface = Typeface.MONOSPACE })
-        val sv = ScrollView(this).apply { addView(fmtPanel); visibility = View.GONE }
-        fmtScroll = sv
-        area.addView(sv, FrameLayout.LayoutParams(minOf(dp(560f), resources.displayMetrics.widthPixels - dp(16f)), Ui.WRAP).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            bottomMargin = dp(8f)
-        })
+        chip(lists, "fmt_bullet", "•  Список") { applyList(ParaStyle.BULLET) }
+        chip(lists, "fmt_dash", "–  Список") { applyList(ParaStyle.DASH) }
+        chip(lists, "fmt_num", "1.  Список") { applyList(ParaStyle.NUM) }
+        chip(lists, "fmt_check", "○  Чек-лист") { toggleTaskLines() }
+        chip(lists, "fmt_quote", "❝ Цитата") { applyList(ParaStyle.QUOTE) }
+        chip(lists, "fmt_outdent", "⇤") { applyIndent(-1) }
+        chip(lists, "fmt_indent", "⇥") { applyIndent(1) }
+        // Внизу во всю ширину, с линией сверху; на широком экране кнопки — не шире 760 dp, по центру.
+        val dock = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Ui.BAR)
+            visibility = View.GONE
+            isClickable = true
+            addView(Ui.barLine(this@NoteActivity), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+            addView(fmtPanel, LinearLayout.LayoutParams(minOf(dp(760f), resources.displayMetrics.widthPixels), Ui.WRAP).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            })
+        }
+        fmtScroll = dock
+        return dock
     }
 
     /** Кружок цвета в «Формате» (0 — «без цвета»: крестик). */
