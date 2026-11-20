@@ -79,6 +79,16 @@ object IdExcel {
         return n
     }
 
+    /** Свой столбец (0.30.1): дата — датой, число — числом, вариант списка — цветом варианта, отметка — «✓». */
+    private fun customCell(c: TableCol?, v: String, st: Styles): Cell = when {
+        v.isEmpty() -> Cell(null, 3)
+        c?.type == TableCol.DATEC -> IdTables.excelDay(v)?.let { Cell(it, 2) } ?: Cell(v, 3)
+        c?.type == TableCol.NUM -> Cell(IdTables.volNum(v), 4)
+        c?.type == TableCol.LIST -> Cell(v, st.status(c.optColor(v)))
+        c?.type == TableCol.MARK -> Cell(TableCol.CHECK, 3)
+        else -> Cell(v, 3)
+    }
+
     private fun dataSheet(name: String, b: Board, list: List<Pair<BoardTable, BoardRec>>, only: BoardTable?, custom: Map<String, String>, st: Styles): Sheet {
         val s = Sheet(name)
         // Столбцы: для листа шифра — как в его таблице (видимые, его названия); для «Схемы» — все встроенные + свои.
@@ -86,7 +96,7 @@ object IdExcel {
         val used = list.map { it.first }.distinct().flatMap { it.parts() }.map { it.key }.toHashSet()
         val cols0: List<Pair<String, String>> = if (only != null) only.visibleCols().map { it.k to it.longTitle() }
         else TableCol.ORDER.flatMap { k ->
-            if (k == TableCol.VOL) listOf(k to TableCol.defaultName(k)) + TableKinds.ALL_PARTS.filter { it.key in used }.map { TableKinds.col(it.key) to "Объём · " + it.name }
+            if (k == TableCol.VOL) listOf(k to TableCol.defaultName(k)) + TableKinds.partsOf(b).filter { it.key in used }.map { TableKinds.col(it.key) to "Объём · " + it.name }
             else listOf(k to TableCol.defaultName(k))
         } + custom.map { it.key to it.value }
         // После объёма (и его частей) — единица (м³, м²…): число остаётся числом, Excel может складывать.
@@ -115,6 +125,7 @@ object IdExcel {
                     TableCol.ZAH -> colors.getOrPut(t.id) { TablePlan.zahColorsAll(b, t) }[r.zkey()]
                         ?.let { Cell(r.zah.ifEmpty { null }, st.status(it)) } ?: Cell(r.zah.ifEmpty { null }, 3)
                     else -> if (isVol(k)) r.get(k).let { v -> if (v.isEmpty()) Cell(null, 3) else Cell(IdTables.volNum(v), 4) }
+                    else if (TableCol.isCustomKey(k)) customCell(t.allCols().firstOrNull { it.k == k }, r.get(k), st)
                     else Cell(r.get(k).ifEmpty { null }, 3)
                 }
             }

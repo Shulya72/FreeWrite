@@ -330,10 +330,20 @@ const KINDS = {
   kj_slab: { section: "КЖ", name: "Плиты перекрытия", parts: [["p", "Плита"], ["b", "Балки"]], hidden: ["con"] },
 };
 const ALL_PARTS = Object.values(KINDS).flatMap((k) => k.parts);
-function tKind(t) { return KINDS[t.kind] || (t.kind ? null : KINDS.kj_vert); }
+// Свои таблицы (0.30.1, «Редактор таблиц»): вид «u:…» лежит в самой таблице — kd: { n, s, p: [[ключ, часть]…], w: [работы] }.
+function tKind(t) {
+  if (String(t.kind || "").startsWith("u:")) return t.kd ? { section: t.kd.s || "", name: t.kd.n || "Своя таблица", parts: t.kd.p || [], works: t.kd.w || [], hidden: [] } : null;
+  return KINDS[t.kind] || (t.kind ? null : KINDS.kj_vert);
+}
 function tParts(t) { const k = tKind(t); return k ? k.parts : []; }
 function partOf(k) { return String(k).startsWith("vol.") ? k.slice(4) : null; }
-function partName(p) { const x = ALL_PARTS.find((a) => a[0] === p); return x ? x[1] : p; }
+function partName(p) {
+  const x = ALL_PARTS.find((a) => a[0] === p); if (x) return x[1];
+  for (const t of (typeof B !== "undefined" && B && B.tables) || []) { const y = t.kd && (t.kd.p || []).find((a) => a[0] === p); if (y) return y[1]; }
+  return p;
+}
+// Свой столбец таблицы (0.30.1): ty — "num" | "date" | "mark" | "list", op — варианты [[название, цвет]…].
+function colDef(r, k) { const t = B.tables.find((x) => x.id === r.t); return t && (t.cols || []).find((c) => c.k === k); }
 function tOrder(t) { const ps = tParts(t); return ps.length ? TCOLS.flatMap((k) => k === "vol" ? ps.map((p) => "vol." + p[0]) : [k]) : TCOLS; }
 function tAllCols(t) {
   const order = tOrder(t), ps = tParts(t);
@@ -375,6 +385,10 @@ function cellText(r, k) {
     const u = t ? unitFor(t, r.w || "") : ""; return volFmt(+v) + (u ? " " + u : "");
   }
   if (k === "igs") return igsText(r);
+  if (String(k).startsWith("c") && !TCOLS.includes(k)) { // свой столбец («con», «ck» — встроенные)
+    const v = recVal(r, k), c = colDef(r, k); if (!v || !c) return v;
+    return c.ty === "date" ? dShort(v) : c.ty === "mark" ? "✓" : c.ty === "num" ? String(v).replace(".", ",") : v;
+  }
   return isSt(k) ? stIn(TGROUP[k], recVal(r, k)).name : isDate(k) ? dShort(recVal(r, k)) : recVal(r, k);
 }
 // «На подписи у заказчика от 13.11.26» (0.25, как IdTables.igsText): у заказчика — дата «Отдал заказчику», на АН — передача ведомости АН.
@@ -444,7 +458,8 @@ function planLegend(t) {
   return out;
 }
 function defaultUnit(w) { w = String(w || "").toLowerCase();
-  return /опалуб/.test(w) ? "м²" : /армир|арматур/.test(w) ? "т" : /монтаж/.test(w) ? "шт" : /бетон|засыпк|разработ|кладк|грунт/.test(w) ? "м³" : ""; }
+  return /опалуб/.test(w) ? "м²" : /армир|арматур/.test(w) ? "т" : /трубопровод|труб|лотк|лоток|кабел/.test(w) ? "м" : /колодц|колодез/.test(w) ? "шт" :
+    /монтаж/.test(w) ? "шт" : /бетон|засыпк|разработ|кладк|грунт|песчан|основани|защитн|щеб/.test(w) ? "м³" : ""; }
 function planOf(t, w, part) { return (t.plan || []).find((p) => normW(p.w) === normW(w) && (part === undefined || (p.p || "") === part)); }
 function unitFor(t, w) { const p = planOf(t, w); return (p && p.u) || defaultUnit(w); }
 function volFmt(d) {
@@ -493,7 +508,7 @@ function tLayout(t) {
   const tw = (s, size, bold) => measure(s || "", size, bold) * 1.06 + 2;
   const widths = cols.map((c) => {
     let w = tw(colTitle(c), TF.HF, true) + 2 * TF.P;
-    if (isSt(c.k)) {
+    if (isSt(c.k) || c.ty === "list") {
       for (const r of rows) w = Math.max(w, tw(cellText(r, c.k), TF.FONT, true) + 22 + 2 * TF.P);
       w = Math.min(Math.max(w, c.k === "igs" ? 120 : 70), 300);
     } else {
@@ -578,6 +593,14 @@ function drawTable(t, z, hl) {
         ctx.font = "bold " + fs + "px " + FONT;
         const name = fitText(c.k === "igs" ? igsText(r) : st.name, cw - 2 * TF.P * k - 22 * k), pw = ctx.measureText(name).width + 22 * k, ph = R - 9 * k;
         rrect(cx + TF.P * k, ry + 4.5 * k, pw, ph, ph / 2); ctx.fillStyle = statusBg(st.color); ctx.fill();
+        ctx.strokeStyle = fg; ctx.lineWidth = 1.2 * k; ctx.stroke();
+        ctx.fillStyle = fg; ctx.fillText(name, cx + (TF.P + 11) * k, cy + fs * 0.36);
+      } else if (c.ty === "list" && recVal(r, c.k)) {
+        // Вариант своего списка — «таблеткой» своего цвета (как статус).
+        const v = recVal(r, c.k), o = (c.op || []).find((x) => x[0] === v), col = o ? o[1] : -7563632, fg = statusFg(col);
+        ctx.font = "bold " + fs + "px " + FONT;
+        const name = fitText(v, cw - 2 * TF.P * k - 22 * k), pw = ctx.measureText(name).width + 22 * k, ph = R - 9 * k;
+        rrect(cx + TF.P * k, ry + 4.5 * k, pw, ph, ph / 2); ctx.fillStyle = statusBg(col); ctx.fill();
         ctx.strokeStyle = fg; ctx.lineWidth = 1.2 * k; ctx.stroke();
         ctx.fillStyle = fg; ctx.fillText(name, cx + (TF.P + 11) * k, cy + fs * 0.36);
       } else if (isVolK(c.k)) {
@@ -754,7 +777,13 @@ function drawVolumeGrid(t, L, x0, top, w, k) {
   works.forEach((wk, wi) => {
     const ry = top + (60 + wi * 80) * k;
     ctx.strokeStyle = "#e3e8ef"; ctx.lineWidth = k; ctx.beginPath(); ctx.moveTo(x0 + 10 * k, ry); ctx.lineTo(x0 + w - 10 * k, ry); ctx.stroke();
-    txt(wk, Lx + 6 * k, ry + 26 * k, 15, C.ink, true);
+    // Длинный вид работ — в две строки (как в приложении).
+    ctx.font = "bold " + 15 * k + "px " + FONT;
+    const maxW = (150 - 26) * k, lines = []; let cur = "";
+    for (const word of String(wk).split(" ").filter(Boolean)) { const t2 = cur ? cur + " " + word : word; if (!cur || ctx.measureText(t2).width <= maxW) cur = t2; else { lines.push(cur); cur = word; } }
+    if (cur) lines.push(cur);
+    const shown = lines.length <= 2 ? lines : [lines[0], lines.slice(1).join(" ")];
+    shown.forEach((ln, li) => { ctx.font = "bold " + 15 * k + "px " + FONT; txt(fitText(ln, maxW), Lx + 6 * k, ry + (26 + li * 18) * k, 15, C.ink, true); });
     let sumF = 0, sumP = 0, allP = true, unit = "";
     ps.forEach(([pk], pi) => {
       const v = L.vol.find((x) => normW(x.work) === normW(wk) && x.part === pk); if (!v) return;

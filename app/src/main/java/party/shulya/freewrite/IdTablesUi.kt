@@ -142,11 +142,27 @@ class TableUi(private val a: BoardActivity) {
         fun chip(textS: String, fg: Int, bg: Int) = Ui.text(a, textS, 12.5f, fg, bold = fg == blue).apply {
             background = Ui.rounded(a, bg, null, 999f); setPadding(dp(9f), dp(3f), dp(9f), dp(3f))
         }
+        // Свои таблицы (0.30.1): из библиотеки — в разделах по их названию раздела (раздел «КЖ» — вместе со встроенными),
+        // поставленные коллегой на эту доску — «На этой доске». У своих — ✎ (правка в «Редакторе таблиц»).
+        val library = TableTemplates(a).list()
+        val tpls = HashMap<String, TableTemplate>()
+        library.forEach { tpls[it.id] = it }
+        val foreign = TableTemplates.onBoard(b, library)
+        foreign.forEach { tpls[it.id] = it }
+        val sections = ArrayList<TableKinds.Section>()
+        for (sct in TableKinds.SECTIONS) {
+            val mine = library.filter { it.section.equals(sct.code, true) || it.section.equals(sct.name, true) }.map { it.toKind() }
+            sections += TableKinds.Section(sct.code, sct.name, sct.kinds + mine)
+        }
+        library.filter { tp -> TableKinds.SECTIONS.none { tp.section.equals(it.code, true) || tp.section.equals(it.name, true) } }
+            .groupBy { it.section.ifBlank { "Мои таблицы" } }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
+            .forEach { (name, list) -> sections += TableKinds.Section(name, "Свои таблицы", list.map { it.toKind() }) }
+        if (foreign.isNotEmpty()) sections += TableKinds.Section(ON_BOARD, "Поставил коллега — можно взять себе (✎)", foreign.map { it.toKind() })
         fun render() {
             list.removeAllViews()
             val q = search.text.toString().trim().lowercase()
             var shown = 0
-            for ((si, sct) in TableKinds.SECTIONS.withIndex()) {
+            for ((si, sct) in sections.withIndex()) {
                 val kinds = sct.kinds.filter { q.isEmpty() || kindMatches(it, sct, q) }
                 if (kinds.isEmpty()) continue
                 shown += kinds.size
@@ -188,15 +204,23 @@ class TableUi(private val a: BoardActivity) {
                     val mid = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
                     mid.addView(Ui.text(a, k.name, 16.5f, Ui.INK, bold = true))
                     val chips = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(4f); setPadding(0, dp(5f), 0, 0) }
-                    chips.addView(chip("объём: " + k.parts.joinToString(" · ") { it.name }, blue, blueBg))
-                    chips.addView(chip(k.works.joinToString(" · "), Ui.INK2, Ui.DESK))
+                    chips.addView(chip("объём: " + (if (k.parts.isEmpty()) "одной цифрой" else k.parts.joinToString(" · ") { it.name }), blue, blueBg))
+                    if (k.works.isNotEmpty()) chips.addView(chip(k.works.joinToString(" · "), Ui.INK2, Ui.DESK))
                     mid.addView(chips)
                     row.addView(mid, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+                    val tp = tpls[k.id]
+                    if (tp != null) row.addView(Ui.text(a, "✎", 19f, Ui.INK2, bold = true).apply {
+                        tag = "kind_edit_${k.id}"; contentDescription = "Изменить таблицу"; setPadding(dp(10f), dp(4f), dp(6f), dp(4f))
+                        setOnClickListener {
+                            dlg?.dismiss()
+                            TableEditor(a).open(tp, fresh = tp.id !in library.map { it.id }) { chooseKind(at) }
+                        }
+                    })
                     row.addView(Ui.text(a, "Поставить ›", 14.5f, Ui.ACCENT, bold = true).apply { setPadding(dp(10f), 0, dp(4f), 0) })
                     row.setOnClickListener {
                         row.background = Ui.rounded(a, Ui.ACCENT_SOFT, null, 12f)
                         dlg?.dismiss()
-                        createOfKind(k, spot.first, spot.second)
+                        createOfKind(k, spot.first, spot.second, tp?.tableCols())
                     }
                     col.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(4f) })
                 }
@@ -214,6 +238,22 @@ class TableUi(private val a: BoardActivity) {
             }, LinearLayout.LayoutParams(dp(34f), dp(34f)).apply { rightMargin = dp(12f) })
             custom.addView(Ui.text(a, "Пустая таблица — как сейчас, без вида\nстолбцы и объём настраиваются вручную", 14.5f, Ui.INK2))
             custom.setOnClickListener { dlg?.dismiss(); create(spot.first, spot.second) }
+            // «Редактор таблиц» (0.30.1): своя таблица — столбцы, виды работ, объём; сохранили — она здесь, в своём разделе.
+            val own = LinearLayout(a).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; tag = "kind_new"; isClickable = true
+                background = Ui.rounded(a, Ui.ACCENT_SOFT, null, 12f)
+                setPadding(dp(8f), dp(10f), dp(8f), dp(10f))
+            }
+            own.addView(Ui.text(a, "+", 20f, Color.WHITE, bold = true).apply {
+                gravity = Gravity.CENTER; background = Ui.rounded(a, Ui.ACCENT, null, 8f)
+            }, LinearLayout.LayoutParams(dp(34f), dp(34f)).apply { rightMargin = dp(12f) })
+            own.addView(Ui.text(a, "Своя таблица — редактор\nсвои столбцы, виды работ и объём; потом — здесь, в своём разделе", 14.5f, Ui.ACCENT))
+            own.setOnClickListener {
+                dlg?.dismiss()
+                val fresh = TableTemplate(TableKinds.newUserId(), "", "", TableTemplate.defaultCols(setOf(TableCol.CON, TableCol.UCH)), ArrayList(), ArrayList())
+                TableEditor(a).open(fresh, fresh = true) { chooseKind(at) }
+            }
+            list.addView(own, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { bottomMargin = dp(6f) })
             list.addView(custom, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         }
         search.addTextChangedListener(object : android.text.TextWatcher {
@@ -261,11 +301,15 @@ class TableUi(private val a: BoardActivity) {
     }
 
     /** Новая таблица выбранного вида: в разделе — название вида, без раздела — спросим шифр. Потом сразу форма строки. */
-    internal fun createOfKind(k: TableKinds.Kind, x: Float, y: Float) {
+    internal fun createOfKind(k: TableKinds.Kind, x: Float, y: Float, cols: List<TableCol>? = null) {
         val sec = b.sectionAt(x, y)?.title?.trim().orEmpty()
         fun make(title: String) {
             a.pushUndo()
-            val t = BoardTable(x, y, IdTables.defaultScale(b, a.resources.displayMetrics.density), title).apply { kind = k.id }
+            val t = BoardTable(x, y, IdTables.defaultScale(b, a.resources.displayMetrics.density), title).apply {
+                kind = k.id
+                // Своя таблица (0.30.1): устройство вида и столбцы — копией в саму таблицу (едут к коллегам и на сайт).
+                if (TableKinds.isUser(k.id)) { ownKind = k; cols?.let { this.cols.addAll(it) } }
+            }
             b.tables += t
             a.changed()
             a.backToHand()
@@ -397,9 +441,31 @@ class TableUi(private val a: BoardActivity) {
                 val rect = v.tableDraw.cellRect(b, t, r, col, RectF())
                 statusPopup(IdTables.groupOf(col), r.get(col), rect) { sid -> setCell(r, col, sid) }
             }
+            // Свои столбцы (0.30.1): отметка — касание ставит/снимает ✓, список — варианты своими цветами.
+            c.isMark -> setCell(r, col, if (r.get(col).isBlank()) TableCol.CHECK else "")
+            c.isList -> optionsPopup(c, r.get(col), v.tableDraw.cellRect(b, t, r, col, RectF())) { o -> setCell(r, col, o) }
             c.isDate -> datePicker(r, col)
             else -> textDialog(t, r, col)
         }
+    }
+
+    /** Варианты своего столбца-списка у ячейки (и «пусто»). */
+    fun optionsPopup(c: TableCol, current: String, rect: RectF?, pick: (String) -> Unit) {
+        popup?.dismiss()
+        val box = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10f), dp(8f), dp(10f), dp(10f))
+            background = Ui.rounded(a, Ui.PAPER, Ui.RULE, 14f)
+        }
+        box.addView(Ui.text(a, c.title(), 13f, Ui.MUTED, bold = true).apply { setPadding(dp(4f), 0, 0, dp(4f)) })
+        for ((i, o) in c.opts.withIndex()) box.addView(Ui.pill(a, (if (o.name == current) "✓ " else "") + o.name, Board.statusFg(o.color), Board.statusBg(o.color)).apply {
+            tag = "pop_opt_$i"
+            setOnClickListener { popup?.dismiss(); pick(o.name) }
+        }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(5f) })
+        box.addView(Ui.pill(a, "— пусто", Ui.INK2, Ui.DESK).apply {
+            tag = "pop_opt_none"; setOnClickListener { popup?.dismiss(); pick("") }
+        }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(5f) })
+        showNear(ScrollView(a).apply { addView(box) }, dp(260f), rect)
     }
 
     /** Следующая ячейка строки для ввода (правее, не статус) — кнопка «Далее» на клавиатуре; null — дальше нет. */
@@ -407,7 +473,7 @@ class TableUi(private val a: BoardActivity) {
         val cols = t.visibleCols()
         val i = cols.indexOfFirst { it.k == col }
         if (i < 0) return null
-        return cols.drop(i + 1).firstOrNull { !it.isStatus }?.k
+        return cols.drop(i + 1).firstOrNull { !it.isStatus && !it.isMark && !it.isList }?.k
     }
 
     /** «Далее» на клавиатуре: сохранили — сразу следующая ячейка этой строки. */
@@ -441,7 +507,7 @@ class TableUi(private val a: BoardActivity) {
         val h = v.tableDraw.hit(b, t, x, y) ?: return false
         if (h.part == TableHit.CELL && h.rec != null && h.col != null) {
             val c = t.allCols().firstOrNull { it.k == h.col }
-            if (c != null && c.isStatus) { cellAction(t, h.rec, h.col); return true }
+            if (c != null && (c.isStatus || c.isMark || c.isList)) { cellAction(t, h.rec, h.col); return true }
             if (a.activeTool == BoardActivity.Tool.WRITE) { activate(h.rec, h.col); return true }
             return false // ручка, маркер — точка, пусть рисуют
         }
@@ -475,7 +541,7 @@ class TableUi(private val a: BoardActivity) {
     }
 
     /** Столбцы, куда пишут пером: текст и даты (статусы — касанием). */
-    private fun writable(t: BoardTable) = t.visibleCols().filter { !it.isStatus }
+    private fun writable(t: BoardTable) = t.visibleCols().filter { !it.isStatus && !it.isMark && !it.isList }
 
     private fun showCellBar() {
         val (r, col) = active ?: return
@@ -838,7 +904,9 @@ class TableUi(private val a: BoardActivity) {
     fun textDialog(t: BoardTable, r: BoardRec, col: String, done: () -> Unit = {}) {
         if (col == TableCol.VOL || TableKinds.partOf(col) != null) { volDialog(t, r, col, done); return }
         val name = t.colName(col)
-        val edit = EditText(a).apply { setText(r.get(col)); setSelection(text.length); isSingleLine = true; tag = "cell_text" }
+        val num = t.allCols().firstOrNull { it.k == col }?.isNum == true
+        val edit = if (num) numberField(r.get(col), "cell_text") else EditText(a).apply { setText(r.get(col)); setSelection(text.length); isSingleLine = true; tag = "cell_text" }
+        fun value() = edit.text.toString().trim().let { if (num) IdTables.parseVol(it) else it }
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
         val sugg = (if (col == TableCol.NSCH || col == TableCol.AOSR) IdTables.nextNumbers(b, t, col) else IdTables.suggestions(b, col)).filter { it != r.get(col) }
         if (sugg.isNotEmpty()) {
@@ -854,10 +922,10 @@ class TableUi(private val a: BoardActivity) {
         val d = AlertDialog.Builder(a)
             .setTitle(name + " · " + rowTitle(t, r))
             .setView(box)
-            .setPositiveButton("Готово") { _, _ -> setCell(r, col, edit.text.toString().trim()); done() }
+            .setPositiveButton("Готово") { _, _ -> setCell(r, col, value()); done() }
             .setNegativeButton("Отмена", null)
             .create()
-        nextOnEnter(edit, t, col, save = { setCell(r, col, edit.text.toString().trim()); done(); true }) { d.dismiss(); goNext(t, r, col) }
+        nextOnEnter(edit, t, col, save = { setCell(r, col, value()); done(); true }) { d.dismiss(); goNext(t, r, col) }
         d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
         d.show()
         edit.requestFocus()
@@ -1006,7 +1074,10 @@ class TableUi(private val a: BoardActivity) {
         if (t.visibleCols().any { it.k == TableCol.CON } || rows.any { it.con.isNotBlank() }) { box.addView(label(t.colName(TableCol.CON))); box.addView(con) }
         box.addView(label(t.colName(TableCol.WORK) + " — можно несколько, по строке на каждый"))
         val flow = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(6f) }
-        val allWorks = (IdTables.WORKS + IdTables.suggestions(b, TableCol.WORK)).distinct()
+        // Свой вид (0.30.1): виды работ — свои (сети: разработка, песчаное основание, монтаж трубопровода…), у встроенных — общий список.
+        val kindWorks = t.kindDef()?.works.orEmpty()
+        val allWorks = (if (TableKinds.isUser(t.kind) && kindWorks.isNotEmpty()) kindWorks + IdTables.suggestions(b, TableCol.WORK)
+            else IdTables.WORKS + kindWorks + IdTables.suggestions(b, TableCol.WORK)).distinct()
         fun paint(p: TextView, on: Boolean) { p.background = Ui.rounded(a, if (on) Ui.ACCENT else Ui.DESK, null, 999f); p.setTextColor(if (on) Color.WHITE else Ui.INK) }
         for ((i, w) in allWorks.withIndex()) {
             val p = Ui.pill(a, w, Ui.INK, Ui.DESK).apply { tag = "add_work_$i" }
@@ -1400,6 +1471,7 @@ class TableUi(private val a: BoardActivity) {
             if (t.visibleCols().any { it.isVol }) out += pill("Проект", "sel_proj") { projectDialog(t, null) }
             out += pill("+ строка", "sel_add") { addForm(t, next = true) }
             out += pill("Столбцы", "sel_cols") { columnsDialog(t) }
+            out += pill(if (TableKinds.isUser(t.kind)) "Вид таблицы ✎" else "Сохранить как свою", "sel_tsave") { saveAsTemplate(t) }
             out += pill(if (t.sheets.isEmpty()) "+ план" else "План", "sel_plan") { if (t.sheets.isEmpty()) a.planUi.addSheet(t) else a.planUi.sheetMenu(t) }
             // Склейка (0.26.3): приклеенную — отклеить (останется на месте, дальше двигается сама по себе).
             if (t.dock.isNotEmpty()) out += pill("Отклеить", "sel_undock") {
@@ -1738,5 +1810,29 @@ class TableUi(private val a: BoardActivity) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         a.startActivity(Intent.createChooser(send, "Отправить таблицу Excel"))
+    }
+
+    /**
+     * «Сохранить как свою» (0.30.1): таблицу на доске — в свои шаблоны (столбцы, виды работ, части объёма). Сама таблица
+     * становится этого вида (данные строк те же). У своей таблицы — «Вид таблицы ✎»: правка шаблона.
+     */
+    fun saveAsTemplate(t: BoardTable) {
+        val lib = TableTemplates(a)
+        val known = if (TableKinds.isUser(t.kind)) lib.get(t.kind) else null
+        val tpl = known ?: TableTemplate.fromTable(b, t)
+        TableEditor(a).open(tpl, fresh = known == null && !TableKinds.isUser(t.kind)) { saved ->
+            if (t.kind == saved.id || b.tables.none { it === t } || lib.get(saved.id) == null) return@open
+            a.pushUndo()
+            t.kind = saved.id
+            t.ownKind = saved.toKind()
+            t.cols.clear(); t.cols.addAll(saved.tableCols())
+            t.lay = null
+            a.changed()
+        }
+    }
+
+    companion object {
+        /** Раздел проводника «На этой доске»: свои таблицы коллег, которых нет в своей библиотеке. */
+        const val ON_BOARD = "На этой доске"
     }
 }
