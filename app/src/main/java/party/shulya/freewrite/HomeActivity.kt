@@ -76,6 +76,9 @@ class HomeActivity : Activity() {
         if (folder.isNotEmpty() && folders.list().none { it.id == folder }) folder = ""
         setContentView(buildUi())
         showTab(tab)
+        openPlanFrom(intent)
+        // Оповещения календаря: будильник мог пропасть (оптимизация батареи HarmonyOS) — поставить заново.
+        runCatching { PlanAlarms.reschedule(this, planner.store.items) }
         checkUpdates(silent = true)
         // Первый запуск: представиться (для общих досок). Можно «Позже».
         if (!Profile.isSet(this) && !Profile.skipped(this)) {
@@ -98,6 +101,7 @@ class HomeActivity : Activity() {
     private fun renderAll() {
         renderNotes()
         renderBoards()
+        if (::planner.isInitialized && tab == TAB_TASKS) planner.refresh()
     }
 
     // ---------------------------------------------------------------- каркас: шапка, страницы, вкладки
@@ -247,6 +251,7 @@ class HomeActivity : Activity() {
         }
         titleView.text = when (tab) { TAB_TASKS -> "Задачи"; TAB_BOARDS -> "Доски"; else -> "Заметки" }
         compose.visibility = if (tab == TAB_NOTES) View.VISIBLE else View.GONE
+        if (tab == TAB_TASKS && ::planner.isInitialized) planner.refresh()
     }
 
     private fun scrollPage(side: Float, fill: (LinearLayout) -> Unit): ScrollView {
@@ -510,28 +515,35 @@ class HomeActivity : Activity() {
             .show()
     }
 
-    // ---------------------------------------------------------------- Задачи (календарь — в 0.30)
+    // ---------------------------------------------------------------- Задачи: календарь (0.29)
 
-    private fun tasksPage(side: Float): View = scrollPage(side) { col ->
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 16f)
-            setPadding(dp(20f), dp(24f), dp(20f), dp(24f))
-            tag = "tasks_soon"
-        }
-        card.addView(ImageView(this).apply {
-            setImageResource(R.drawable.ic_calendar); imageTintList = ColorStateList.valueOf(Ui.ACCENT)
-            background = Ui.rounded(this@HomeActivity, Ui.ACCENT_SOFT, null, 16f); setPadding(dp(12f), dp(12f), dp(12f), dp(12f))
-        }, LinearLayout.LayoutParams(dp(60f), dp(60f)))
-        card.addView(Ui.text(this, Ui.longDate(System.currentTimeMillis()).replaceFirstChar { it.uppercase() }, 20f, Ui.INK).apply {
-            typeface = Ui.brandFont(this@HomeActivity); gravity = Gravity.CENTER; setPadding(0, dp(14f), 0, dp(6f))
-        })
-        card.addView(Ui.text(this, "Здесь будет календарь, как на айфоне: месяц и день по часам, задачи и события со временем, " +
-            "напоминание за час, поиск по словам — например, «ВСК». Появится в следующих версиях.", 15f, Ui.INK2).apply {
-            gravity = Gravity.CENTER
-        })
-        col.addView(card, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(10f) })
+    internal lateinit var planner: PlannerPage
+
+    private fun tasksPage(side: Float): View {
+        planner = PlannerPage(this)
+        return planner.root
+    }
+
+    /** Открыть день календаря из уведомления (оповещение о событии). */
+    private fun openPlanFrom(i: Intent?) {
+        val day = i?.getStringExtra(EXTRA_PLAN_DAY) ?: return
+        val d = runCatching { java.time.LocalDate.parse(day) }.getOrNull() ?: return
+        showTab(TAB_TASKS)
+        planner.openDay(d, i.getStringExtra(EXTRA_PLAN_ITEM), PlannerPage.MONTH)
+        i.removeExtra(EXTRA_PLAN_DAY)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openPlanFrom(intent)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (tab == TAB_TASKS && ::planner.isInitialized && planner.back()) return
+        @Suppress("DEPRECATION")
+        super.onBackPressed()
     }
 
     // ---------------------------------------------------------------- Доски
@@ -980,6 +992,8 @@ class HomeActivity : Activity() {
         private const val MENU_PROFILE = 4
         private const val MENU_REPORT = 5
         private const val MENU_FOLDER = 6
+        const val EXTRA_PLAN_DAY = "plan_day"
+        const val EXTRA_PLAN_ITEM = "plan_item"
         const val TAB_NOTES = "notes"
         const val TAB_TASKS = "tasks"
         const val TAB_BOARDS = "boards"
