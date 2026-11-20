@@ -10,10 +10,16 @@ import org.json.JSONObject
  */
 class FakeServer : SyncTransport {
     class Obj(val id: String, val rev: String, val kind: String, val deleted: Boolean, val body: String, val seq: Long, val author: String = "")
+    /** Запись журнала (0.28.3): прежняя версия предмета и кто её заменил. */
+    class H(val at: Long, val id: String, val rev: String, val kind: String, val body: String, val author: String,
+            val byRev: String, val byAuthor: String, val byDeleted: Boolean)
     class B(val id: String, val key: String, var title: String, val invite: String, val owner: String = "") {
         var seq = 0L
         val objs = HashMap<String, Obj>()
+        val hist = ArrayList<H>()
     }
+    /** Часы сервера для журнала (в проверках можно подвинуть). */
+    var clock = System.currentTimeMillis()
 
     val boards = HashMap<String, B>()
     val invites = HashMap<String, String>()
@@ -60,6 +66,7 @@ class FakeServer : SyncTransport {
                 val a = r.getJSONArray("changes")
                 require(a.length() <= 1000) { "больше 1000 правок" }
                 var applied = 0
+                val at = ++clock
                 for (i in 0 until a.length()) {
                     val c = a.getJSONObject(i)
                     val id = c.getString("id")
@@ -69,6 +76,8 @@ class FakeServer : SyncTransport {
                     b.seq++
                     val del = c.optInt("x") == 1
                     val body = if (del) "" else c.getString("d")
+                    if (old != null && !old.deleted && old.body.isNotEmpty())
+                        b.hist += H(at, id, old.rev, old.kind, old.body, old.author, rev, r.optString("author"), del)
                     b.objs[id] = Obj(id, rev, c.optString("k"), del, body, b.seq, r.optString("author"))
                     if (id == "~title" && !del) b.title = JSONObject(body).optString("title", b.title)
                     applied++
@@ -116,6 +125,22 @@ class FakeServer : SyncTransport {
                 val info = images[name] ?: err(404, "no_image", "Картинки нет на сервере")
                 val raw = parts["$name/${r.optInt("part")}"]!!
                 JSONObject().put("data", Base64.encodeToString(raw, Base64.NO_WRAP)).put("parts", info.first).put("size", info.second)
+            }
+            "history" -> {
+                val b = auth(r)
+                val before = r.optLong("before").takeIf { it > 0 } ?: Long.MAX_VALUE
+                val limit = r.optInt("limit", 500)
+                val skip = r.optJSONArray("skip")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: emptySet()
+                val rows = b.hist.filter { it.at < before && it.kind !in skip }
+                    .sortedWith(compareByDescending<H> { it.at }.thenBy { it.id }).take(limit)
+                val out = JSONArray()
+                for (h in rows) out.put(JSONObject().put("id", h.id).put("rev", h.rev).put("k", h.kind).put("d", h.body)
+                    .put("at", h.at).put("br", h.byRev).apply {
+                        if (h.author.isNotEmpty()) put("a", h.author)
+                        if (h.byAuthor.isNotEmpty()) put("by", h.byAuthor)
+                        if (h.byDeleted) put("bx", 1)
+                    })
+                JSONObject().put("entries", out).put("more", rows.size >= limit).put("next", rows.lastOrNull()?.at ?: 0).put("days", 30)
             }
             else -> err(400, "bad_op", "Неизвестный запрос")
         }

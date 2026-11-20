@@ -201,6 +201,9 @@ class BoardActivity : Activity(), BoardView.Host {
 
     // ---------------------------------------------------------------- проверка доски
 
+    /** «⋮ → Журнал изменений» (0.28.3): что меняли и удаляли за 30 дней — по серверу, с «Вернуть как было». */
+    internal val history by lazy { BoardHistory(this) }
+
     /** «Не сейчас» — до следующего открытия доски. */
     private var repairLater = false
     private var repairSynced = false
@@ -755,8 +758,10 @@ class BoardActivity : Activity(), BoardView.Host {
         m.menu.add(0, 2, 1, "Отправить файлом")
         if (stylus) m.menu.add(0, 3, 2, "Палец рисует").apply { isCheckable = true; isChecked = fingerWrites }
         m.menu.add(0, 4, 3, "Вся доска")
+        if (board.sync.isShared) m.menu.add(0, 5, 4, "Журнал изменений")
         m.setOnMenuItemClickListener { item ->
             when (item.itemId) {
+                5 -> history.open()
                 1 -> cloudDialog()
                 2 -> shareBoard()
                 3 -> { fingerWrites = !fingerWrites; hint(if (fingerWrites) "Палец рисует выбранным инструментом" else "Палец — двигать доску, перо — рисовать", 2500) }

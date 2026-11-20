@@ -311,6 +311,48 @@ object Remote {
         return last
     }
 
+    // ---------------------------------------------------------------- журнал (0.28.3)
+
+    /**
+     * Запись журнала сервера: прежняя версия предмета [data] (как была до замены), кто её заменил ([by]) и когда ([at], мс),
+     * [byDeleted] — заменили удалением.
+     */
+    class HEntry(val id: String, val rev: String, val kind: String, val data: String, val at: Long,
+                 val author: String, val by: String, val byDeleted: Boolean)
+
+    /** Журнал сервера за 30 дней, от свежих к старым. skipStrokes — без штрихов (их тысячи). */
+    fun history(t: SyncTransport, boardId: String, key: String, skipStrokes: Boolean = true, maxPages: Int = 8): List<HEntry> {
+        val out = ArrayList<HEntry>()
+        var before = 0L
+        for (page in 0 until maxPages) {
+            val q = req("history", boardId, key).put("before", before)
+            if (skipStrokes) q.put("skip", JSONArray().put("stroke"))
+            val o = t.call(q)
+            val a = o.optJSONArray("entries") ?: JSONArray()
+            for (i in 0 until a.length()) {
+                val e = a.getJSONObject(i)
+                out += HEntry(e.getString("id"), e.optString("rev"), e.optString("k"), e.optString("d"), e.optLong("at"),
+                    e.optString("a"), e.optString("by"), e.optInt("bx") == 1)
+            }
+            if (!o.optBoolean("more") || a.length() == 0) break
+            before = o.optLong("next")
+        }
+        return out
+    }
+
+    /**
+     * Вернуть прежние версии предметов (окно «Журнал изменений»): как обычная правка — при сохранении получат новые отметки
+     * и уйдут коллегам. Возвращает, сколько предметов вернули.
+     */
+    fun restore(board: Board, entries: List<HEntry>): Int {
+        var n = 0
+        for (e in entries) {
+            if (e.data.isEmpty()) continue
+            if (runCatching { applyOne(board, Row(e.id, e.rev, e.kind, e.data, 0)) }.isSuccess) n++
+        }
+        return n
+    }
+
     /** Получить все правки после since (по страницам). */
     fun pull(t: SyncTransport, boardId: String, key: String, since: Long): Pulled {
         val rows = ArrayList<Row>()

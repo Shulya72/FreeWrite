@@ -13,6 +13,9 @@
 
 Картинки — частями по 1 МБ в Object Storage (img_put / img_get), список готовых — img_has.
 
+Журнал (0.28.3): каждая версия предмета, которую заменила более поздняя правка или удаление, хранится 30 дней
+(history) — «Журнал изменений» в приложении показывает, кто что поменял или удалил, и возвращает прежнюю версию.
+
 Сайт для руководства (FW-003): GET без op — страница просмотра (viewer.html). Код «только смотреть»
 (view_link → view) даёт ключ, которым можно только читать доску и картинки (pull, info, img_has, img_get).
 """
@@ -35,6 +38,8 @@ MAX_PULL_BYTES = 2 << 20            # данных в одном ответе pu
 MAX_PARTS = 64                      # частей у одной картинки
 MAX_IMAGE_SIZE = MAX_PARTS * CHUNK  # одна картинка — до 64 МБ
 MAX_FILES = 500                     # имён в одном запросе img_has
+MAX_HISTORY = 500                   # записей журнала в одном ответе
+MAX_HISTORY_BYTES = 2 << 20         # данных журнала в одном ответе
 MAX_BOARDS = int(os.environ.get("MAX_BOARDS", "300"))
 MAX_OBJECTS = int(os.environ.get("MAX_OBJECTS", "200000"))
 MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(900 << 20)))  # под лимит бакета 1 ГБ
@@ -315,6 +320,46 @@ def op_pull(req, ctx):
     return {"seq": seq, "title": title, "next": nxt, "more": nxt < seq, "changes": out}
 
 
+def op_history(req, ctx):
+    """
+    Журнал: прежние версии предметов, от свежих к старым (время замены < before, 0 — сейчас). skip — виды, которые не нужны
+    (штрихи). Одна отправка правок — записи с одним at: страница не режет её посередине (кроме огромной, больше страницы).
+    Только с ключом доски (не «только смотреть»).
+    """
+    b, key = _board(req)
+    before = _int(req, "before", 0, 1 << 62, 0) or (now_ms() + 1)
+    limit = _int(req, "limit", 1, MAX_HISTORY, MAX_HISTORY)
+    skip = req.get("skip") or []
+    if not isinstance(skip, list) or len(skip) > 20 or not all(isinstance(k, str) and KIND_RE.match(k) for k in skip):
+        raise ApiError(400, "bad_skip", "Неверное поле skip")
+    rows = store().history(b, key, before, limit, skip)
+    full = len(rows) >= limit
+    out = []
+    size = 0
+    for r in rows:
+        size += len(r["body"]) + 160
+        if out and size > MAX_HISTORY_BYTES:
+            full = True
+            break
+        out.append(r)
+    nxt = out[-1]["at"] if out else 0
+    if full and out and any(r["at"] != nxt for r in out):
+        # Последнюю (неполную) отправку — целиком на следующей странице.
+        out = [r for r in out if r["at"] != nxt]
+        nxt = out[-1]["at"]
+    entries = []
+    for r in out:
+        e = {"id": r["id"], "rev": r["rev"], "k": r["kind"], "d": r["body"], "at": r["at"], "br": r["by_rev"]}
+        if r["author"]:
+            e["a"] = r["author"]
+        if r["by_author"]:
+            e["by"] = r["by_author"]
+        if r["by_deleted"]:
+            e["bx"] = 1
+        entries.append(e)
+    return {"entries": entries, "more": full, "next": nxt, "days": 30}
+
+
 def _files(req) -> list:
     files = req.get("files")
     if not isinstance(files, list) or len(files) > MAX_FILES:
@@ -402,6 +447,7 @@ OPS = {
     "delete": op_delete,
     "view_link": op_view_link,
     "view": op_view,
+    "history": op_history,
 }
 
 _PAGE = None

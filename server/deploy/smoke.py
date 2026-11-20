@@ -97,6 +97,15 @@ try:
     check(by["~title"].get("a") == "Проверка Сервера", "у правки виден автор")
     check(ok("pull", board=board, key=key, since=5)["changes"] == [], "новых правок после последней нет")
 
+    # Журнал (0.28.3): прежние версии — заменённая надпись и удалённый штрих.
+    h = ok("history", board=board, key=key)
+    hb = {(e["id"], e.get("bx", 0)) : e for e in h["entries"]}
+    check(("t1", 0) in hb and json.loads(hb[("t1", 0)]["d"])["text"] == "Захватка №1",
+          "журнал: прежняя версия надписи сохранена")
+    check(("s1", 1) in hb, "журнал: удалённый штрих сохранён")
+    check(all(e["id"] != "s1" for e in ok("history", board=board, key=key, skip=["stroke"])["entries"]),
+          "журнал: штрихи можно не присылать")
+
     many = [{"id": "m%04d" % i, "rev": rev(now + 3000, i), "k": "stroke", "d": "{}"} for i in range(700)]
     check(ok("push", board=board, key=key, changes=many)["applied"] == 700, "отправлено 700 штрихов одним запросом")
     got, since = 0, 5
@@ -135,6 +144,8 @@ try:
     check(status == 403, "по ключу просмотра править нельзя")
     status, body = call("join", invite=code)
     check(status == 403 and body.get("error") == "view_only", "кодом просмотра в приложение не войти")
+    status, body = call("history", board=board, key=v["key"])
+    check(status == 403, "журнал по ключу просмотра не читается")
 finally:
     r = ok("delete", board=board, key=key)
     print("OK временная доска удалена (картинок: %s)" % r.get("images"))
