@@ -402,20 +402,40 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         buildFormatPanel(area)
         rootView.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
         // Нижняя панель — под листом (не поверх): строка с курсором над клавиатурой не прячется под панелью.
-        val bottom = FrameLayout(this).apply { setBackgroundColor(Ui.PAPER); setPadding(0, dp(4f), 0, dp(8f)) }
+        val bottom = FrameLayout(this).apply {
+            setBackgroundColor(Ui.PAPER)
+            if (!thinBars) setPadding(0, dp(4f), 0, dp(8f))
+        }
         buildBottomBars(bottom)
         rootView.addView(bottom, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         refreshColors()
     }
 
+    /**
+     * На телефоне — тонкая полоса во всю ширину, прижатая к клавиатуре (Владимир: капсула «будет перекрывать текст»), на
+     * планшете — капсула.
+     */
+    private val thinBars: Boolean get() = Input.isPhone(this)
+
     /** Плавающая капсула внизу (как на айфоне): белая, со скруглением и тенью, прокручивается вбок, если не влезает. */
     private fun capsule(row: LinearLayout, tag: String): Pair<View, HorizontalScrollView> {
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        row.setPadding(dp(8f), dp(3f), dp(8f), dp(3f))
+        row.setPadding(dp(8f), if (thinBars) 0 else dp(3f), dp(8f), if (thinBars) 0 else dp(3f))
         val hs = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             addView(row, ViewGroup.LayoutParams(Ui.WRAP, Ui.WRAP))
+        }
+        if (thinBars) {
+            // Тонкая полоса: линия сверху, без скругления и тени.
+            val strip = LinearLayout(this).apply {
+                this.tag = tag
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Ui.BAR)
+                addView(Ui.barLine(this@NoteActivity), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+                addView(hs, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            }
+            return strip to hs
         }
         val box = FrameLayout(this).apply {
             this.tag = tag
@@ -429,8 +449,9 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
     private fun barIcon(icon: Int, desc: String, tag: String, f: (View) -> Unit): Ui.ToolButton = Ui.ToolButton(this, icon, "", compact = true).apply {
         this.tag = tag
         contentDescription = desc
-        minimumWidth = dp(46f)
-        setPadding(dp(11f), dp(9f), dp(11f), dp(9f))
+        minimumWidth = dp(if (thinBars) 42f else 46f)
+        val v = if (thinBars) 7f else 9f
+        setPadding(dp(9f), dp(v), dp(9f), dp(v))
         setOnClickListener { f(it) }
         barButtons[tag] = this
     }
@@ -443,8 +464,8 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         textSize = 19f
         setTextColor(Ui.INK)
         gravity = Gravity.CENTER
-        minWidth = dp(44f)
-        minHeight = dp(42f)
+        minWidth = dp(if (thinBars) 40f else 44f)
+        minHeight = dp(if (thinBars) 38f else 42f)
         setPadding(dp(6f), 0, dp(6f), 0)
         isClickable = true
         setOnClickListener { f() }
@@ -506,10 +527,11 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         addTool(penRow, Tool.KEYS, R.drawable.ic_keyboard, "Клавиатура")
         penBar = capsule(penRow, "pen_bar").first
 
-        for (b in listOf(keysBar, penBar)) area.addView(b, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            setMargins(dp(10f), dp(2f), dp(10f), dp(2f))
-        })
+        for (b in listOf(keysBar, penBar)) area.addView(b, if (thinBars) FrameLayout.LayoutParams(Ui.MATCH, Ui.WRAP)
+            else FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                setMargins(dp(10f), dp(2f), dp(10f), dp(2f))
+            })
     }
 
     /** Кнопка «Aa» — окно «Формат». */
@@ -517,7 +539,7 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         this.tag = tag
         contentDescription = "Формат"
         gravity = Gravity.CENTER
-        setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+        setPadding(dp(10f), dp(if (thinBars) 6f else 8f), dp(10f), dp(if (thinBars) 6f else 8f))
         layoutParams = LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { setMargins(dp(2f), 0, dp(2f), 0) }
         setOnClickListener { toggleFormat() }
     }
