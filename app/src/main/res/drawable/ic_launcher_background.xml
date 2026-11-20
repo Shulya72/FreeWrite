@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Фон значка ViaDesk: ночной синий, светлее в левом верхнем углу. -->
+<!-- Фон значка ViaDesk: тёмно-синий, светлее в левом верхнем углу (как у картинки значка, 0.29.2). -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
     <gradient
         android:angle="315"
-        android:startColor="#12425E"
-        android:centerColor="#092638"
-        android:endColor="#04141F"
+        android:startColor="#01405D"
+        android:centerColor="#012538"
+        android:endColor="#000A17"
         android:type="linear" />
 </shape>
