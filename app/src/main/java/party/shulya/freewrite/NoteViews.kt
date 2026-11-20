@@ -33,15 +33,20 @@ fun TextView.setExactLineHeight(px: Int) {
 }
 
 /**
- * Лист записи: вертикальный список блоков на бумаге с линовкой.
- * Линии рисуются точно под строками текста (у видов с тегом RULED) и продолжаются
- * с шагом lineGap ниже последней строки — как в бумажном ежедневнике.
+ * Лист записи (0.30): вертикальный список блоков, каждый занимает целое число клеток высотой [lineGap] (строка текста —
+ * клетку, «Название» — две, картинка — сколько нужно, с округлением вверх). Поэтому линейка и клетка идут ровно по строкам.
+ * [paper]: «в линейку» — линия под каждой клеткой (кроме середины «Названия», [tall]) и поле слева, «в клетку» — ещё и
+ * вертикальные линии, «без разметки» — ничего.
  */
 class RuledSheet(context: Context) : LinearLayout(context) {
     var lineGap = Ui.dpf(context, 36f)
+    var paper = NotePaper.LINES
+        set(v) { if (field != v) { field = v; invalidate() } }
+    /** Виды выше одной клетки, через которые линейка не проходит (название). */
+    val tall = HashSet<View>()
     private val linePaint = Paint().apply { color = Ui.LINE; strokeWidth = Ui.dpf(context, 1f) }
+    private val gridPaint = Paint().apply { color = Ui.LINE; strokeWidth = Ui.dpf(context, 1f) }
     private val marginPaint = Paint().apply { color = Ui.MARGIN; strokeWidth = Ui.dpf(context, 1f) }
-    private val under = Ui.dpf(context, 4f)
 
     init {
         orientation = VERTICAL
@@ -49,36 +54,57 @@ class RuledSheet(context: Context) : LinearLayout(context) {
         clipToPadding = false // уголки выбранной картинки заходят на поле листа
     }
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        val left = paddingLeft - Ui.dpf(context, 10f)
-        val right = (width - paddingRight).toFloat() + Ui.dpf(context, 10f)
-        val marginX = paddingLeft - Ui.dpf(context, 16f)
-        canvas.drawLine(marginX, 0f, marginX, height.toFloat(), marginPaint)
-        var lastY = -1f
-        forEachRuledText(this, 0f) { tv, top ->
-            val layout = tv.layout ?: return@forEachRuledText
-            val descent = tv.paint.fontMetrics.descent
-            for (i in 0 until layout.lineCount) {
-                val y = top + tv.paddingTop + layout.getLineBaseline(i) + descent + under
-                canvas.drawLine(left, y, right, y, linePaint)
-                lastY = max(lastY, y)
-            }
+    private fun cells(h: Int): Int {
+        val g = lineGap.toInt()
+        if (g <= 0 || h <= 0) return h
+        return ((h + g - 1) / g) * g
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        var y = paddingTop
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            if (c.visibility == GONE) continue
+            val lp = c.layoutParams as LayoutParams
+            y += cells(lp.topMargin + c.measuredHeight + lp.bottomMargin)
         }
-        var y = if (lastY < 0) paddingTop + lineGap else lastY + lineGap
-        while (y < height - paddingBottom / 2f) {
-            canvas.drawLine(left, y, right, y, linePaint)
-            y += lineGap
+        setMeasuredDimension(measuredWidth, resolveSize(y + paddingBottom, heightMeasureSpec))
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        var y = paddingTop
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            if (c.visibility == GONE) continue
+            val lp = c.layoutParams as LayoutParams
+            val x = paddingLeft + lp.leftMargin
+            val top = y + lp.topMargin
+            c.layout(x, top, x + c.measuredWidth, top + c.measuredHeight)
+            y += cells(lp.topMargin + c.measuredHeight + lp.bottomMargin)
         }
     }
 
-    private fun forEachRuledText(group: ViewGroup, offsetY: Float, fn: (TextView, Float) -> Unit) {
-        for (i in 0 until group.childCount) {
-            val c = group.getChildAt(i)
-            if (c.visibility != VISIBLE) continue
-            val top = offsetY + c.top
-            if (c is TextView && (c.tag == RULED || c is KeysEdit)) fn(c, top)
-            else if (c is ViewGroup) forEachRuledText(c, top, fn)
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (paper == NotePaper.NONE || lineGap <= 0f) return
+        val grid = paper == NotePaper.GRID
+        val left = if (grid) 0f else paddingLeft - Ui.dpf(context, 10f)
+        val right = if (grid) width.toFloat() else (width - paddingRight).toFloat() + Ui.dpf(context, 10f)
+        val bottom = height - paddingBottom / 2f
+        if (!grid) {
+            val marginX = paddingLeft - Ui.dpf(context, 16f)
+            canvas.drawLine(marginX, 0f, marginX, height.toFloat(), marginPaint)
+        }
+        var y = paddingTop + if (grid) 0f else lineGap
+        while (y < bottom) {
+            if (grid || tall.none { it.parent === this && y > it.top + 1 && y < it.bottom - 1 }) canvas.drawLine(left, y, right, y, linePaint)
+            y += lineGap
+        }
+        if (grid) {
+            var x = paddingLeft.toFloat()
+            while (x > lineGap) x -= lineGap
+            while (x < width) { canvas.drawLine(x, 0f, x, height.toFloat(), gridPaint); x += lineGap }
         }
     }
 
@@ -240,6 +266,8 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         fun onErase(x: Float, y: Float, first: Boolean)
         fun drawings(): List<Drawing>
         fun pendingStrokes(): List<InkStroke>
+        /** Перо коснулось листа в режиме, где касания идут листу (клавиатура): true — режим сменили, перо пишет. */
+        fun penWhileTyping(): Boolean = false
         /** «Выделить» (0.27.7): перо обводит написанное. */
         fun lassoMode(): Boolean = false
         /** Обвели: контур (x, y подряд, координаты листа). */
@@ -368,6 +396,7 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val tool = ev.getToolType(0)
+                if (isPen(tool) && host.passThrough()) host.penWhileTyping()
                 if (inks(tool)) {
                     startInk(ev, 0)
                 } else if (!isPen(tool) && (penNear() || palmSized(ev, 0))) {
