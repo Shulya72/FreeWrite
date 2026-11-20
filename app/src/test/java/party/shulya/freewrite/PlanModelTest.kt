@@ -112,4 +112,27 @@ class PlanModelTest {
         assertEquals(1, s3.items.size)
         assertTrue(t.id in s3.gone)
     }
+
+    @Test
+    fun severalWeekdays() {
+        // Пн, ср, пт с среды 18 ноября: 18, 20, 23 — да; 16 (до начала), 19, 24 — нет.
+        val w = ev("Обход секций", "2026-11-18T08:00", "2026-11-18T09:00", Plan.WEEK).apply { days += listOf(1, 3, 5) }
+        assertEquals(listOf(false, true, false, true, true, false), listOf("16", "18", "19", "20", "23", "24").map { Plan.occursOn(w, d("2026-11-$it")) != null })
+        assertEquals("Каждую неделю: пн, ср, пт", Plan.repeatText(w))
+        // Вт и чт раз в 2 недели с 17 ноября: 17, 19 — да; 24, 26 — нет; 1, 3 декабря — да.
+        val w2 = ev("Сверка с АН", "2026-11-17T10:00", "2026-11-17T11:00", Plan.WEEK2).apply { days += listOf(2, 4) }
+        assertEquals(listOf(true, true, false, false, true, true), listOf("2026-11-17", "2026-11-19", "2026-11-24", "2026-11-26", "2026-12-01", "2026-12-03").map { Plan.occursOn(w2, d(it)) != null })
+        assertEquals("Каждые 2 недели: вт, чт", Plan.repeatText(w2))
+        // По будням; без своих дней — как раньше (день недели начала).
+        val wd = ev("Планёрка", "2026-11-16T08:00", "2026-11-16T08:30", Plan.WEEK).apply { days += Plan.WORKDAYS }
+        assertEquals("По будням (пн–пт)", Plan.repeatText(wd))
+        assertEquals(listOf(true, true, false), listOf("20", "19", "21").map { Plan.occursOn(wd, d("2026-11-$it")) != null })
+        assertEquals("Каждую неделю", Plan.repeatText(ev("Обычная", "2026-11-16T08:00", "2026-11-16T09:00", Plan.WEEK)))
+        // Оповещение — к ближайшему из дней; JSON хранит дни.
+        assertEquals(ms("2026-11-20T07:00"), Plan.nextAlert(listOf(w), ms("2026-11-18T08:00"), zone)!!.at)
+        val back = Plan.parse(Plan.json(w))
+        assertEquals(setOf(1, 3, 5), back.days.toSet())
+        assertEquals(Plan.json(w), Plan.json(back))
+        assertTrue("старая запись без дней", Plan.parse(Plan.json(ev("x", "2026-11-16T08:00", "2026-11-16T09:00", Plan.WEEK))).days.isEmpty())
+    }
 }

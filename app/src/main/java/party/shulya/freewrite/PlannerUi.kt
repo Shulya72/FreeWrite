@@ -382,7 +382,7 @@ class PlannerPage(private val a: HomeActivity) {
             }, LinearLayout.LayoutParams(dp(10f), dp(10f)).apply { topMargin = dp(6f); marginEnd = dp(10f) })
             val texts = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
             texts.addView(Ui.text(a, (if (it.isTask) "☐ " else "") + it.title, 15f, Ui.INK, bold = true))
-            val where = listOf(Plan.timeText(o) + (if (it.repeat != Plan.NONE) " · " + Plan.REPEATS[it.repeat]!!.lowercase() else ""), it.place)
+            val where = listOf(Plan.timeText(o) + (if (it.repeat != Plan.NONE) " · " + Plan.repeatText(it).lowercase() else ""), it.place)
                 .filter { s -> s.isNotEmpty() }.joinToString(" · ")
             texts.addView(Ui.text(a, where, 13f, Ui.INK2))
             if (it.notes.isNotEmpty()) texts.addView(Ui.text(a, it.notes, 13f, Ui.MUTED).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
@@ -419,7 +419,7 @@ class PlannerPage(private val a: HomeActivity) {
         }
         line(it.place)
         line(Plan.dayTitle(o.day) + " · " + Plan.timeText(o), Ui.INK)
-        if (it.repeat != Plan.NONE) line("Повтор: " + Plan.REPEATS[it.repeat]!!.lowercase() + (it.until?.let { u -> " до " + Plan.dayTitle(u) } ?: ""))
+        if (it.repeat != Plan.NONE) line("Повтор: " + Plan.repeatText(it).lowercase() + (it.until?.let { u -> " до " + Plan.dayTitle(u) } ?: ""))
         line("Календарь: " + Plan.cal(it.cal).name)
         val al = it.alerts().map { x -> Plan.alertName(it, x).lowercase() }
         line("Оповещение: " + if (al.isEmpty()) "нет" else al.joinToString(", "))
@@ -512,6 +512,17 @@ class PlannerPage(private val a: HomeActivity) {
         endVals.addView(eDate); endVals.addView(eTime, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { marginStart = dp(6f) })
         box.addView(endRow)
         val (repRow, repVals) = row("Повтор"); val rep = value("ev_repeat"); repVals.addView(rep); box.addView(repRow)
+        // Дни недели повтора (0.29.1): несколько дней — «пн, ср, пт».
+        val wdRow = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(2f), 0, dp(8f)) }
+        wdRow.addView(Ui.text(a, "Дни недели", 15f, Ui.INK2).apply { setPadding(0, 0, 0, dp(6f)) })
+        val wdChips = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+        val wdViews = (1..7).map { k ->
+            Ui.text(a, Plan.WEEKDAYS[k - 1], 14f, Ui.ACCENT, bold = true).apply {
+                tag = "ev_wd_$k"; gravity = Gravity.CENTER; isClickable = true
+            }.also { v -> wdChips.addView(v, LinearLayout.LayoutParams(0, dp(36f), 1f).apply { marginEnd = if (k < 7) dp(4f) else 0 }) }
+        }
+        wdRow.addView(wdChips)
+        box.addView(wdRow)
         val (untilRow, untilVals) = row("Повторять до"); val until = value("ev_until"); untilVals.addView(until); box.addView(untilRow)
 
         val box2 = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; background = Ui.rounded(a, Ui.PAPER, Ui.RULE, 10f); setPadding(dp(12f), dp(4f), dp(12f), dp(4f)) }
@@ -534,7 +545,15 @@ class PlannerPage(private val a: HomeActivity) {
             eDate.text = dateText(d.end.toLocalDate()); eTime.text = Plan.hm(d.end.toLocalTime())
             sTime.visibility = if (d.allDay) View.GONE else View.VISIBLE
             eTime.visibility = if (d.allDay) View.GONE else View.VISIBLE
-            rep.text = Plan.REPEATS[d.repeat]
+            rep.text = if (d.repeat == Plan.WEEK && Plan.weekDays(d) == Plan.WORKDAYS) "По будням" else Plan.REPEATS[d.repeat]
+            val weekly = d.repeat == Plan.WEEK || d.repeat == Plan.WEEK2
+            wdRow.visibility = if (weekly) View.VISIBLE else View.GONE
+            val on = Plan.weekDays(d)
+            for ((k, v) in wdViews.withIndex()) {
+                val sel = (k + 1) in on
+                v.setTextColor(if (sel) Color.WHITE else Ui.ACCENT)
+                v.background = Ui.rounded(a, if (sel) Ui.ACCENT else Ui.ACCENT_SOFT, null, 10f)
+            }
             untilRow.visibility = if (d.repeat == Plan.NONE) View.GONE else View.VISIBLE
             until.text = d.until?.let { dateText(it) } ?: "Без конца"
             cal.text = "● " + Plan.cal(d.cal).name; cal.setTextColor(Plan.cal(d.cal).color)
@@ -569,9 +588,29 @@ class PlannerPage(private val a: HomeActivity) {
         eTime.setOnClickListener { pickTime(d.end.toLocalTime()) { t ->
             d.end = d.end.toLocalDate().atTime(t); if (!d.end.isAfter(d.start)) d.end = d.end.plusDays(1); refreshForm()
         } }
-        rep.setOnClickListener { choose("Повтор", Plan.REPEATS.values.toList(), Plan.REPEATS.keys.indexOf(d.repeat)) { k ->
-            d.repeat = Plan.REPEATS.keys.toList()[k]; if (d.repeat == Plan.NONE) d.until = null; refreshForm()
-        } }
+        // Повтор: «По будням» — каждую неделю пн–пт; у «каждую неделю» и «каждые 2 недели» — строка дней недели.
+        val repKeys = listOf(Plan.NONE, Plan.DAY, WORKDAYS_KEY, Plan.WEEK, Plan.WEEK2, Plan.MONTH, Plan.YEAR)
+        val repNames = repKeys.map { k -> if (k == WORKDAYS_KEY) "По будням (пн–пт)" else Plan.REPEATS[k]!! }
+        rep.setOnClickListener {
+            val cur = if (d.repeat == Plan.WEEK && Plan.weekDays(d) == Plan.WORKDAYS) WORKDAYS_KEY else d.repeat
+            choose("Повтор", repNames, repKeys.indexOf(cur)) { k ->
+                val key = repKeys[k]
+                when (key) {
+                    WORKDAYS_KEY -> { d.repeat = Plan.WEEK; d.days.clear(); d.days.addAll(Plan.WORKDAYS) }
+                    Plan.WEEK, Plan.WEEK2 -> { if (Plan.weekDays(d) == Plan.WORKDAYS && d.repeat == Plan.WEEK && key == Plan.WEEK) d.days.clear(); d.repeat = key }
+                    else -> { d.repeat = key; d.days.clear() }
+                }
+                if (d.repeat == Plan.NONE) d.until = null
+                refreshForm()
+            }
+        }
+        for ((k, v) in wdViews.withIndex()) v.setOnClickListener {
+            val cur = Plan.weekDays(d).toMutableSet()
+            val day = k + 1
+            if (day in cur) { if (cur.size > 1) cur.remove(day) } else cur += day
+            d.days.clear(); d.days.addAll(cur)
+            refreshForm()
+        }
         until.setOnClickListener {
             AlertDialog.Builder(a).setTitle("Повторять до")
                 .setItems(arrayOf("Без конца", "Выбрать дату…")) { _, k ->
@@ -666,6 +705,7 @@ class PlannerPage(private val a: HomeActivity) {
     }
 
     companion object {
+        private const val WORKDAYS_KEY = "workdays"
         const val MONTH = "month"
         const val DAY = "day"
         const val SEARCH = "search"

@@ -211,4 +211,53 @@ class PlannerScreenTest {
         assertTrue("время помещается: ${loc[0] + time.width} ≤ ${er.width}", loc[0] + time.width <= er.width)
         shot(er, "plan-phone-editor.png")
     }
+
+    @Test
+    fun repeatOnSeveralWeekdays() {
+        val a = Robolectric.buildActivity(HomeActivity::class.java).setup().get()
+        idle()
+        val root = a.window.decorView
+        root.findViewWithTag<View>("tab_tasks").performClick(); idle()
+        val p = a.planner
+        val fri = LocalDate.of(2026, 11, 20)
+        p.openEditor(null, fri.atTime(8, 0)); idle()
+        val er = p.editor!!.window!!.decorView
+        er.findViewWithTag<EditText>("ev_title").setText("Обход секций")
+        val wd = er.findViewWithTag<View>("ev_wd_1")
+        assertTrue("без повтора дней недели нет", !wd.isShown)
+        // Повтор → «Каждую неделю»: видны дни, отмечена пятница (день начала).
+        er.findViewWithTag<View>("ev_repeat").performClick(); idle()
+        val list = ShadowAlertDialog.getLatestAlertDialog()
+        assertEquals("По будням (пн–пт)", list.listView.adapter.getItem(2).toString())
+        list.listView.performItemClick(list.listView, 3, 3L); idle()
+        assertTrue(wd.isShown)
+        // + понедельник и среда.
+        er.findViewWithTag<View>("ev_wd_1").performClick()
+        er.findViewWithTag<View>("ev_wd_3").performClick(); idle()
+        shot(er, "plan-weekdays.png")
+        p.editor!!.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); idle()
+        val it = p.store.items.first { x -> x.title == "Обход секций" }
+        assertEquals(setOf(1, 3, 5), it.days.toSet())
+        assertNotNull(Plan.occursOn(it, LocalDate.of(2026, 11, 23)))
+        assertNull(Plan.occursOn(it, LocalDate.of(2026, 11, 24)))
+        assertNotNull(Plan.occursOn(it, LocalDate.of(2026, 11, 25)))
+        // «Подробно» — дни словами.
+        p.openDay(LocalDate.of(2026, 11, 23)); idle()
+        val r = p.timeline.blockRect(it.id)!!
+        tap(p.timeline, r.centerX(), r.centerY())
+        val texts = ArrayList<String>()
+        fun walk(v: View) { if (v is TextView) texts += v.text.toString(); if (v is android.view.ViewGroup) for (k in 0 until v.childCount) walk(v.getChildAt(k)) }
+        walk(p.details!!.window!!.decorView)
+        assertTrue(texts.toString(), texts.contains("Повтор: каждую неделю: пн, ср, пт"))
+        // «По будням» одним касанием.
+        p.details!!.dismiss()
+        p.openEditor(it, null); idle()
+        val er2 = p.editor!!.window!!.decorView
+        er2.findViewWithTag<View>("ev_repeat").performClick(); idle()
+        val list2 = ShadowAlertDialog.getLatestAlertDialog()
+        list2.listView.performItemClick(list2.listView, 2, 2L); idle()
+        assertEquals("По будням", er2.findViewWithTag<TextView>("ev_repeat").text.toString())
+        p.editor!!.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); idle()
+        assertEquals(Plan.WORKDAYS, p.store.byId(it.id)!!.days.toSet())
+    }
 }

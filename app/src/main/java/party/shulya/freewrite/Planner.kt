@@ -28,6 +28,11 @@ class PlanItem(var id: String = Ids.next()) {
     /** Конец события (весь день — 00:00 последнего дня, включительно). У задачи — как начало. */
     var end: LocalDateTime = start.plusHours(1)
     var repeat = Plan.NONE
+    /**
+     * Дни недели повтора «каждую неделю» / «каждые 2 недели» (0.29.1, Владимир: «несколько дней недели»): 1 — пн … 7 — вс.
+     * Пусто — тот же день недели, что у начала.
+     */
+    val days = sortedSetOf<Int>()
     /** Повторять до (включительно); null — без конца. */
     var until: LocalDate? = null
     var cal = Plan.WORK
@@ -66,6 +71,22 @@ object Plan {
     const val YEAR = "year"
     val REPEATS = linkedMapOf(NONE to "Никогда", DAY to "Каждый день", WEEK to "Каждую неделю", WEEK2 to "Каждые 2 недели",
         MONTH to "Каждый месяц", YEAR to "Каждый год")
+    val WORKDAYS: Set<Int> = setOf(1, 2, 3, 4, 5)
+    private val WD_SHORT = arrayOf("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+
+    /** Дни недели повтора: свои или день недели начала. */
+    fun weekDays(it: PlanItem): Set<Int> = if (it.days.isNotEmpty()) it.days else setOf(it.start.dayOfWeek.value)
+
+    /** «Каждую неделю: пн, ср, пт», «По будням (пн–пт)», «Каждый месяц». */
+    fun repeatText(it: PlanItem): String {
+        val base = REPEATS[it.repeat] ?: "Никогда"
+        if (it.repeat != WEEK && it.repeat != WEEK2) return base
+        val d = weekDays(it)
+        if (it.repeat == WEEK && d == WORKDAYS) return "По будням (пн–пт)"
+        if (it.repeat == WEEK && d.size == 7) return "Каждый день"
+        if (it.days.isEmpty() || d.size == 1 && d.first() == it.start.dayOfWeek.value) return base
+        return base + ": " + d.sorted().joinToString(", ") { k -> WD_SHORT[k - 1] }
+    }
 
     const val WORK = "work"
     const val SITE = "site"
@@ -118,8 +139,10 @@ object Plan {
         if (iso(d) in it.skip) return false
         return when (it.repeat) {
             DAY -> true
-            WEEK -> ChronoUnit.DAYS.between(s, d) % 7 == 0L
-            WEEK2 -> ChronoUnit.DAYS.between(s, d) % 14 == 0L
+            WEEK -> d.dayOfWeek.value in weekDays(it)
+            // Раз в 2 недели: недели считаются с понедельника недели начала.
+            WEEK2 -> d.dayOfWeek.value in weekDays(it) &&
+                ChronoUnit.WEEKS.between(s.minusDays((s.dayOfWeek.value - 1).toLong()), d.minusDays((d.dayOfWeek.value - 1).toLong())) % 2 == 0L
             MONTH -> d.dayOfMonth == s.dayOfMonth
             YEAR -> d.dayOfMonth == s.dayOfMonth && d.monthValue == s.monthValue
             else -> d == s
@@ -244,6 +267,7 @@ object Plan {
         if (it.allDay) put("ad", 1)
         put("s", it.start.toString()); put("e", it.end.toString())
         if (it.repeat != NONE) put("r", it.repeat)
+        if (it.days.isNotEmpty()) put("wd", JSONArray(it.days.toList()))
         it.until?.let { u -> put("u", u.toString()) }
         put("c", it.cal); put("a", it.alert)
         if (it.alert2 != NO_ALERT) put("a2", it.alert2)
@@ -261,6 +285,7 @@ object Plan {
         it.start = runCatching { LocalDateTime.parse(j.optString("s")) }.getOrDefault(LocalDate.now().atTime(9, 0))
         it.end = runCatching { LocalDateTime.parse(j.optString("e")) }.getOrDefault(it.start.plusHours(1))
         it.repeat = j.optString("r", NONE).takeIf { r -> r in REPEATS } ?: NONE
+        j.optJSONArray("wd")?.let { a -> for (k in 0 until a.length()) a.optInt(k).takeIf { d -> d in 1..7 }?.let { d -> it.days += d } }
         it.until = j.optString("u").takeIf { u -> u.isNotEmpty() }?.let { u -> runCatching { LocalDate.parse(u) }.getOrNull() }
         it.cal = j.optString("c", WORK).takeIf { c -> CALS.any { k -> k.id == c } } ?: WORK
         it.alert = j.optInt("a", 60); it.alert2 = j.optInt("a2", NO_ALERT)
