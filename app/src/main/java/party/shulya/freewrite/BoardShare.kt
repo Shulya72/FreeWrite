@@ -166,12 +166,13 @@ object BoardShare {
             start(activity, board, onlyNew = false, save = save)
             return
         }
+        // Кнопками (0.28.2): строки списка на HarmonyOS выглядят как простой текст — Владимир не понял, что на них нажимать.
         AlertDialog.Builder(activity)
             .setTitle("Отправить доску «${board.title}»")
-            .setItems(arrayOf(
-                "Целиком, с картинками — ${mb(all)}\nесли у коллеги этой доски ещё нет",
-                "Только правки и новые картинки — ${mb(fresh)}\nесли коллега уже открывал эту доску",
-            )) { _, which -> start(activity, board, onlyNew = which == 1, save = save) }
+            .setMessage("«Целиком» — с картинками, ${mb(all)}: если у коллеги этой доски ещё нет, или чтобы отправить копию доски.\n\n" +
+                "«Только правки» — ${mb(fresh)}: если коллега уже открывал эту доску.")
+            .setPositiveButton("Целиком") { _, _ -> start(activity, board, onlyNew = false, save = save) }
+            .setNeutralButton("Только правки") { _, _ -> start(activity, board, onlyNew = true, save = save) }
             .setNegativeButton("Отмена", null)
             .show()
     }

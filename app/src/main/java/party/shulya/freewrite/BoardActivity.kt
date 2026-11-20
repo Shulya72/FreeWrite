@@ -196,6 +196,39 @@ class BoardActivity : Activity(), BoardView.Host {
             view.post { view.fitAll(); handler.post(frameTicker) }
         }
         if (resumedNow) afterResume()
+        if (!board.sync.isShared) view.post { offerRepair() }
+    }
+
+    // ---------------------------------------------------------------- проверка доски
+
+    /** «Не сейчас» — до следующего открытия доски. */
+    private var repairLater = false
+    private var repairSynced = false
+    internal var repairDialog: AlertDialog? = null
+
+    /**
+     * Окно «Проверка доски» (0.28.2): что спряталось или сбилось после ошибки 0.27.5 — исправляет только человек
+     * (Владимир: «какого хрена приложение решает, что удалить и что восстановить»).
+     */
+    internal fun offerRepair() {
+        if (repairLater || repairDialog?.isShowing == true || isFinishing || isDestroyed || !opened) return
+        val p = BoardRepair.check(board)
+        if (p.isEmpty) return
+        Trail.add("Проверка доски — нашлось: $p")
+        val text = p.lines.joinToString("\n\n") { "• $it" } +
+            "\n\nСтатусы и даты схем не меняются, строки и схемы не удаляются. Если что-то не так — «Отменить» вернёт как было."
+        repairDialog = AlertDialog.Builder(this)
+            .setTitle("Проверка доски")
+            .setMessage(text)
+            .setPositiveButton("Исправить") { _, _ ->
+                pushUndo()
+                val done = BoardRepair.run(board)
+                changed()
+                hint(if (done.isEmpty) "Исправлять уже нечего" else "Исправлено", 3000)
+            }
+            .setNegativeButton("Не сейчас") { _, _ -> repairLater = true; Trail.add("Проверка доски — «Не сейчас»") }
+            .setOnCancelListener { repairLater = true }
+            .show()
     }
 
     /** Запустить распознавание рукописи (один раз) — для «В текст». */
@@ -261,12 +294,15 @@ class BoardActivity : Activity(), BoardView.Host {
             view.invalidate()
             val who = authors.entries.sortedByDescending { it.value }.joinToString(", ") { "${it.key} — ${it.value}" }
             hint(if (who.isNotEmpty()) "Правки: $who" else "Пришли правки коллег: $changed", 3500)
+            if (repairSynced) offerRepair()
             if (view.selection.isNotEmpty()) buildSelectionBar()
         }
         override fun onImagesArrived() { view.invalidate() }
         override fun onSyncState(state: RemoteSync.State) {
             syncState = state
             updateSubtitle()
+            // Общая доска: проверять после первой удачной синхронизации — своя копия могла отстать от сервера.
+            if (!state.busy && !state.error && !repairSynced) { repairSynced = true; offerRepair() }
         }
     }
 

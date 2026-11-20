@@ -790,7 +790,7 @@ class Board(
             IdTables.upgrade(b)
             b.sync = BoardSync.parse(o.optJSONObject("sync"))
             b.fixIds()
-            BoardRepair.run(b)
+            // Проверка доски (BoardRepair) — не здесь: исправляет только человек, кнопкой в окне «Проверка доски» (0.28.2).
             return b
         }
 

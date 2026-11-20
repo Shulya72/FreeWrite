@@ -1083,10 +1083,12 @@ class ScreensSmokeTest {
         idle()
         val dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
         assertTrue(dialog.isShowing)
-        assertEquals(2, dialog.listView.adapter.count)
-        assertTrue(dialog.listView.adapter.getItem(1).toString().startsWith("Только правки"))
+        // Кнопками (0.28.2): «Целиком» / «Только правки» / «Отмена».
+        assertEquals("Целиком", dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).text.toString())
+        val onlyNew = dialog.getButton(android.app.AlertDialog.BUTTON_NEUTRAL)
+        assertEquals("Только правки", onlyNew.text.toString())
         screenshot(latestDialogRoot(), "board_share.png")
-        dialog.listView.performItemClick(null, 1, 1L)
+        onlyNew.performClick()
         waitUntil("выбор приложения 2") { sa.peekNextStartedActivity() != null }
         assertEquals(Intent.ACTION_CHOOSER, sa.nextStartedActivity.action)
 
