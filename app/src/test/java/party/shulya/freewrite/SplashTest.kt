@@ -83,7 +83,7 @@ class SplashTest {
         assertEquals("фон на всё окно", decor(a).width, bg.width)
         assertEquals(decor(a).height, bg.height)
         assertEquals("планшет — планшетный фон", R.drawable.splash_bg_tablet, Splash.bgFor(s.width, s.height))
-        assertEquals("знак с надписью — 0,8 ширины", (Splash.HERO_W * s.width).roundToInt().toFloat(), img.width.toFloat(), 1f)
+        assertEquals("плашка со знаком — по ширине баннера", (Splash.HERO_W * s.width).roundToInt().toFloat(), img.width.toFloat(), 1f)
         assertTrue("посередине по ширине", kotlin.math.abs((img.left + img.right) / 2 - s.width / 2) <= 1)
         assertEquals("середина баннера — посередине экрана", s.height / 2f, img.top + Splash.HERO_CENTER * img.height, 2f)
         shot(s, "splash-tablet.png")
@@ -137,6 +137,6 @@ class SplashTest {
         // набок знак не шире 1,1 высоты × 0,8
         val (w, h) = Splash.heroSize(2560, 1600)
         assertEquals((Splash.HERO_W * 1760).roundToInt(), w)
-        assertTrue("высота по пропорции", h in 420..432)
+        assertTrue("высота по пропорции", h in 636..648)
     }
 }

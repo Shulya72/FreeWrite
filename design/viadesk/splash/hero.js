@@ -17,6 +17,7 @@ function heroSvg(o = {}) {
     return d + 'Z';
   };
   const out = [];
+  const LT = !!o.light;   // светлая заставка: тёмная надпись, светлое стекло
   const add = (s) => out.push(s);
   const line = (x1, y1, x2, y2, st, w, ex = '') => add(`<line x1="${F(x1)}" y1="${F(y1)}" x2="${F(x2)}" y2="${F(y2)}" stroke="${st}" stroke-width="${w}" stroke-linecap="round" ${ex}/>`);
 
@@ -26,13 +27,13 @@ function heroSvg(o = {}) {
   <linearGradient id="hTealSheen" gradientUnits="userSpaceOnUse" x1="120" y1="0" x2="270" y2="0">
     <stop offset="0" stop-color="#E8FFFD" stop-opacity="0.55"/><stop offset="0.18" stop-color="#FFFFFF" stop-opacity="0.12"/><stop offset="0.6" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
   <linearGradient id="hWhite" gradientUnits="userSpaceOnUse" x1="590" y1="170" x2="410" y2="370">
-    <stop offset="0" stop-color="#FFFFFF"/><stop offset="0.35" stop-color="#EEF2F7"/><stop offset="0.75" stop-color="#C4CEDB"/><stop offset="1" stop-color="#9AA8BB"/></linearGradient>
+    <stop offset="0" stop-color="#FFFFFF"/><stop offset="0.35" stop-color="#EEF2F7"/><stop offset="0.75" stop-color="${LT ? '#B9C8D6' : '#C4CEDB'}"/><stop offset="1" stop-color="${LT ? '#8FA3B6' : '#9AA8BB'}"/></linearGradient>
   <linearGradient id="hGlass" gradientUnits="userSpaceOnUse" x1="340" y1="100" x2="470" y2="280">
-    <stop offset="0" stop-color="#3B82A6" stop-opacity="0.42"/><stop offset="1" stop-color="#16425E" stop-opacity="0.5"/></linearGradient>
+    <stop offset="0" stop-color="${LT ? '#FFFFFF' : '#3B82A6'}" stop-opacity="${LT ? 0.78 : 0.42}"/><stop offset="1" stop-color="${LT ? '#D6E6F1' : '#16425E'}" stop-opacity="${LT ? 0.86 : 0.5}"/></linearGradient>
   <linearGradient id="hGlass2" gradientUnits="userSpaceOnUse" x1="440" y1="90" x2="520" y2="270">
-    <stop offset="0" stop-color="#25587A" stop-opacity="0.55"/><stop offset="1" stop-color="#0E2D45" stop-opacity="0.7"/></linearGradient>
+    <stop offset="0" stop-color="${LT ? '#F4F9FC' : '#25587A'}" stop-opacity="${LT ? 0.9 : 0.55}"/><stop offset="1" stop-color="${LT ? '#DCE9F2' : '#0E2D45'}" stop-opacity="${LT ? 0.92 : 0.7}"/></linearGradient>
   <linearGradient id="hLayer" gradientUnits="userSpaceOnUse" x1="0" y1="250" x2="0" y2="370">
-    <stop offset="0" stop-color="#1A4F66" stop-opacity="0.18"/><stop offset="0.7" stop-color="#2A7486" stop-opacity="0.30"/><stop offset="1" stop-color="#3B9AA6" stop-opacity="0.45"/></linearGradient>
+    <stop offset="0" stop-color="${LT ? '#BFF1EA' : '#1A4F66'}" stop-opacity="${LT ? 0.35 : 0.18}"/><stop offset="0.7" stop-color="${LT ? '#7FE3D6' : '#2A7486'}" stop-opacity="${LT ? 0.45 : 0.30}"/><stop offset="1" stop-color="${LT ? '#3FCFC0' : '#3B9AA6'}" stop-opacity="${LT ? 0.55 : 0.45}"/></linearGradient>
   <linearGradient id="hAmber" gradientUnits="userSpaceOnUse" x1="410" y1="180" x2="400" y2="242">
     <stop offset="0" stop-color="#FFC24E"/><stop offset="1" stop-color="#E9922A"/></linearGradient>
   <linearGradient id="hBld" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="406">
@@ -40,9 +41,9 @@ function heroSvg(o = {}) {
   <filter id="hGlowS" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
   <filter id="hGlowM" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
   <filter id="hShadow" x="-30%" y="-30%" width="160%" height="170%"><feGaussianBlur in="SourceAlpha" stdDeviation="9"/><feOffset dy="10"/>
-    <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <feComponentTransfer><feFuncA type="linear" slope="${LT ? 0.22 : 0.55}"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
   <filter id="hTextSh" x="-10%" y="-30%" width="120%" height="160%"><feGaussianBlur in="SourceAlpha" stdDeviation="7"/><feOffset dy="6"/>
-    <feComponentTransfer><feFuncA type="linear" slope="0.45"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <feComponentTransfer><feFuncA type="linear" slope="${LT ? 0.12 : 0.45}"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
   <filter id="hBlur8"><feGaussianBlur stdDeviation="8"/></filter>
   </defs>`);
 
@@ -52,33 +53,33 @@ function heroSvg(o = {}) {
   const layer = (dx, dy, x1, op) => {
     const pts = [[200 + dx, 230 + dy], [272 + dx, 300 + dy], [x1, 300 + dy], [x1 + 46, 228 + dy]];
     const d = rpath([[pts[0][0], pts[0][1]], [pts[1][0], pts[1][1] + 6], [pts[2][0], pts[2][1] + 6], [pts[3][0], pts[3][1]]], 16);
-    add(`<path d="${d}" fill="url(#hLayer)" stroke="#8FF0EE" stroke-opacity="${op}" stroke-width="2"/>`);
-    add(`<path d="M${pts[1][0] + 10} ${pts[1][1] + 6} L${pts[2][0] - 10} ${pts[2][1] + 6}" stroke="#C8FFFB" stroke-opacity="${op * 0.8}" stroke-width="2.4" stroke-linecap="round" filter="url(#hGlowS)"/>`);
+    add(`<path d="${d}" fill="url(#hLayer)" stroke="${LT ? '#16B3A2' : '#8FF0EE'}" stroke-opacity="${op}" stroke-width="2"/>`);
+    add(`<path d="M${pts[1][0] + 10} ${pts[1][1] + 6} L${pts[2][0] - 10} ${pts[2][1] + 6}" stroke="${LT ? '#2BD3C1' : '#C8FFFB'}" stroke-opacity="${op * 0.8}" stroke-width="2.4" stroke-linecap="round" filter="url(#hGlowS)"/>`);
   };
   layer(28, 58, 462, 0.75);
   layer(14, 30, 410, 0.85);
   // Белый лист — правая сторона «V».
-  add(`<path d="${rpath([[505, 172], [590, 172], [478, 366], [392, 366]], [10, 10, 12, 12])}" fill="url(#hWhite)"/>`);
+  add(`<path d="${rpath([[505, 172], [590, 172], [478, 366], [392, 366]], [10, 10, 12, 12])}" fill="url(#hWhite)"${LT ? ' stroke="#9DB2C4" stroke-width="1.4"' : ''}/>`);
   add(`<path d="M588 176 L480 362" stroke="#FFFFFF" stroke-opacity="0.85" stroke-width="2"/>`);
   // Задний стеклянный лист с белой рамкой.
-  add(`<path d="${rpath([[440, 89], [585, 89], [482, 268], [337, 268]], 8)}" fill="url(#hGlass2)" stroke="#F2F8FF" stroke-opacity="1" stroke-width="3.6" filter="url(#hGlowS)"/>`);
+  add(`<path d="${rpath([[440, 89], [585, 89], [482, 268], [337, 268]], 8)}" fill="url(#hGlass2)" stroke="${LT ? '#2E6A93' : '#F2F8FF'}" stroke-opacity="${LT ? 0.75 : 1}" stroke-width="${LT ? 2.6 : 3.6}" filter="url(#hGlowS)"/>`);
   // Передний стеклянный лист с планом.
   const S = [[333, 113], [545, 113], [470, 270], [258, 270]];
-  add(`<path d="${rpath(S, 7)}" fill="url(#hGlass)" stroke="#9FD6F0" stroke-opacity="0.7" stroke-width="1.8"/>`);
+  add(`<path d="${rpath(S, 7)}" fill="url(#hGlass)" stroke="${LT ? '#5E93BD' : '#9FD6F0'}" stroke-opacity="${LT ? 0.85 : 0.7}" stroke-width="1.8"/>`);
   const at = (u, v) => { // точка на листе (u — вдоль, v — вниз)
     const top = [S[0][0] + (S[1][0] - S[0][0]) * u, S[0][1] + (S[1][1] - S[0][1]) * u];
     const bot = [S[3][0] + (S[2][0] - S[3][0]) * u, S[3][1] + (S[2][1] - S[3][1]) * u];
     return [top[0] + (bot[0] - top[0]) * v, top[1] + (bot[1] - top[1]) * v];
   };
-  for (const u of [0.2, 0.4, 0.6, 0.8]) { const a = at(u, 0.03), b = at(u, 0.97); line(a[0], a[1], b[0], b[1], '#BFE6FF', 0.9, 'stroke-opacity="0.35"'); }
-  for (const v of [0.25, 0.5, 0.75]) { const a = at(0.03, v), b = at(0.97, v); line(a[0], a[1], b[0], b[1], '#BFE6FF', 0.9, 'stroke-opacity="0.35"'); }
+  for (const u of [0.2, 0.4, 0.6, 0.8]) { const a = at(u, 0.03), b = at(u, 0.97); line(a[0], a[1], b[0], b[1], LT ? '#7FA9C9' : '#BFE6FF', 0.9, 'stroke-opacity="0.35"'); }
+  for (const v of [0.25, 0.5, 0.75]) { const a = at(0.03, v), b = at(0.97, v); line(a[0], a[1], b[0], b[1], LT ? '#7FA9C9' : '#BFE6FF', 0.9, 'stroke-opacity="0.35"'); }
   // Стены плана.
   const walls = [[[0.12, 0.11], [0.52, 0.11]], [[0.62, 0.11], [0.93, 0.11]], [[0.5, 0.11], [0.5, 0.3]], [[0.78, 0.11], [0.74, 0.55]],
     [[0.05, 0.28], [0.22, 0.28]], [[0.3, 0.28], [0.44, 0.28]], [[0.56, 0.28], [0.68, 0.28]], [[0.16, 0.28], [0.12, 0.55]],
     [[0.02, 0.6], [0.16, 0.6]], [[0.24, 0.6], [0.4, 0.6]]];
   add(`<g filter="url(#hGlowS)">`);
-  for (const [p, q] of walls) { const a = at(...p), b = at(...q); line(a[0], a[1], b[0], b[1], '#F4FAFF', 3.2, 'stroke-opacity="0.95"'); }
-  for (const c of [[0.5, 0.28], [0.16, 0.6], [0.3, 0.6], [0.62, 0.28]]) { const a = at(...c); add(`<rect x="${F(a[0] - 3)}" y="${F(a[1] - 3)}" width="6" height="6" fill="#EAF6FF" opacity="0.9"/>`); }
+  for (const [p, q] of walls) { const a = at(...p), b = at(...q); line(a[0], a[1], b[0], b[1], LT ? '#1E4A6B' : '#F4FAFF', 3.2, 'stroke-opacity="0.95"'); }
+  for (const c of [[0.5, 0.28], [0.16, 0.6], [0.3, 0.6], [0.62, 0.28]]) { const a = at(...c); add(`<rect x="${F(a[0] - 3)}" y="${F(a[1] - 3)}" width="6" height="6" fill="${LT ? '#1E4A6B' : '#EAF6FF'}" opacity="0.9"/>`); }
   add(`</g>`);
   // Янтарная захватка с точками.
   const Z = [[410, 182], [493, 181], [457, 241], [368, 241]];
@@ -95,12 +96,12 @@ function heroSvg(o = {}) {
 
   // ---------------- Надпись
   add(`<g filter="url(#hTextSh)">
-    <text x="625" y="245" font-family="VMontserrat" font-weight="700" font-size="${o.fs || 166}" letter-spacing="${o.ls ?? -6}" fill="#FFFFFF">V<tspan>ı</tspan>aDesk</text>
+    <text x="625" y="245" font-family="VMontserrat" font-weight="700" font-size="${o.fs || 166}" letter-spacing="${o.ls ?? -6}" fill="${LT ? '#0A2133' : '#FFFFFF'}">V<tspan>ı</tspan>aDesk</text>
   </g>`);
   // точка «i» — янтарный косой брусок
   add(`<polygon points="${P([[765, 126], [791, 126], [782, 147], [756, 147]])}" fill="#F7B23C"/>`);
   add(`<rect x="625" y="273" width="5.5" height="68" rx="2.5" fill="#F2A93B"/>`);
-  add(`<text font-family="Inter" font-weight="400" font-size="${o.ts || 27.8}" fill="#EAF1F8" letter-spacing="0.38">
+  add(`<text font-family="Inter" font-weight="400" font-size="${o.ts || 27.8}" fill="${LT ? '#2B4757' : '#EAF1F8'}" letter-spacing="0.38">
     <tspan x="653" y="302">Единое рабочее пространство</tspan><tspan x="653" y="337">для строительных и инженерных команд</tspan></text>`);
 
   if (o.noBuilding) return out.join('\n');

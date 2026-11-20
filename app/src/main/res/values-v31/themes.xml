@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Android 12+ (HarmonyOS 4): системная заставка — только тёмно-синий фон (0.29.2), картинка — своя (Splash.kt). -->
+    <!-- Android 12+ (HarmonyOS 4): системная заставка — только светлый фон (0.29.2), картинка — своя (Splash.kt). -->
     <style name="Theme.FreeWrite" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:colorPrimary">#092638</item>
         <item name="android:colorPrimaryDark">#FBFCFD</item>
@@ -10,9 +10,9 @@
         <item name="android:navigationBarColor">#FBFCFD</item>
         <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowBackground">#EDF2F5</item>
-        <item name="android:windowSplashScreenBackground">#0A2133</item>
+        <item name="android:windowSplashScreenBackground">#EEF3F6</item>
         <!-- Без значка: сразу за системной заставкой — своя, с картинкой ViaDesk (Splash.kt). -->
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_none</item>
-        <item name="android:windowSplashScreenIconBackgroundColor">#0A2133</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">#EEF3F6</item>
     </style>
 </resources>

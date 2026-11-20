@@ -12,7 +12,8 @@ const cy = H / 2, bh = W * 406 / 1536, bt = cy - bh / 2, bb = cy + bh / 2;
 let seed = 11;
 const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 const f = (n) => (Math.round(n * 100) / 100);
-const BLUE = (a) => `rgba(110,178,235,${a})`;
+const LIGHT = !!P.get('light');
+const BLUE = LIGHT ? (a) => `rgba(24,72,118,${Math.min(1, a * 1.15)})` : (a) => `rgba(110,178,235,${a})`;
 const TEAL = (a) => `rgba(8,201,181,${a})`;
 const AMBER = (a) => `rgba(255,181,46,${a})`;
 let out = [], free = [], toFree = false;
@@ -36,13 +37,13 @@ const fadeStops = () => {
 
 const defs = `
 <linearGradient id="base" x1="0" y1="0" x2="0" y2="${H}" gradientUnits="userSpaceOnUse">
-  <stop offset="0" stop-color="#051526"/><stop offset="0.5" stop-color="#0A2133"/><stop offset="1" stop-color="#04121F"/>
+  <stop offset="0" stop-color="${LIGHT ? '#F7FAFC' : '#051526'}"/><stop offset="0.5" stop-color="${LIGHT ? '#FFFFFF' : '#0A2133'}"/><stop offset="1" stop-color="${LIGHT ? '#EEF4F8' : '#04121F'}"/>
 </linearGradient>
 <radialGradient id="glow" cx="${W / 2}" cy="${cy}" r="${Math.max(W, H) * 0.55}" gradientUnits="userSpaceOnUse">
-  <stop offset="0" stop-color="rgba(26,104,160,0.38)"/><stop offset="0.45" stop-color="rgba(18,80,130,0.14)"/><stop offset="1" stop-color="rgba(10,40,70,0)"/>
+  <stop offset="0" stop-color="${LIGHT ? 'rgba(8,201,181,0.10)' : 'rgba(26,104,160,0.38)'}"/><stop offset="0.45" stop-color="${LIGHT ? 'rgba(60,140,200,0.05)' : 'rgba(18,80,130,0.14)'}"/><stop offset="1" stop-color="rgba(10,40,70,0)"/>
 </radialGradient>
 <radialGradient id="vign" cx="${W / 2}" cy="${cy}" r="${Math.hypot(W, H) * 0.6}" gradientUnits="userSpaceOnUse">
-  <stop offset="0.6" stop-color="rgba(0,0,0,0)"/><stop offset="1" stop-color="rgba(0,6,14,0.55)"/>
+  <stop offset="0.6" stop-color="rgba(0,0,0,0)"/><stop offset="1" stop-color="${LIGHT ? 'rgba(170,195,215,0.25)' : 'rgba(0,6,14,0.55)'}"/>
 </radialGradient>
 <linearGradient id="fadeg" x1="0" y1="0" x2="0" y2="${H}" gradientUnits="userSpaceOnUse">${fadeStops()}</linearGradient>
 <mask id="fade" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="url(#fadeg)"/></mask>
@@ -66,7 +67,7 @@ function blueprint() {
   const m = 14 * s;
   add(`<rect x="${f(m)}" y="${f(m)}" width="${f(W - 2 * m)}" height="${f(H - 2 * m)}" fill="none" stroke="${BLUE(0.22)}" stroke-width="${lw(1)}"/>`);
   const tw = 190 * s, th = 58 * s, tx = W - m - tw, ty = H - m - th;
-  add(`<rect x="${f(tx)}" y="${f(ty)}" width="${f(tw)}" height="${f(th)}" fill="rgba(8,30,50,0.5)" stroke="${BLUE(0.3)}" stroke-width="${lw(1)}"/>`);
+  add(`<rect x="${f(tx)}" y="${f(ty)}" width="${f(tw)}" height="${f(th)}" fill="${LIGHT ? 'rgba(255,255,255,0.9)' : 'rgba(8,30,50,0.5)'}" stroke="${BLUE(0.3)}" stroke-width="${lw(1)}"/>`);
   line(tx, ty + th * 0.45, tx + tw, ty + th * 0.45, BLUE(0.25), lw(0.8));
   line(tx + tw * 0.62, ty, tx + tw * 0.62, ty + th, BLUE(0.25), lw(0.8));
   line(tx + tw * 0.62, ty + th * 0.72, tx + tw, ty + th * 0.72, BLUE(0.2), lw(0.7));
@@ -214,7 +215,7 @@ function slab(x0, y0, w, h) {
     line(X(u), Y(v), X(u) + 0.06 * w, Y(v) + 0.12 * h, BLUE(0.3), lw(0.7));
     line(X(u) + 0.06 * w, Y(v), X(u), Y(v) + 0.12 * h, BLUE(0.3), lw(0.7));
   }
-  const lab = (u, t, c) => { circ(X(u), Y(0.5), 13 * s, `fill="rgba(6,22,40,0.85)" stroke="${c}" stroke-width="${lw(1.3)}"`); text(X(u), Y(0.5), t, 11 * s, c, 'font-weight="700"'); };
+  const lab = (u, t, c) => { circ(X(u), Y(0.5), 13 * s, `fill="${LIGHT ? '#FFFFFF' : 'rgba(6,22,40,0.85)'}" stroke="${c}" stroke-width="${lw(1.3)}"`); text(X(u), Y(0.5), t, 11 * s, c, 'font-weight="700"'); };
   lab(0.18, '1', TEAL(0.95)); lab(0.525, '2', AMBER(1)); lab(0.85, '3', BLUE(0.7));
   for (const q of [z1[0], z2[0], z1[z1.length - 1], z2[z2.length - 1]]) circ(q[0], q[1], 3.2 * s, `fill="${AMBER(1)}" filter="url(#gl)"`);
 }
@@ -576,12 +577,256 @@ function isometric() {
   toFree = false;
 }
 
-const draw = { A: blueprint, B: construction, C: layers, D: contours, E: nightSite, F: workspace, G: isometric }[V];
+
+// ------------------------------------------------------------------ И. Дневной город (светлая заставка)
+function daySite() {
+  toFree = true;
+  // Небо: облака — мягкие светлые пятна.
+  add(`<rect width="${W}" height="${H}" fill="url(#skyD)"/>`);
+  add(`<linearGradient id="skyD" x1="0" y1="0" x2="0" y2="${H}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#DCEBF5"/><stop offset="0.55" stop-color="#F7FAFC"/><stop offset="1" stop-color="#FFFFFF"/></linearGradient>`);
+  for (const [u, v, rx, ry] of [[0.2, 0.12, 0.26, 0.025], [0.72, 0.08, 0.3, 0.03], [0.55, 0.22, 0.22, 0.02], [0.1, 0.3, 0.18, 0.018]])
+    add(`<ellipse cx="${f(u * W)}" cy="${f(v * H)}" rx="${f(rx * W)}" ry="${f(ry * H)}" fill="#FFFFFF" opacity="0.85" filter="url(#blur)"/>`);
+  // Разметка-«созвездие» днём — тонкий пунктир точек съёмки.
+  const st = [[0.12, 0.14], [0.27, 0.10], [0.41, 0.16], [0.58, 0.115], [0.74, 0.18], [0.88, 0.13]].map(([u, v]) => [u * W, v * H]);
+  pline(st, `stroke="${AMBER(0.6)}" stroke-width="${lw(0.9)}" stroke-dasharray="${f(4 * s)} ${f(5 * s)}"`);
+  for (const q of st) circ(q[0], q[1], 2.4 * s, `fill="${AMBER(1)}"`);
+  const yh = H * 0.83;
+  const bld = (x, w, h, lit, opts = {}) => {
+    const y = yh - h;
+    add(`<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" fill="#FFFFFF" stroke="${BLUE(0.55)}" stroke-width="${lw(1.1)}"/>`);
+    const cw = 9 * s, ch = 11 * s;
+    for (let yy = y + 8 * s; yy < yh - 10 * s; yy += ch + 6 * s) for (let xx = x + 6 * s; xx < x + w - cw; xx += cw + 6 * s) {
+      const r = rnd(); add(`<rect x="${f(xx)}" y="${f(yy)}" width="${f(cw)}" height="${f(ch)}" fill="${r < lit * 0.35 ? AMBER(0.55) : r < lit ? 'rgba(120,175,215,0.35)' : 'rgba(205,225,240,0.6)'}" stroke="${BLUE(0.18)}" stroke-width="${lw(0.5)}"/>`);
+    }
+    if (opts.slab) {
+      add(`<rect x="${f(x - 4 * s)}" y="${f(y - 6 * s)}" width="${f(w + 8 * s)}" height="${f(6 * s)}" fill="${AMBER(0.95)}"/>`);
+      for (let xx = x; xx <= x + w; xx += w / 5) line(xx, y - 6 * s, xx, y - 26 * s, BLUE(0.6), lw(1.3));
+    }
+  };
+  const row = [[0.00, 0.10, 0.14], [0.09, 0.08, 0.22], [0.16, 0.12, 0.10], [0.27, 0.07, 0.28], [0.33, 0.11, 0.16], [0.43, 0.09, 0.12],
+    [0.51, 0.13, 0.20], [0.63, 0.07, 0.26], [0.69, 0.10, 0.13], [0.78, 0.12, 0.31], [0.89, 0.11, 0.17]];
+  row.forEach(([u, w, h], i) => bld(u * W, w * W, h * H * 0.55, 0.3, { slab: i === 6 }));
+  const crane = (mx, top, jl, jr, hook) => {
+    const C = BLUE(0.7), w = lw(1.1);
+    line(mx, top, mx, yh, C, w); line(mx + 8 * s, top + 12 * s, mx + 8 * s, yh, C, w);
+    let z = []; for (let y = top + 12 * s, k = 0; y < yh; y += 8 * s, k++) z.push([k % 2 ? mx : mx + 8 * s, y]); pline(z, `stroke="${BLUE(0.4)}" stroke-width="${lw(0.7)}"`);
+    line(mx - jl, top + 12 * s, mx + jr, top + 12 * s, C, w); line(mx + 4 * s, top - 14 * s, mx - jl * 0.8, top + 12 * s, BLUE(0.45), lw(0.7));
+    line(mx + 4 * s, top - 14 * s, mx + jr, top + 12 * s, BLUE(0.45), lw(0.7));
+    line(mx - hook, top + 12 * s, mx - hook, top + 70 * s, BLUE(0.5), lw(0.7));
+    add(`<rect x="${f(mx + jr - 26 * s)}" y="${f(top + 12 * s)}" width="${f(22 * s)}" height="${f(10 * s)}" fill="${BLUE(0.25)}"/>`);
+    add(`<rect x="${f(mx - hook - 14 * s)}" y="${f(top + 70 * s)}" width="${f(28 * s)}" height="${f(5 * s)}" fill="${AMBER(0.9)}"/>`);
+  };
+  crane(0.22 * W, yh - 0.30 * H * 0.55 - 50 * s, 0.17 * W, 0.08 * W, 0.12 * W);
+  crane(0.70 * W, yh - 0.34 * H * 0.55 - 60 * s, 0.24 * W, 0.07 * W, 0.15 * W);
+  add(`<rect x="0" y="${f(yh)}" width="${W}" height="${f(H - yh)}" fill="#F3F7FA"/>`);
+  add(`<linearGradient id="dG" x1="0" y1="${f(yh)}" x2="0" y2="${H}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#000"/><stop offset="0.25" stop-color="#fff"/><stop offset="1" stop-color="#fff"/></linearGradient>
+    <mask id="dM" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="url(#dG)"/></mask><g mask="url(#dM)">`);
+  for (let i = -16; i <= 16; i++) line(W / 2, yh, W / 2 + i * W * 0.13, H, BLUE(0.12), lw(0.8));
+  for (let k = 1; k <= 9; k++) { const y = yh + (H - yh) * Math.pow(k / 9, 2); line(0, y, W, y, BLUE(0.12), lw(0.8)); }
+  add(`</g>`);
+  line(0, yh, W, yh, BLUE(0.5), lw(1.2));
+  toFree = false;
+}
+
+// ------------------------------------------------------------------ К. Тихий лист: белое поле, тонкая линия города внизу
+function quietSheet() {
+  toFree = true;
+  const g = W / 40;
+  add(`<pattern id="gq" width="${f(g)}" height="${f(g)}" patternUnits="userSpaceOnUse" x="${f(W / 2 % g)}" y="${f(cy % g)}"><path d="M${f(g)} 0V${f(g)}M0 ${f(g)}H${f(g)}" stroke="${BLUE(0.05)}" stroke-width="${lw(0.7)}"/></pattern>`);
+  add(`<rect width="${W}" height="${H}" fill="url(#gq)"/>`);
+  const yh = H * 0.86;
+  const pts = [[0, yh]]; let x = 0;
+  const hs = [0.05, 0.11, 0.07, 0.16, 0.09, 0.13, 0.2, 0.08, 0.14, 0.18, 0.06, 0.12];
+  hs.forEach((h, i) => { const w = W / hs.length; const top = yh - h * H * 0.5; pts.push([x, top], [x + w * 0.9, top], [x + w * 0.9, yh - 0.02 * H], [x + w, yh - 0.02 * H]); x += w; });
+  pts.push([W, yh]);
+  pline(pts, `stroke="${BLUE(0.35)}" stroke-width="${lw(1.4)}" stroke-linejoin="round"`);
+  line(0, yh, W, yh, BLUE(0.4), lw(1.2));
+  const k = 6, w = W / hs.length, top = yh - hs[k] * H * 0.5;
+  add(`<rect x="${f(k * w - 3 * s)}" y="${f(top - 6 * s)}" width="${f(w * 0.9 + 6 * s)}" height="${f(6 * s)}" fill="${AMBER(1)}"/>`);
+  // кран над жёлтой плитой
+  const mx = k * w + w * 0.6, jt = top - 0.12 * H;
+  line(mx, jt, mx, top - 6 * s, BLUE(0.5), lw(1.2)); line(mx - 0.22 * W, jt, mx + 0.06 * W, jt, BLUE(0.5), lw(1.2));
+  line(mx, jt - 16 * s, mx - 0.18 * W, jt, BLUE(0.3), lw(0.8)); line(mx, jt - 16 * s, mx + 0.06 * W, jt, BLUE(0.3), lw(0.8));
+  toFree = false;
+}
+
+// ================================================================== Светлые варианты на основе «Листа чертежа» (без планов)
+function paperGrid(step, minorA, majorA, col) {
+  const g = step, c = col || BLUE;
+  add(`<pattern id="pg" width="${f(g * 5)}" height="${f(g * 5)}" patternUnits="userSpaceOnUse" x="${f((W % (g * 5)) / 2)}" y="${f(cy % (g * 5))}">
+    <path d="${[1, 2, 3, 4].map(i => `M${f(i * g)} 0V${f(g * 5)}M0 ${f(i * g)}H${f(g * 5)}`).join('')}" stroke="${c(minorA)}" stroke-width="${lw(0.7)}"/>
+    <path d="M0 0V${f(g * 5)}M0 0H${f(g * 5)}" stroke="${c(majorA)}" stroke-width="${lw(0.9)}"/></pattern>`);
+  add(`<rect width="${W}" height="${H}" fill="url(#pg)"/>`);
+}
+// Свечение за знаком и надписью: мягкое бирюзовое пятно, вытянутое вдоль надписи.
+function heroGlow(kind) {
+  const ex = W / 2, ey = cy;
+  add(`<radialGradient id="hg1" cx="${f(ex)}" cy="${f(ey)}" r="${f(W * 0.62)}" gradientTransform="translate(0 ${f(ey)}) scale(1 0.42) translate(0 ${f(-ey)})" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#08C9B5" stop-opacity="0.20"/><stop offset="0.45" stop-color="#08C9B5" stop-opacity="0.09"/><stop offset="1" stop-color="#08C9B5" stop-opacity="0"/></radialGradient>`);
+  add(`<rect width="${W}" height="${H}" fill="url(#hg1)"/>`);
+  if (kind === 'duo') {
+    add(`<radialGradient id="hg2" cx="${f(W * 0.72)}" cy="${f(ey + bh * 0.25)}" r="${f(W * 0.32)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFB52E" stop-opacity="0.16"/><stop offset="1" stop-color="#FFB52E" stop-opacity="0"/></radialGradient>`);
+    add(`<rect width="${W}" height="${H}" fill="url(#hg2)"/>`);
+    add(`<radialGradient id="hg3" cx="${f(W * 0.22)}" cy="${f(ey - bh * 0.1)}" r="${f(W * 0.36)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#08C9B5" stop-opacity="0.14"/><stop offset="1" stop-color="#08C9B5" stop-opacity="0"/></radialGradient>`);
+    add(`<rect width="${W}" height="${H}" fill="url(#hg3)"/>`);
+  }
+}
+
+// М. Чистый лист: только клетка, рамка листа и свечение.
+function cleanSheet() {
+  toFree = true;
+  paperGrid(W / 40, 0.06, 0.12);
+  heroGlow('teal');
+  const m = 14 * s;
+  add(`<rect x="${f(m)}" y="${f(m)}" width="${f(W - 2 * m)}" height="${f(H - 2 * m)}" fill="none" stroke="${BLUE(0.2)}" stroke-width="${lw(1)}"/>`);
+  toFree = false;
+}
+
+// Н. Миллиметровка: мелкая сетка 1/5/10 и линейки по краям.
+function graphPaper() {
+  toFree = true;
+  const C = (a) => `rgba(10,128,140,${a})`;
+  const g = W / 80;
+  add(`<pattern id="mm" width="${f(g * 10)}" height="${f(g * 10)}" patternUnits="userSpaceOnUse" x="${f((W % (g * 10)) / 2)}" y="${f(cy % (g * 10))}">
+    <path d="${[1, 2, 3, 4, 6, 7, 8, 9].map(i => `M${f(i * g)} 0V${f(g * 10)}M0 ${f(i * g)}H${f(g * 10)}`).join('')}" stroke="${C(0.07)}" stroke-width="${lw(0.5)}"/>
+    <path d="M${f(5 * g)} 0V${f(g * 10)}M0 ${f(5 * g)}H${f(g * 10)}" stroke="${C(0.12)}" stroke-width="${lw(0.7)}"/>
+    <path d="M0 0V${f(g * 10)}M0 0H${f(g * 10)}" stroke="${C(0.20)}" stroke-width="${lw(0.9)}"/></pattern>`);
+  add(`<rect width="${W}" height="${H}" fill="url(#mm)"/>`);
+  heroGlow('teal');
+  // Линейки сверху и слева.
+  const rh = 26 * s;
+  add(`<rect x="0" y="0" width="${W}" height="${f(rh)}" fill="rgba(255,255,255,0.88)"/><rect x="0" y="0" width="${f(rh)}" height="${H}" fill="rgba(255,255,255,0.88)"/>`);
+  line(0, rh, W, rh, BLUE(0.35), lw(0.9)); line(rh, 0, rh, H, BLUE(0.35), lw(0.9));
+  const x0 = (W % (g * 10)) / 2;
+  for (let i = 0, x = x0; x < W; i++, x += g) if (x > rh) {
+    const big = Math.round((x - x0) / g) % 10 === 0, mid = Math.round((x - x0) / g) % 5 === 0;
+    line(x, rh, x, rh - (big ? 12 : mid ? 8 : 4.5) * s, BLUE(big ? 0.55 : 0.35), lw(0.8));
+    if (big) text(x + 3 * s, 8 * s, String(Math.round((x - x0) / g)), 7 * s, BLUE(0.55), 'text-anchor="start"');
+  }
+  const y0 = cy % (g * 10);
+  for (let y = y0; y < H; y += g) if (y > rh) {
+    const k = Math.round((y - y0) / g), big = k % 10 === 0, mid = k % 5 === 0;
+    line(rh, y, rh - (big ? 12 : mid ? 8 : 4.5) * s, y, BLUE(big ? 0.55 : 0.35), lw(0.8));
+    if (big) text(8 * s, y + 3 * s, String(k), 7 * s, BLUE(0.55), `text-anchor="start" transform="rotate(-90 ${f(8 * s)} ${f(y + 3 * s)})"`);
+  }
+  // Карандашная отметка: янтарный уголок привязки в углу листа.
+  const cx0 = W - 0.16 * W, cy0 = H - 0.10 * H;
+  pline([[cx0 - 0.06 * W, cy0], [cx0, cy0], [cx0, cy0 - 0.06 * W]], `stroke="${AMBER(0.9)}" stroke-width="${lw(1.6)}"`);
+  circ(cx0, cy0, 3.2 * s, `fill="${AMBER(1)}"`);
+  toFree = false;
+}
+
+// О. Оси: координатная разбивка без плана — оси с кружками по краям и размерная цепочка.
+function axesOnly() {
+  toFree = true;
+  paperGrid(W / 40, 0.05, 0.10);
+  heroGlow('teal');
+  const r = 10 * s, us = [0.14, 0.32, 0.5, 0.68, 0.86], vs = [0.16, 0.30, 0.70, 0.84], lab = ['А', 'Б', 'В', 'Г'];
+  const dash = `stroke-dasharray="${f(16 * s)} ${f(4 * s)} ${f(2 * s)} ${f(4 * s)}"`;
+  us.forEach((u, i) => {
+    const x = u * W;
+    line(x, 52 * s, x, H - 52 * s, BLUE(0.16), lw(0.8), dash);
+    for (const y of [40 * s, H - 40 * s]) { circ(x, y, r, `fill="#FFFFFF" stroke="${BLUE(0.45)}" stroke-width="${lw(1)}"`); text(x, y, String(i + 1), 9.5 * s, BLUE(0.7)); }
+  });
+  vs.forEach((v, i) => {
+    const y = v * H;
+    line(52 * s, y, W - 52 * s, y, BLUE(0.16), lw(0.8), dash);
+    for (const x of [40 * s, W - 40 * s]) { circ(x, y, r, `fill="#FFFFFF" stroke="${BLUE(0.45)}" stroke-width="${lw(1)}"`); text(x, y, lab[i], 9.5 * s, BLUE(0.7)); }
+  });
+  // Пересечения осей — колонны (маленькие квадраты), одна ячейка — янтарная захватка.
+  for (const u of us) for (const v of vs) add(`<rect x="${f(u * W - 4 * s)}" y="${f(v * H - 4 * s)}" width="${f(8 * s)}" height="${f(8 * s)}" fill="${BLUE(0.35)}"/>`);
+  const z = [[us[3] * W, vs[2] * H], [us[4] * W, vs[2] * H], [us[4] * W, vs[3] * H], [us[3] * W, vs[3] * H]];
+  poly(z, `fill="${AMBER(0.16)}" stroke="${AMBER(0.85)}" stroke-width="${lw(1.4)}"`);
+  for (const q of z) circ(q[0], q[1], 3.4 * s, `fill="${AMBER(1)}"`);
+  const zt = [[us[0] * W, vs[0] * H], [us[1] * W, vs[0] * H], [us[1] * W, vs[1] * H], [us[0] * W, vs[1] * H]];
+  poly(zt, `fill="${TEAL(0.12)}" stroke="${TEAL(0.7)}" stroke-width="${lw(1.2)}"`);
+  // Размерная цепочка внизу.
+  const yd = H - 70 * s;
+  line(us[0] * W, yd, us[4] * W, yd, BLUE(0.4), lw(0.9));
+  us.forEach(u => line(u * W - 4 * s, yd + 4 * s, u * W + 4 * s, yd - 4 * s, BLUE(0.6), lw(1)));
+  for (let i = 0; i < 4; i++) text((us[i] + us[i + 1]) / 2 * W, yd - 9 * s, '6000', 8.5 * s, BLUE(0.55));
+  toFree = false;
+}
+
+// П. Маркер: клетка и полупрозрачные мазки маркера — захватки, отмеченные от руки.
+function markerZones() {
+  toFree = true;
+  paperGrid(W / 40, 0.06, 0.12);
+  heroGlow('duo');
+  const blob = (x, y, w, h, col, a, rot) => {
+    const pts = [];
+    for (let i = 0; i <= 24; i++) { const t = i / 24; pts.push([x + w * t, y + Math.sin(t * 9 + x) * 2.5 * s]); }
+    for (let i = 24; i >= 0; i--) { const t = i / 24; pts.push([x + w * t, y + h + Math.sin(t * 7 + y) * 3 * s]); }
+    add(`<g transform="rotate(${rot} ${f(x + w / 2)} ${f(y + h / 2)})"><polygon points="${pts.map(p => f(p[0]) + ',' + f(p[1])).join(' ')}" fill="${col(a)}"/></g>`);
+  };
+  blob(0.08 * W, 0.12 * H, 0.34 * W, 0.07 * H, TEAL, 0.16, -3);
+  blob(0.50 * W, 0.18 * H, 0.30 * W, 0.05 * H, AMBER, 0.20, 2);
+  blob(0.14 * W, 0.24 * H, 0.22 * W, 0.04 * H, BLUE, 0.08, -1);
+  blob(0.56 * W, 0.74 * H, 0.34 * W, 0.07 * H, AMBER, 0.18, -2);
+  blob(0.10 * W, 0.80 * H, 0.38 * W, 0.06 * H, TEAL, 0.15, 3);
+  blob(0.62 * W, 0.86 * H, 0.22 * W, 0.04 * H, BLUE, 0.08, 1);
+  // Галочки и точки, как отметки ручкой.
+  const tick = (x, y, c) => add(`<path d="M${f(x)} ${f(y)} l${f(6 * s)} ${f(7 * s)} l${f(12 * s)} ${f(-15 * s)}" fill="none" stroke="${c}" stroke-width="${lw(2.2)}" stroke-linecap="round" stroke-linejoin="round"/>`);
+  tick(0.44 * W, 0.145 * H, TEAL(0.9)); tick(0.50 * W, 0.83 * H, TEAL(0.9));
+  for (const [u, v] of [[0.50, 0.18], [0.80, 0.18], [0.80, 0.23], [0.50, 0.23]]) circ(u * W, v * H, 3 * s, `fill="${AMBER(1)}"`);
+  toFree = false;
+}
+
+// Р. Изосетка: треугольная (изометрическая) сетка, гаснет к краям, свечение за надписью.
+function isoGrid() {
+  toFree = true;
+  const st = W / 22, C = (a) => `rgba(24,72,118,${a})`;
+  add(`<radialGradient id="igm" cx="${f(W / 2)}" cy="${f(cy)}" r="${f(Math.max(W, H) * 0.62)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff"/><stop offset="0.75" stop-color="#fff" stop-opacity="0.7"/><stop offset="1" stop-color="#fff" stop-opacity="0.25"/></radialGradient>
+    <mask id="igM" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="url(#igm)"/></mask><g mask="url(#igM)">`);
+  const hgt = st * 0.866, n = Math.ceil(H / hgt) + 2;
+  for (let k = -2; k < n; k++) line(0, cy + (k - Math.floor(n / 2)) * hgt, W, cy + (k - Math.floor(n / 2)) * hgt, C(0.10), lw(0.7));
+  const L = Math.hypot(W, H) * 1.2;
+  for (let k = -40; k <= 40; k++) {
+    const x = W / 2 + k * st;
+    line(x - L * 0.5, cy - L * 0.866, x + L * 0.5, cy + L * 0.866, C(0.10), lw(0.7));
+    line(x + L * 0.5, cy - L * 0.866, x - L * 0.5, cy + L * 0.866, C(0.10), lw(0.7));
+  }
+  add(`</g>`);
+  heroGlow('teal');
+  // Пара объёмных «кубиков»-перекрытий в углах тонкой линией.
+  const iso = (x, y, a, b, z) => [x + (a - b) * 0.866, y + (a + b) * 0.5 - z];
+  const cube = (x, y, a, b, z, fillTop) => {
+    const P = (u, v, w) => iso(x, y, u, v, w);
+    poly([P(0, 0, z), P(a, 0, z), P(a, b, z), P(0, b, z)], `fill="${fillTop}" stroke="${BLUE(0.5)}" stroke-width="${lw(1.1)}"`);
+    poly([P(0, b, z), P(a, b, z), P(a, b, 0), P(0, b, 0)], `fill="rgba(24,72,118,0.06)" stroke="${BLUE(0.4)}" stroke-width="${lw(1)}"`);
+    poly([P(a, 0, z), P(a, b, z), P(a, b, 0), P(a, 0, 0)], `fill="rgba(24,72,118,0.10)" stroke="${BLUE(0.4)}" stroke-width="${lw(1)}"`);
+  };
+  cube(0.20 * W, 0.12 * H, 2 * st, 1.5 * st, 0.4 * st, TEAL(0.25));
+  cube(0.24 * W, 0.12 * H - 0.6 * st, 1 * st, 1.5 * st, 0.4 * st, AMBER(0.35));
+  cube(0.72 * W, 0.78 * H, 2.5 * st, 1.5 * st, 0.4 * st, 'rgba(255,255,255,0.8)');
+  cube(0.72 * W, 0.78 * H - 0.6 * st, 1.2 * st, 1.5 * st, 0.4 * st, TEAL(0.25));
+  toFree = false;
+}
+
+// С. Стекло: клетка и матовая стеклянная плашка под знаком и надписью.
+function glassPlate() {
+  toFree = true;
+  paperGrid(W / 40, 0.06, 0.12);
+  heroGlow('teal');
+  if (P.get('noplate')) { toFree = false; return; }   // плашка — в картинке надписи (приложение)
+  const pw = W * 0.90, ph = bh * 1.05, px = (W - pw) / 2, py = cy - ph / 2 + bh * 0.02, rr = 26 * s;
+  add(`<filter id="gsh" x="-20%" y="-30%" width="140%" height="170%"><feGaussianBlur in="SourceAlpha" stdDeviation="${f(14 * s)}"/><feOffset dy="${f(10 * s)}"/><feComponentTransfer><feFuncA type="linear" slope="0.14"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <linearGradient id="gpl" x1="0" y1="${f(py)}" x2="0" y2="${f(py + ph)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.78"/><stop offset="1" stop-color="#F2FAFA" stop-opacity="0.62"/></linearGradient>`);
+  add(`<rect x="${f(px)}" y="${f(py)}" width="${f(pw)}" height="${f(ph)}" rx="${f(rr)}" fill="url(#gpl)" stroke="rgba(255,255,255,0.95)" stroke-width="${lw(1.5)}" filter="url(#gsh)"/>`);
+  add(`<rect x="${f(px + 1.5 * s)}" y="${f(py + 1.5 * s)}" width="${f(pw - 3 * s)}" height="${f(ph - 3 * s)}" rx="${f(rr - 1.5 * s)}" fill="none" stroke="${TEAL(0.28)}" stroke-width="${lw(1)}"/>`);
+  // мелкие отметки по углам плашки — как уголки обрезки
+  for (const [x, y, dx, dy] of [[px, py, 1, 1], [px + pw, py, -1, 1], [px, py + ph, 1, -1], [px + pw, py + ph, -1, -1]]) {
+    pline([[x + dx * 14 * s, y - dy * 8 * s], [x - dx * 8 * s, y - dy * 8 * s], [x - dx * 8 * s, y + dy * 14 * s]], `stroke="${AMBER(0.8)}" stroke-width="${lw(1.4)}"`);
+  }
+  toFree = false;
+}
+
+const draw = { M: cleanSheet, N: graphPaper, O: axesOnly, P: markerZones, Q: isoGrid, R: glassPlate, H: blueprint, I: daySite, K: quietSheet, A: blueprint, B: construction, C: layers, D: contours, E: nightSite, F: workspace, G: isometric }[V];
 draw();
 if (P.get('ext') && V !== 'A') { toFree = true; extend(); toFree = false; }
 // Без крана и дома знак с надписью стоят точно посередине: их место в картинке — 90…1320 из 1536.
 const HX = P.get('nobld') ? (W - 1230 * W / 1536) / 2 - 90 * W / 1536 : 0;
-const heroG = P.get('hero') ? `<g transform="translate(${f(HX)} ${f(bt)}) scale(${W / 1536})">${heroSvg({ noBuilding: !!P.get('rasterBld') || !!P.get('nobld') })}</g>` : '';
+const heroG = P.get('hero') ? `<g transform="translate(${f(HX)} ${f(bt)}) scale(${W / 1536})">${heroSvg({ noBuilding: !!P.get('rasterBld') || !!P.get('nobld'), light: LIGHT })}</g>` : '';
 document.fonts.load('700 100px VMontserrat').then(() => {
 document.body.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs>${defs}</defs>
   <rect width="${W}" height="${H}" fill="url(#base)"/><rect width="${W}" height="${H}" fill="url(#glow)"/>

@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+@font-face{font-family:VMontserrat;src:url(../../../app/src/main/res/font/montserrat_bold.ttf);font-weight:700}
+html,body{margin:0;background:transparent}svg{display:block}</style><script src="hero.js"></script></head><body>
+<script>
+// Заставка «Стекло» (0.29.2): матовая плашка + знак и надпись, без фона. Единицы — картинки-баннера 1536 × 406;
+// кусок 40…1496 × −40…520 (плашка с тенью и уголками). Плашка — как в bg.html glassPlate при ширине баннера = экрану.
+const k = 1536 / 800;                    // 1 «точка макета» (s) в единицах баннера
+const pw = 1536 * 0.90, ph = 406 * 1.05, px = (1536 - pw) / 2, py = 203 - ph / 2 + 406 * 0.02, rr = 26 * k;
+const F = (n) => Math.round(n * 100) / 100;
+let br = '';
+for (const [x, y, dx, dy] of [[px, py, 1, 1], [px + pw, py, -1, 1], [px, py + ph, 1, -1], [px + pw, py + ph, -1, -1]])
+  br += `<polyline points="${F(x + dx * 14 * k)},${F(y - dy * 8 * k)} ${F(x - dx * 8 * k)},${F(y - dy * 8 * k)} ${F(x - dx * 8 * k)},${F(y + dy * 14 * k)}" fill="none" stroke="rgba(255,181,46,0.8)" stroke-width="${F(1.4 * k)}"/>`;
+const plate = `<defs><filter id="gsh" x="-20%" y="-30%" width="140%" height="170%"><feGaussianBlur in="SourceAlpha" stdDeviation="${F(14 * k)}"/><feOffset dy="${F(10 * k)}"/><feComponentTransfer><feFuncA type="linear" slope="0.14"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <linearGradient id="gpl" x1="0" y1="${F(py)}" x2="0" y2="${F(py + ph)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.78"/><stop offset="1" stop-color="#F2FAFA" stop-opacity="0.62"/></linearGradient></defs>
+  <rect x="${F(px)}" y="${F(py)}" width="${F(pw)}" height="${F(ph)}" rx="${F(rr)}" fill="url(#gpl)" stroke="rgba(255,255,255,0.95)" stroke-width="${F(1.5 * k)}" filter="url(#gsh)"/>
+  <rect x="${F(px + 1.5 * k)}" y="${F(py + 1.5 * k)}" width="${F(pw - 3 * k)}" height="${F(ph - 3 * k)}" rx="${F(rr - 1.5 * k)}" fill="none" stroke="rgba(8,201,181,0.28)" stroke-width="${F(k)}"/>${br}`;
+const HX = (1536 - 1230) / 2 - 90;      // знак с надписью — посередине плашки
+document.fonts.load('700 100px VMontserrat').then(() => {
+  document.body.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="1456" height="560" viewBox="40 -40 1456 560">${plate}<g transform="translate(${HX} 0)">${heroSvg({ noBuilding: true, light: true })}</g></svg>`;
+  document.title = 'ok';
+});
+</script></body></html>

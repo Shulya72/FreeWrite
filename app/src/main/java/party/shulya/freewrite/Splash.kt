@@ -13,12 +13,13 @@ import android.widget.ImageView
 import kotlin.math.roundToInt
 
 /**
- * Заставка при запуске (0.29.2, Владимир: «при запуске такая иконка — хочу, чтоб было красиво»; из вариантов выбрал «Ночную
- * стройку»: «оставляем надпись, логотип и город»). Системная заставка Android 12+ — только тёмно-синий фон без значка (на
- * HarmonyOS значок стоял на белом квадрате), сразу за ней — эта, на весь экран вместе с полосами сверху и снизу:
- *  - фон `splash_bg_tablet` / `splash_bg_phone` / `splash_bg_land` (ночное небо, внизу город с кранами) — какой ближе к экрану,
- *    по размеру экрана с обрезкой краёв;
- *  - поверх — знак и надпись `splash_hero` (векторные, отрисованы в 3× и уменьшены, прозрачный фон) посередине, шириной 0,8 экрана.
+ * Заставка при запуске (0.29.2, Владимир: «при запуске такая иконка — хочу, чтоб было красиво»; приложение — светлое: «белые поля
+ * PDF на тёмном некрасивы»; из светлых вариантов выбрал «Стекло»). Системная заставка Android 12+ — только светлый фон без значка
+ * (на HarmonyOS значок стоял на белом квадрате), сразу за ней — эта, на весь экран вместе с полосами сверху и снизу:
+ *  - фон `splash_bg_tablet` / `splash_bg_phone` / `splash_bg_land` (лист в клетку и мягкое бирюзовое свечение посередине) — какой
+ *    ближе к экрану, по размеру экрана с обрезкой краёв;
+ *  - поверх — матовая стеклянная плашка с янтарными уголками, на ней знак и надпись: `splash_hero` (векторные, отрисованы в 3× и
+ *    уменьшены, прозрачный фон) посередине, во всю ширину экрана.
  * Фон проявляется, надпись следом, через [HOLD] заставка тает и виден главный экран. Касание — сразу дальше. Один раз за запуск
  * приложения и только при запуске с рабочего стола. Окна, которые главный экран показывает при запуске (имя, отчёт о вылете),
  * ждут конца заставки — [after]. Исходники картинок — `design/viadesk/splash/`.
@@ -105,36 +106,35 @@ class Splash(private val a: Activity) {
         }.start()
     }
 
-    /** Строки состояния и навигации: на заставке — её цвета, потом — как в теме (светлые, тёмные значки). */
+    /** Строки состояния и навигации: на заставке — её цвет, потом — как в теме; значки — тёмные (заставка светлая). */
     private fun bars(dark: Boolean) = runCatching {
         val win = a.window
         win.statusBarColor = if (dark) COLOR else LIGHT
         win.navigationBarColor = if (dark) COLOR else LIGHT
         if (Build.VERSION.SDK_INT >= 30) {
             val mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-            win.insetsController?.setSystemBarsAppearance(if (dark) 0 else mask, mask)
+            win.insetsController?.setSystemBarsAppearance(mask, mask)
         } else {
             @Suppress("DEPRECATION")
             val flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
             @Suppress("DEPRECATION")
-            win.decorView.systemUiVisibility = if (dark) win.decorView.systemUiVisibility and flags.inv()
-                else win.decorView.systemUiVisibility or flags
+            win.decorView.systemUiVisibility = win.decorView.systemUiVisibility or flags
         }
     }
 
     companion object {
-        /** Фон заставки = фон картинки (#0A2133); тот же цвет — у системной заставки и окна до первого кадра. */
-        const val COLOR = 0xFF0A2133.toInt()
+        /** Фон заставки — светлый, как лист картинки (#EEF3F6); тот же цвет — у системной заставки и окна до первого кадра. */
+        const val COLOR = 0xFFEEF3F6.toInt()
         /** Строки состояния и навигации в теме (#FBFCFD). */
         private const val LIGHT = 0xFFFBFCFD.toInt()
         private const val FADE_IN = 260L
         /** С начала показа до начала таяния. */
         private const val HOLD = 1300L
-        /** Знак с надписью — кусок 1236 × 372 из картинки-баннера шириной 1536 (тени и свечение — с запасом). */
-        internal const val HERO_W = 1236f / 1536f
-        private const val HERO_ASPECT = 372f / 1236f
-        /** Где в картинке знака середина баннера (по высоте, доля сверху): баннер 406, кусок начинается с 40. */
-        internal const val HERO_CENTER = (203f - 40f) / 372f
+        /** Плашка со знаком и надписью — кусок 1456 × 560 в единицах картинки-баннера шириной 1536 (тень и уголки — с запасом). */
+        internal const val HERO_W = 1456f / 1536f
+        private const val HERO_ASPECT = 560f / 1456f
+        /** Где в картинке середина баннера (по высоте, доля сверху): баннер 406 (середина 203), кусок начинается с −40. */
+        internal const val HERO_CENTER = (203f + 40f) / 560f
 
         /** Фон под форму экрана: набок — пейзажный, вытянутый телефон — телефонный, иначе планшетный. */
         internal fun bgFor(w: Int, h: Int): Int = when {
@@ -143,7 +143,7 @@ class Splash(private val a: Activity) {
             else -> R.drawable.splash_bg_tablet
         }
 
-        /** Размер знака с надписью: 0,8 ширины баннера, баннер — во всю ширину экрана (набок — не шире 1,1 высоты). */
+        /** Размер плашки со знаком и надписью: баннер — во всю ширину экрана (набок — не шире 1,1 высоты). */
         internal fun heroSize(w: Int, h: Int): Pair<Int, Int> {
             val hw = (HERO_W * minOf(w.toFloat(), h * 1.1f)).roundToInt()
             return hw to (hw * HERO_ASPECT).roundToInt()
