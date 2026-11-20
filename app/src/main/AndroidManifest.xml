@@ -44,6 +44,7 @@
         <activity
             android:name=".HomeActivity"
             android:exported="true"
+            android:windowSoftInputMode="stateHidden|adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -79,7 +80,7 @@
         <activity
             android:name=".ImportActivity"
             android:exported="true"
-            android:label="Открыть в FreeWrite"
+            android:label="Открыть в ViaDesk"
             android:excludeFromRecents="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|uiMode">
             <intent-filter>
@@ -116,13 +117,13 @@
                 <data android:mimeType="application/x-zip-compressed" />
                 <data android:mimeType="application/x-freewrite" />
             </intent-filter>
-            <intent-filter android:label="На доску FreeWrite">
+            <intent-filter android:label="На доску ViaDesk">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/pdf" />
                 <data android:mimeType="image/*" />
             </intent-filter>
-            <intent-filter android:label="На доску FreeWrite">
+            <intent-filter android:label="На доску ViaDesk">
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />

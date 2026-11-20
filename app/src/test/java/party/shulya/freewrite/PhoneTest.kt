@@ -206,7 +206,9 @@ class PhoneTest {
         val ini = (0 until avatar.childCount).map { avatar.getChildAt(it) }.filterIsInstance<android.widget.TextView>().first()
         assertEquals("ИП", ini.text.toString())
 
-        // Три плитки в ряд помещаются в ширину экрана.
+        // Вкладка «Доски»: три плитки в ряд помещаются в ширину экрана.
+        root.findViewWithTag<View>("tab_boards").performClick()
+        idle()
         val tiles = root.findViewWithTag<ViewGroup>("home_tiles")
         assertEquals(3, tiles.childCount)
         for (i in 0 until 3) assertTrue("плитка ${i + 1} не вылезает за край", tiles.getChildAt(i).right <= tiles.width)
@@ -223,7 +225,7 @@ class PhoneTest {
         walk(root)
         val boardTitle = titles.first { it.text.startsWith("Рабочая доска") }
         assertTrue("название доски широкое: ${boardTitle.width} из ${root.width}", boardTitle.width > root.width / 2)
-        assertEquals("две строки: доска и запись", 2, titles.size)
+        assertEquals("две строки: доска и заметка", 2, titles.size)
         assertTrue("статусы видны: $texts", "3 предъявлено заказчику" in texts)
         assertTrue("предметы по-русски: $texts", texts.any { it == "Общая доска · 81 предмет" })
         shot(root, "phone-home.png")

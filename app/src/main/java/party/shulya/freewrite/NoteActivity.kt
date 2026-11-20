@@ -147,7 +147,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         val id = intent.getStringExtra(EXTRA_ID)
         note = id?.let { store.load(it) } ?: Note.create("Совещание").also { store.save(it) }
         lineHeightPx = Ui.dp(this, 36f)
-        engine = HandwritingEngine { android.util.Log.i("FreeWrite", it) }
+        engine = HandwritingEngine { android.util.Log.i("ViaDesk", it) }
         engine.onChanged = { updateBanner() }
         buildUi()
         setContentView(rootView)
@@ -377,41 +377,47 @@ class NoteActivity : Activity(), NoteInkView.Host {
             bottomMargin = dp(18f)
         })
         rootView.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
-        buildKeysBar()
+        buildKeysBar(area)
         refreshColors()
     }
 
     // ---------------------------------------------------------------- «Клавиатура»
 
-    /** Строка ввода внизу экрана (видна, когда выбрана «Клавиатура»): над системной клавиатурой. */
-    private fun buildKeysBar() {
+    /**
+     * «Клавиатура» (0.27.9, Владимир: «нажимаю клавиатуру — пишу в нижнем окошке, а думал, печататься будет сверху, где
+     * положено»): строка с курсором на листе сама становится полем ввода ([keysEdit] — одно поле, оно переезжает в строку с
+     * курсором при каждой сборке листа). Кнопки «задача» и «строка» — плавающей панелью справа сверху ([keysBar]).
+     */
+    private fun buildKeysBar(area: FrameLayout) {
         keysBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Ui.PAPER)
-            setPadding(dp(10f), dp(6f), dp(6f), dp(6f))
+            background = Ui.rounded(this@NoteActivity, Ui.PAPER, Ui.RULE, 14f)
+            elevation = dp(6f).toFloat()
+            setPadding(dp(4f), dp(4f), dp(4f), dp(4f))
             tag = "keys_bar"
             visibility = View.GONE
         }
         keysEdit = KeysEdit(this).apply {
+            textStyle(this)
             tag = "keys_edit"
-            hint = "Пишите — текст встаёт в строку с курсором"
-            textSize = 17f
-            setTextColor(Ui.INK)
-            setHintTextColor(Ui.MUTED)
-            background = Ui.rounded(this@NoteActivity, Ui.DESK, Ui.RULE, 10f)
-            setPadding(dp(12f), dp(9f), dp(12f), dp(9f))
+            background = null
+            setPadding(0, 0, 0, 0)
+            hint = "Печатайте здесь…"
+            gravity = Gravity.TOP or Gravity.START
+            setHintTextColor(Ui.INK2 and 0x00FFFFFF or 0x80000000.toInt())
             // Многострочное поле: длинная строка переносится, Enter — «\n», его ловим и делаем новую строку записи.
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
-            maxLines = 4
+            isSingleLine = false
+            setHorizontallyScrolling(false)
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(e: Editable?) { if (!keysLoading) onKeysText(e?.toString().orEmpty()) }
             })
             onSelection = { _, _ ->
-                if (!keysLoading && !keysTyping && tool == Tool.KEYS) { syncKeysCaret(); refreshCaretText() }
+                if (!keysLoading && !keysTyping && tool == Tool.KEYS) syncKeysCaret()
             }
             // «Стереть» в самом начале строки — соединить со строкой выше (как в обычном редакторе).
             setOnKeyListener { _, code, ev ->
@@ -422,36 +428,39 @@ class NoteActivity : Activity(), NoteInkView.Host {
                 } else false
             }
         }
-        keysBar.addView(keysEdit, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         keysTask = Ui.ToolButton(this, R.drawable.ic_task, "задача").apply {
             tag = "keys_task"
+            minimumWidth = dp(48f)
             setOnClickListener { keysToggleTask() }
         }
         keysBar.addView(keysTask)
         keysBar.addView(Ui.ToolButton(this, R.drawable.ic_enter, "строка").apply {
             tag = "keys_enter"
+            minimumWidth = dp(48f)
             setOnClickListener { keysEdit.text.replace(max(0, keysEdit.selectionStart), max(0, keysEdit.selectionEnd), "\n") }
         })
-        rootView.addView(View(this).apply {
-            setBackgroundColor(Ui.RULE)
-            tag = "keys_rule"
-            visibility = View.GONE
-        }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
-        rootView.addView(keysBar, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        area.addView(keysBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+            gravity = Gravity.TOP or Gravity.END
+            setMargins(0, dp(10f), dp(14f), 0)
+        })
+    }
+
+    /** Поле ввода — в строку листа: отцепить от прежнего места (лист собирается заново). */
+    private fun takeKeysEdit(done: Boolean): KeysEdit {
+        (keysEdit.parent as? android.view.ViewGroup)?.removeView(keysEdit)
+        keysEdit.setTextColor(if (done) Ui.INK2 else Ui.INK)
+        return keysEdit
     }
 
     private fun showKeysBar(on: Boolean) {
-        val v = if (on) View.VISIBLE else View.GONE
-        keysBar.visibility = v
-        rootView.findViewWithTag<View>("keys_rule")?.visibility = v
+        keysBar.visibility = if (on) View.VISIBLE else View.GONE
         val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        if (on) {
-            loadKeysLine()
-            showKeyboard()
-        } else {
+        if (!on) {
             imm.hideSoftInputFromWindow(keysEdit.windowToken, 0)
             keysEdit.clearFocus()
         }
+        renderBlocks() // строка с курсором — полем ввода или снова обычной строкой
+        if (on) showKeyboard()
     }
 
     private fun showKeyboard() {
@@ -503,7 +512,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
             keysBlock = b
             setBlockText(b, s)
             syncKeysCaret()
-            if (newLine) renderBlocks() else refreshCaretText()
+            if (newLine) renderBlocks() else sheet.invalidate() // линейки — по строке (могла стать в две)
             changed(render = false)
         } finally {
             keysTyping = false
@@ -555,7 +564,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
     /** Строку с курсором — на виду (клавиатура занимает пол-экрана). */
     private fun revealCaret() {
         scroll.post {
-            val v = caretTextView ?: return@post
+            val v: View = (if (tool == Tool.KEYS && keysEdit.parent != null) keysEdit else caretTextView) ?: return@post
             v.requestRectangleOnScreen(Rect(0, 0, v.width, v.height), false)
         }
     }
@@ -670,8 +679,9 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     /** Строки (сами строки — по ссылке), галочки задач, размер и место картинок, выбранная картинка. */
     private fun structureKey(): List<Any?> {
-        val k = ArrayList<Any?>(note.blocks.size * 2 + 1)
+        val k = ArrayList<Any?>(note.blocks.size * 2 + 2)
         k += selectedImage
+        k += if (tool == Tool.KEYS) note.caret else -1 // строка-поле ввода стоит на месте курсора
         for (b in note.blocks) {
             k += b
             when (b) {
@@ -689,9 +699,11 @@ class NoteActivity : Activity(), NoteInkView.Host {
         if (key != shownKey || lineViews.size != note.blocks.size) return false
         caretTextView = null
         var changedText = false
+        val keys = tool == Tool.KEYS
         for ((i, b) in note.blocks.withIndex()) {
             val tv = lineViews[i] ?: continue
             val t = blockText(b) ?: continue
+            if (keys && i == note.caret) continue // поле ввода: текст в нём пишет сам ввод (и loadKeysLine)
             if (i == note.caret) { caretTextView = tv; changedText = true; continue } // строку курсора пишет refreshCaretText
             if (tv.text.toString() != t) { tv.text = t; changedText = true }
         }
@@ -717,9 +729,10 @@ class NoteActivity : Activity(), NoteInkView.Host {
         titleBig = title
         sheet.addView(title)
         sheet.addView(Ui.mono(this, Ui.noteMeta(note.created), 12f).apply { setPadding(0, 0, 0, dp(10f)) })
+        val keys = tool == Tool.KEYS && ::keysEdit.isInitialized
         note.blocks.forEachIndexed { i, b ->
             val v: View = when (b) {
-                is Block.Para -> TextView(this).apply {
+                is Block.Para -> if (keys && i == note.caret) takeKeysEdit(false) else TextView(this).apply {
                     textStyle(this)
                     text = b.text
                     caretOnTap(this, i)
@@ -747,11 +760,20 @@ class NoteActivity : Activity(), NoteInkView.Host {
             minimumHeight = max(dp(420f), (resources.displayMetrics.heightPixels * 0.55f).toInt())
             setOnClickListener { setCaret(lastTextBlock()) }
         }
+        if (keys && keysEdit.parent == null) {
+            // Курсор на картинке (или записи пусто): поле — пустой строкой после неё; напишут — станет новой строкой.
+            val at = if (note.blocks.isEmpty()) sheet.childCount else sheet.indexOfChild(blockViews[note.caret.coerceIn(0, blockViews.size - 1)]) + 1
+            sheet.addView(takeKeysEdit(false), at, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
         sheet.addView(spacer, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         shownKey = structureKey()
         refreshCaretText()
         ink.invalidate()
-        if (tool == Tool.KEYS && !keysTyping) loadKeysLine()
+        if (keys) {
+            if (!keysTyping) loadKeysLine()
+            // Поле переехало в другую строку — фокус и клавиатура с ним.
+            if (keysEdit.parent != null && !keysEdit.hasFocus()) showKeyboard()
+        }
     }
 
     private fun taskView(b: Block.Task, i: Int): View {
@@ -773,7 +795,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
             })
         }
         row.addView(box, LinearLayout.LayoutParams(dp(34f), lineHeightPx))
-        val text = TextView(this).apply {
+        val text: TextView = if (tool == Tool.KEYS && ::keysEdit.isInitialized && i == note.caret) takeKeysEdit(b.done) else TextView(this).apply {
             textStyle(this)
             text = b.text
             if (b.done) setTextColor(Ui.INK2)
@@ -1388,7 +1410,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     private fun restore(x: Snap): Note =
         Note(note.id, x.title, note.created, note.updated, x.blocks.mapTo(ArrayList()) { copyBlock(it) }, ArrayList(x.drawings), x.caret)
-            .apply { caretOffset = x.caretOffset }
+            .apply { caretOffset = x.caretOffset; folder = note.folder; pinned = note.pinned }
 
     private fun pushUndo() {
         undoStack.addLast(snap())
@@ -1426,6 +1448,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
     }
 
     private fun changed(render: Boolean = true) {
+        note.updated = System.currentTimeMillis() // список заметок (0.28) — по времени правки
         if (render) {
             if (imageEditing) renderPending = true else renderBlocks()
         }

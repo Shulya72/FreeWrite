@@ -129,7 +129,7 @@ class BoardActivity : Activity(), BoardView.Host {
         store = BoardStore(this)
         noteStore = NoteStore(this)
         stylus = Input.stylusSeen(this)
-        engine = HandwritingEngine { android.util.Log.i("FreeWrite", it) }
+        engine = HandwritingEngine { android.util.Log.i("ViaDesk", it) }
         engine.onChanged = { updateBanner() }
         val id = intent.getStringExtra(EXTRA_ID)
         val t0 = SystemClock.uptimeMillis()
@@ -287,7 +287,7 @@ class BoardActivity : Activity(), BoardView.Host {
         val r = remote
         if (r == null) {
             AlertDialog.Builder(this).setTitle("Совместная работа")
-                .setMessage("В этой сборке FreeWrite нет адреса сервера. Обновите приложение.")
+                .setMessage("В этой сборке ViaDesk нет адреса сервера. Обновите приложение.")
                 .setPositiveButton("Понятно", null).show()
             return
         }
@@ -298,7 +298,7 @@ class BoardActivity : Activity(), BoardView.Host {
         if (!board.sync.isShared) {
             AlertDialog.Builder(this)
                 .setTitle("Совместная работа")
-                .setMessage("Доска будет храниться на сервере FreeWrite (Яндекс Облако). Коллеги подключаются " +
+                .setMessage("Доска будет храниться на сервере ViaDesk (Яндекс Облако). Коллеги подключаются " +
                     "по коду и видят правки друг друга через несколько секунд — пока доска открыта и есть интернет. " +
                     "Картинки тоже уйдут на сервер.")
                 .setPositiveButton("Сделать общей") { _, _ -> Profile.require(this) {
@@ -334,13 +334,13 @@ class BoardActivity : Activity(), BoardView.Host {
             setTextIsSelectable(true)
             setPadding(0, dp(6f), 0, dp(6f))
         })
-        box.addView(Ui.text(this, "Коллега: Ежедневник → «Подключиться по коду» → ввести код.", 14f, Ui.INK2))
+        box.addView(Ui.text(this, "Коллега: Доски → «По коду» → ввести код.", 14f, Ui.INK2))
         syncState?.let { box.addView(Ui.text(this, "Состояние: " + it.text, 13f, if (it.error) Ui.BAD else Ui.MUTED).apply { setPadding(0, dp(8f), 0, 0) }) }
         AlertDialog.Builder(this)
             .setTitle("Общая доска «${board.title}»")
             .setView(box)
             .setPositiveButton("Поделиться кодом") { _, _ ->
-                val text = "Подключись к доске «${board.title}» в FreeWrite: Ежедневник → «Подключиться по коду» → $code"
+                val text = "Подключись к доске «${board.title}» в ViaDesk: Доски → «По коду» → $code"
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text)
                 }, "Отправить код"))
@@ -2067,7 +2067,7 @@ class BoardActivity : Activity(), BoardView.Host {
         val texts = sel.filterIsInstance<BoardText>().joinToString("\n") { it.text }
         if (texts.isNotEmpty()) {
             getSystemService(android.content.ClipboardManager::class.java)
-                ?.setPrimaryClip(android.content.ClipData.newPlainText("FreeWrite", texts))
+                ?.setPrimaryClip(android.content.ClipData.newPlainText("ViaDesk", texts))
         }
         view.select(copies)
         changed()

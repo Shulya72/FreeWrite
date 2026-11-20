@@ -150,6 +150,23 @@ class Note(
     /** Позиция курсора внутри строки caret; -1 — в конце строки. */
     var caretOffset: Int = -1
 
+    /** Папка заметки (0.28): номер из [NoteFolders]; пусто — без папки. */
+    var folder: String = ""
+
+    /** Закреплена — стоит в списке сверху (0.28). */
+    var pinned: Boolean = false
+
+    /** Весь текст заметки одной строкой — для поиска. */
+    val searchText: String
+        get() = buildString {
+            append(title)
+            for (b in blocks) when (b) {
+                is Block.Para -> append('\n').append(b.text)
+                is Block.Task -> append('\n').append(b.text)
+                else -> {}
+            }
+        }
+
     val tasksDone: Int get() = blocks.count { it is Block.Task && it.done && it.text.isNotBlank() }
     val tasksOpen: Int get() = blocks.count { it is Block.Task && !it.done && it.text.isNotBlank() }
 
@@ -172,6 +189,8 @@ class Note(
         o.put("updated", updated)
         o.put("caret", caret)
         o.put("caretOff", caretOffset)
+        if (folder.isNotEmpty()) o.put("folder", folder)
+        if (pinned) o.put("pinned", true)
         val bl = JSONArray()
         for (b in blocks) {
             val j = JSONObject()
@@ -214,6 +233,8 @@ class Note(
         sb.append(",\"title\":").append(JSONObject.quote(title))
         sb.append(",\"created\":").append(created).append(",\"updated\":").append(updated)
         sb.append(",\"caret\":").append(caret).append(",\"caretOff\":").append(caretOffset)
+        if (folder.isNotEmpty()) sb.append(",\"folder\":").append(JSONObject.quote(folder))
+        if (pinned) sb.append(",\"pinned\":true")
         sb.append(",\"blocks\":[")
         for ((i, b) in blocks.withIndex()) {
             if (i > 0) sb.append(',')
@@ -276,7 +297,11 @@ class Note(
                 blocks = blocks,
                 drawings = drawings,
                 caret = o.optInt("caret", blocks.size - 1).coerceIn(0, blocks.size - 1),
-            ).apply { caretOffset = o.optInt("caretOff", -1) }
+            ).apply {
+                caretOffset = o.optInt("caretOff", -1)
+                folder = o.optString("folder")
+                pinned = o.optBoolean("pinned")
+            }
         }
     }
 }
@@ -297,10 +322,8 @@ class NoteStore(context: Context) {
     fun save(note: Note) = write(note.id, prepare(note))
 
     /** Текст файла записи (главный поток: запись не должна меняться, пока его собирают). */
-    fun prepare(note: Note): String {
-        note.updated = System.currentTimeMillis()
-        return note.toJsonString()
-    }
+    fun prepare(note: Note): String = note.toJsonString() // время правки ставит лист заметки (0.28), не сохранение
+
 
     /** Записать готовый текст (можно в фоне). */
     fun write(id: String, text: String) {
@@ -368,5 +391,36 @@ class NoteStore(context: Context) {
         var sample = 1
         while (block.width / sample > maxWidth * 2) sample *= 2
         return BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample })
+    }
+}
+
+/** Папка заметок (0.28): номер, название. */
+class NoteFolder(val id: String, var name: String)
+
+/** Папки заметок — один файл `note_folders.json` рядом с заметками. */
+class NoteFolders(context: Context) {
+    private val file = File(context.filesDir, "note_folders.json")
+
+    fun list(): List<NoteFolder> = runCatching {
+        val a = JSONArray(file.readText())
+        (0 until a.length()).map { a.getJSONObject(it).let { o -> NoteFolder(o.getString("id"), o.optString("name")) } }
+    }.getOrDefault(emptyList())
+
+    private fun write(all: List<NoteFolder>) {
+        val a = JSONArray()
+        for (f in all) a.put(JSONObject().put("id", f.id).put("name", f.name))
+        val tmp = File(file.path + ".tmp")
+        tmp.writeText(a.toString())
+        if (!tmp.renameTo(file)) { file.writeText(a.toString()); tmp.delete() }
+    }
+
+    fun add(name: String): NoteFolder = NoteFolder(Ids.next(), name).also { write(list() + it) }
+
+    fun rename(id: String, name: String) = write(list().map { if (it.id == id) NoteFolder(id, name) else it })
+
+    /** Удалить папку: заметки из неё остаются, просто без папки. */
+    fun delete(id: String, store: NoteStore) {
+        write(list().filter { it.id != id })
+        for (n in store.list()) if (n.folder == id) { n.folder = ""; store.save(n) }
     }
 }

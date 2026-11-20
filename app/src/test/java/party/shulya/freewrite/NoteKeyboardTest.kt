@@ -22,7 +22,8 @@ import java.io.File
 
 /**
  * «Клавиатура» в «Записи» (0.27.6, Владимир: «в ежедневнике исчезла возможность делать заметки через клавиатуру»).
- * Строка ввода внизу — как строка формул в Excel: в ней текст строки с курсором, правка сразу на листе; Enter — новая строка.
+ * С 0.27.9 (Владимир: «пишу в нижнем окошке, а думал, печататься будет сверху, где положено») поле ввода — сама строка с
+ * курсором на листе; Enter — новая строка, поле переезжает в неё. «задача» и «строка» — плавающая панель.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w800dp-h1280dp-port-xhdpi")
@@ -45,6 +46,25 @@ class NoteKeyboardTest {
         File("build/screenshots/$name").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
+    private fun sheetOf(a: NoteActivity) = NoteActivity::class.java.getDeclaredField("sheet").apply { isAccessible = true }.get(a) as RuledSheet
+    private fun blockViews(a: NoteActivity) = NoteActivity::class.java.getDeclaredField("blockViews").apply { isAccessible = true }.get(a) as List<*>
+
+    /** Поле ввода стоит на листе там, где строка с курсором (в строке задачи — внутри неё). */
+    private fun assertFieldAtCaret(a: NoteActivity, edit: KeysEdit, n: Note) {
+        val sheet = sheetOf(a)
+        var v: View = edit
+        while (v.parent !== sheet) v = v.parent as View
+        assertEquals("поле — в строке с курсором", blockViews(a)[n.caret], v)
+        // Других строк с этим текстом на листе нет — строка не дублируется.
+        val same = ArrayList<String>()
+        fun walk(x: View) {
+            if (x is TextView && x !is KeysEdit && x.tag == RuledSheet.RULED && x.text.isNotEmpty() && x.text.toString() == edit.text.toString()) same += x.text.toString()
+            if (x is android.view.ViewGroup) for (i in 0 until x.childCount) walk(x.getChildAt(i))
+        }
+        walk(sheet)
+        assertEquals(emptyList<String>(), same)
+    }
+
     private fun texts(n: Note) = n.blocks.map {
         when (it) { is Block.Para -> it.text; is Block.Task -> "☐ " + it.text; else -> "[картинка]" }
     }
@@ -59,12 +79,17 @@ class NoteKeyboardTest {
         val root = a.window.decorView
         val note = { NoteActivity::class.java.getDeclaredField("note").apply { isAccessible = true }.get(a) as Note }
         val bar = root.findViewWithTag<View>("keys_bar")
-        assertEquals("строка ввода спрятана, пока не выбрали «Клавиатуру»", View.GONE, bar.visibility)
+        assertEquals("кнопки «задача»/«строка» спрятаны, пока не выбрали «Клавиатуру»", View.GONE, bar.visibility)
+        assertEquals("поля ввода на экране нет", null, root.findViewWithTag<KeysEdit>("keys_edit"))
 
         root.findViewWithTag<View>("tool_keys").performClick(); idle()
         assertEquals(View.VISIBLE, bar.visibility)
         val edit = root.findViewWithTag<KeysEdit>("keys_edit")
-        assertTrue("клавиатура — в строку ввода", edit.hasFocus())
+        assertTrue("клавиатура — в строку с курсором", edit.hasFocus())
+        assertFieldAtCaret(a, edit, note())
+        // Внизу поля нет: поле на листе, выше середины экрана.
+        val at = IntArray(2); edit.getLocationInWindow(at)
+        assertTrue("поле — наверху, в строке листа", at[1] < root.height / 2)
 
         // Печатаем — текст сразу на листе.
         edit.append("Геодезия"); idle()
@@ -74,9 +99,12 @@ class NoteKeyboardTest {
         edit.append("\n"); idle()
         assertEquals(listOf("Геодезия — съёмка секции 3", ""), texts(note()))
         assertEquals("", edit.text.toString())
+        assertFieldAtCaret(a, edit, note())
+        assertTrue("поле переехало в новую строку с фокусом", edit.hasFocus())
         edit.append("Акты АОСР"); idle()
         // «задача» — строка с галочкой; Enter в задаче — следующая задача, Enter в пустой задаче — обычная строка.
         root.findViewWithTag<View>("keys_task").performClick(); idle()
+        assertFieldAtCaret(a, edit, note()) // поле — внутри строки задачи, рядом с галочкой
         edit.append("\n"); idle()
         edit.append("Исполнительная съёмка"); idle()
         root.findViewWithTag<View>("keys_enter").performClick(); idle()
@@ -91,6 +119,7 @@ class NoteKeyboardTest {
         setCaret.invoke(a, 0, 8); idle()
         assertEquals("Геодезия — съёмка секции 3", edit.text.toString())
         assertEquals(8, edit.selectionStart)
+        assertFieldAtCaret(a, edit, note())
         edit.text.insert(8, ","); idle()
         assertEquals("Геодезия, — съёмка секции 3", texts(note())[0])
         assertEquals(9, edit.selectionStart)
@@ -113,6 +142,7 @@ class NoteKeyboardTest {
         // Сохранилось; другой инструмент — строка ввода прячется.
         root.findViewWithTag<View>("tool_pen").performClick(); idle()
         assertEquals(View.GONE, bar.visibility)
+        assertEquals("поле ушло с листа — снова обычные строки", null, edit.parent)
         ctl.pause()
         val saved = NoteStore(ctx).load(n.id)!!
         assertEquals(texts(note()), texts(saved))
@@ -124,5 +154,29 @@ class NoteKeyboardTest {
         }
         walk(root)
         assertTrue(sheetTexts.any { it.startsWith("Следующая планёрка — понедельник") })
+    }
+
+    @Test
+    fun cursorOnPictureTypesNewLineBelowIt() {
+        val n = Note.create("Фото")
+        n.blocks.clear()
+        n.blocks += Block.Para("Секция 3")
+        n.blocks += Block.Image("missing.jpg", 800, 600)
+        n.caret = 1
+        NoteStore(ctx).save(n)
+        val a = Robolectric.buildActivity(NoteActivity::class.java, Intent(ctx, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, n.id)).setup().get()
+        idle()
+        val root = a.window.decorView
+        val note = { NoteActivity::class.java.getDeclaredField("note").apply { isAccessible = true }.get(a) as Note }
+        root.findViewWithTag<View>("tool_keys").performClick(); idle()
+        val edit = root.findViewWithTag<KeysEdit>("keys_edit")
+        // Курсор на картинке — поле пустой строкой сразу под ней.
+        val sheet = sheetOf(a)
+        assertEquals(sheet.indexOfChild(blockViews(a)[1] as View) + 1, sheet.indexOfChild(edit))
+        edit.append("Подпись к фото"); idle()
+        assertEquals(listOf("Секция 3", "[картинка]", "Подпись к фото"), texts(note()))
+        assertEquals(2, note().caret)
+        assertFieldAtCaret(a, edit, note())
+        assertEquals("Подпись к фото", edit.text.toString())
     }
 }

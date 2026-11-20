@@ -77,7 +77,7 @@ class RuledSheet(context: Context) : LinearLayout(context) {
             val c = group.getChildAt(i)
             if (c.visibility != VISIBLE) continue
             val top = offsetY + c.top
-            if (c is TextView && c.tag == RULED) fn(c, top)
+            if (c is TextView && (c.tag == RULED || c is KeysEdit)) fn(c, top)
             else if (c is ViewGroup) forEachRuledText(c, top, fn)
         }
     }
