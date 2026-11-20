@@ -56,7 +56,7 @@ class NoteSheetTest {
     }
 
     private fun field(a: NoteActivity, name: String): Any? = NoteActivity::class.java.getDeclaredField(name).apply { isAccessible = true }.get(a)
-    private fun note(a: NoteActivity) = field(a, "note") as Note
+    private fun note(a: NoteActivity) = a.model()
     private fun sheet(a: NoteActivity) = field(a, "sheet") as RuledSheet
 
     // ---------------------------------------------------------------- модель
@@ -130,17 +130,17 @@ class NoteSheetTest {
         idle()
         val root = a.window.decorView
         // Название — первой строкой листа, в две клетки.
-        val title = root.findViewWithTag<EditText>("note_title")
-        assertEquals("Планёрка на объекте", title.text.toString())
+        val title = a.editors()[0]
+        assertEquals("Планёрка на объекте", title.paraText(0))
         val cell = Ui.dp(a, 36f)
-        assertEquals(2 * cell, title.height)
+        assertEquals(2 * cell, title.layout.getLineBottom(0) - title.layout.getLineTop(0))
         assertEquals(View.VISIBLE, root.findViewWithTag<View>("pen_bar").visibility)
         assertEquals(View.GONE, root.findViewWithTag<View>("keys_bar").visibility)
 
         root.findViewWithTag<View>("tool_keys").performClick(); idle()
         assertEquals(View.VISIBLE, root.findViewWithTag<View>("keys_bar").visibility)
         assertEquals(View.GONE, root.findViewWithTag<View>("pen_bar").visibility)
-        val edit = root.findViewWithTag<KeysEdit>("keys_edit")
+        val edit = a.editors()[0]
         edit.append("Повестка"); idle()
         // «Aa» → «Заголовок»: строка с курсором — заголовком; Enter — дальше обычная строка.
         root.findViewWithTag<View>("fmt_open").performClick(); idle()
@@ -151,19 +151,20 @@ class NoteSheetTest {
         assertEquals(ParaStyle.BODY, (note(a).blocks[1] as Block.Para).style)
         edit.append("Геодезия и съёмка"); idle()
         // Выделили слово — «Ж» и маркер.
-        edit.setSelection(0, 8); idle()
+        val w0 = edit.rawOffset(2, 0); val w1 = edit.rawOffset(2, 8)
+        edit.setSelection(w0, w1); idle()
         root.findViewWithTag<View>("fmt_b").performClick(); idle()
         root.findViewWithTag<View>("fmt_hl_0").performClick(); idle()
         val l1 = note(a).blocks[1] as Block.Para
         assertTrue(l1.spans.toString(), TextSpan(0, 8, Rich.B) in l1.spans)
         assertTrue(TextSpan(0, 8, Rich.HL, NoteActivity.HIGHLIGHTS[0]) in l1.spans)
         val shown = edit.text as Spanned
-        assertTrue("в поле — жирный", shown.getSpans(0, 8, StyleSpan::class.java).isNotEmpty())
-        assertTrue("и маркер", shown.getSpans(0, 8, BackgroundColorSpan::class.java).isNotEmpty())
-        assertEquals("выделение осталось — можно жать «Aa» дальше", 8, edit.selectionEnd)
+        assertTrue("в поле — жирный", shown.getSpans(w0, w1, StyleSpan::class.java).isNotEmpty())
+        assertTrue("и маркер", shown.getSpans(w0, w1, BackgroundColorSpan::class.java).isNotEmpty())
+        assertEquals("выделение осталось — можно жать «Aa» дальше", w1, edit.selectionEnd)
         // Дописали — жирный не расползается за выделенное (дописано после пробела, курсор в конце).
         edit.setSelection(edit.length()); edit.append(" секции 3"); idle()
-        assertEquals("Геодезия и съёмка секции 3", l1.text)
+        assertEquals("Геодезия и съёмка секции 3", (note(a).blocks[1] as Block.Para).text)
         assertTrue(TextSpan(0, 8, Rich.B) in (note(a).blocks[1] as Block.Para).spans)
 
         // Списки: «•» — пункт, Enter — следующий пункт, Enter в пустом — выход из списка; отступ.
@@ -177,27 +178,29 @@ class NoteSheetTest {
         assertEquals(1, (note(a).blocks[3] as Block.Para).indent)
         edit.append("\n"); idle()
         edit.append("\n"); idle()
-        assertEquals("Enter в пустом пункте — обычная строка", ParaStyle.BODY, (note(a).blocks[4] as Block.Para).style)
+        assertEquals("Enter в пустом вложенном пункте — сначала отступ меньше", 0, (note(a).blocks[4] as Block.Para).indent)
+        assertEquals(ParaStyle.BULLET, (note(a).blocks[4] as Block.Para).style)
+        edit.append("\n"); idle()
+        assertEquals("ещё раз — обычная строка", ParaStyle.BODY, (note(a).blocks[4] as Block.Para).style)
         root.findViewWithTag<View>("fmt_num").performClick(); idle()
         edit.append("Первое"); idle(); edit.append("\n"); idle(); edit.append("Второе"); idle()
         root.findViewWithTag<View>("fmt_check").performClick(); idle()
         assertTrue(note(a).blocks[5] is Block.Task)
-        // Значки списков на листе.
-        val marks = ArrayList<String>()
-        fun walk(v: View) { if (v is TextView && v.tag == "list_marker") marks += v.text.toString(); if (v is android.view.ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i)) }
-        walk(sheet(a))
-        assertTrue(marks.toString(), "•" in marks && "1." in marks)
+        // Списки на листе.
+        val styles = edit.paras.map { it.style }
+        assertTrue(styles.toString(), ParaStyle.BULLET in styles && ParaStyle.NUM in styles)
         // Текстом для «Поделиться».
         val txt = a.plainText()
         assertTrue(txt, txt.startsWith("Планёрка на объекте\n\nПовестка"))
         assertTrue(txt, "• Опалубка" in txt && "    • Бетон" in txt && "1. Первое" in txt && "☐ Второе" in txt)
 
-        // Лист — по клеткам: каждый блок начинается на линии клетки.
+        // Лист — по клеткам: каждый кусок и каждая строка в нём начинаются на линии клетки.
         val sh = sheet(a)
         for (i in 0 until sh.childCount) {
             val c = sh.getChildAt(i)
-            if (c.visibility != View.GONE) assertEquals("блок $i на линии клетки", 0, (c.top - sh.paddingTop) % cell)
+            if (c.visibility != View.GONE) assertEquals("кусок $i на линии клетки", 0, (c.top - sh.paddingTop) % cell)
         }
+        for (k in 0 until edit.layout.lineCount) assertEquals("строка $k на линии клетки", 0, edit.layout.getLineTop(k) % cell)
         shot(root, "note-sheet-format.png")
         root.findViewWithTag<View>("fmt_close").performClick(); idle()
 
@@ -245,8 +248,8 @@ class NoteSheetTest {
         val a = ctl.get()
         idle()
         val root = a.window.decorView
-        val title = root.findViewWithTag<EditText>("note_title")
-        assertTrue("курсор в названии", title.hasFocus())
+        val title = a.editors()[0]
+        assertTrue("курсор в названии", title.hasFocus() && title.caretAt().first == 0)
         assertEquals(View.VISIBLE, root.findViewWithTag<View>("keys_bar").visibility)
         // Ушли, ничего не написав, — заметки нет.
         @Suppress("DEPRECATION") a.onBackPressed(); idle()
@@ -259,12 +262,11 @@ class NoteSheetTest {
             Intent(ctx, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, m.id).putExtra(NoteActivity.EXTRA_KEYS, true)).setup()
         val b = c2.get()
         idle()
-        val t2 = b.window.decorView.findViewWithTag<EditText>("note_title")
+        val t2 = b.editors()[0]
         t2.append("Звонок заказчику"); idle()
         t2.append("\n"); idle()
-        val edit = b.window.decorView.findViewWithTag<KeysEdit>("keys_edit")
-        assertTrue("после Enter — в первой строке", edit.hasFocus())
-        edit.append("Перенести приёмку на пятницу"); idle()
+        assertEquals("после Enter — в первой строке", 1, t2.caretAt().first)
+        t2.append("Перенести приёмку на пятницу"); idle()
         @Suppress("DEPRECATION") b.onBackPressed(); idle()
         c2.pause()
         val saved = store.load(m.id)!!
@@ -291,8 +293,8 @@ class NoteSheetTest {
         val ctl = Robolectric.buildActivity(NoteActivity::class.java, Intent(ctx, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, "old1")).setup()
         val a = ctl.get()
         idle()
-        val views = field(a, "blockViews") as List<*>
-        val top1 = (views[1] as View).top
+        val e = a.editors()[0]
+        val top1 = e.top + e.totalPaddingTop + e.layout.getLineTop(e.layout.getLineForOffset(e.paraStart(2)))
         val d = note(a).drawings[0]
         assertEquals("рисунок — на том же месте у своей строки", (y0 - oldTop1).toFloat(), d.pts[1] - top1, 1.5f)
         ctl.pause()

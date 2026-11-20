@@ -362,11 +362,14 @@ object NotePaper {
     const val GRID = "grid"
     val ALL = listOf(NONE, LINES, GRID)
 
-    /** Для новых заметок («Для всех новых заметок» в окне «Разлиновка»); пока не выбирали — в линейку, как было. */
+    /**
+     * Для новых заметок («Для всех новых заметок» в окне «Разлиновка»); пока не выбирали — без разметки, как на айфоне (0.31;
+     * выбор 0.30 — под старым ключом — не в счёт: тогда лист был другим).
+     */
     fun default(ctx: Context): String =
-        ctx.getSharedPreferences("notes", Context.MODE_PRIVATE).getString("paper", LINES)?.takeIf { it in ALL } ?: LINES
+        ctx.getSharedPreferences("notes", Context.MODE_PRIVATE).getString("paper31", NONE)?.takeIf { it in ALL } ?: NONE
 
-    fun setDefault(ctx: Context, p: String) = ctx.getSharedPreferences("notes", Context.MODE_PRIVATE).edit().putString("paper", p).apply()
+    fun setDefault(ctx: Context, p: String) = ctx.getSharedPreferences("notes", Context.MODE_PRIVATE).edit().putString("paper31", p).apply()
 
     fun label(p: String) = when (p) { NONE -> "Без разметки"; GRID -> "В клетку"; else -> "В линейку" }
 }

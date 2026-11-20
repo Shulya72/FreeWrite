@@ -80,7 +80,7 @@ class NoteSelectTest {
         idle()
         val root = a.window.decorView
         val ink = NoteActivity::class.java.getDeclaredField("ink").apply { isAccessible = true }.get(a) as NoteInkView
-        fun note() = NoteActivity::class.java.getDeclaredField("note").apply { isAccessible = true }.get(a) as Note
+        fun note() = a.model()
         root.findViewWithTag<View>("tool_select").performClick(); idle()
         // Обвести пером обе строки (рисунок в стороне — нет).
         val o = a.contentOffset()

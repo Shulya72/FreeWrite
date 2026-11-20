@@ -41,9 +41,16 @@ fun TextView.setExactLineHeight(px: Int) {
 class RuledSheet(context: Context) : LinearLayout(context) {
     var lineGap = Ui.dpf(context, 36f)
     var paper = NotePaper.LINES
-        set(v) { if (field != v) { field = v; invalidate() } }
+        set(v) { if (field != v) { field = v; invalidate(); requestLayout() } }
     /** Виды выше одной клетки, через которые линейка не проходит (название). */
     val tall = HashSet<View>()
+    /**
+     * Двухклеточные строки внутри полей текста (0.31): [верх, низ] в координатах листа — линейка через их середину не идёт.
+     * Спрашивается один раз за отрисовку.
+     */
+    var tallBands: (() -> List<FloatArray>)? = null
+    /** Лист не шире (px), лишнее место — по краям (0 — во всю ширину). */
+    var maxWidthPx = 0
     private val linePaint = Paint().apply { color = Ui.LINE; strokeWidth = Ui.dpf(context, 1f) }
     private val gridPaint = Paint().apply { color = Ui.LINE; strokeWidth = Ui.dpf(context, 1f) }
     private val marginPaint = Paint().apply { color = Ui.MARGIN; strokeWidth = Ui.dpf(context, 1f) }
@@ -56,12 +63,14 @@ class RuledSheet(context: Context) : LinearLayout(context) {
 
     private fun cells(h: Int): Int {
         val g = lineGap.toInt()
-        if (g <= 0 || h <= 0) return h
+        if (g <= 0 || h <= 0 || paper == NotePaper.NONE) return h
         return ((h + g - 1) / g) * g
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        val ws = if (maxWidthPx > 0 && MeasureSpec.getSize(widthMeasureSpec) > maxWidthPx)
+            MeasureSpec.makeMeasureSpec(maxWidthPx, MeasureSpec.EXACTLY) else widthMeasureSpec
+        super.onMeasure(ws, heightMeasureSpec)
         var y = paddingTop
         for (i in 0 until childCount) {
             val c = getChildAt(i)
@@ -97,8 +106,9 @@ class RuledSheet(context: Context) : LinearLayout(context) {
             canvas.drawLine(marginX, 0f, marginX, height.toFloat(), marginPaint)
         }
         var y = paddingTop + if (grid) 0f else lineGap
+        val bands = if (grid) emptyList() else tallBands?.invoke().orEmpty()
         while (y < bottom) {
-            if (grid || tall.none { it.parent === this && y > it.top + 1 && y < it.bottom - 1 }) canvas.drawLine(left, y, right, y, linePaint)
+            if (grid || (tall.none { it.parent === this && y > it.top + 1 && y < it.bottom - 1 } && bands.none { y > it[0] + 1 && y < it[1] - 1 })) canvas.drawLine(left, y, right, y, linePaint)
             y += lineGap
         }
         if (grid) {
@@ -270,6 +280,8 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         fun penWhileTyping(): Boolean = false
         /** «Выделить» (0.27.7): перо обводит написанное. */
         fun lassoMode(): Boolean = false
+        /** Серое слово у курсора (0.31: распознанное, ещё не ставшее текстом) — координаты листа; null — нет. */
+        fun interimMark(): Mark? = null
         /** Обвели: контур (x, y подряд, координаты листа). */
         fun onLasso(pts: FloatArray) {}
         /** Рамка выделенного (координаты листа) или null. */
@@ -277,6 +289,15 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
     }
 
     class StrokeStyle(val kind: String, val color: Int, val width: Float)
+
+    /** Серое слово: начало [x], линия букв [base] (координаты листа), размер шрифта [size] (px). */
+    class Mark(val x: Float, val base: Float, val text: String, val size: Float)
+
+    private val markPaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Ui.MUTED }
+    private val markBg = Paint().apply { color = Ui.PAPER; style = Paint.Style.FILL }
+
+    /** Перерисовать серое слово (без слоя рисунков). */
+    fun refreshMarks() = invalidateSelf()
 
     private enum class Mode { NONE, FORWARD, INK, ERASE, PIPETTE, PALM, LASSO }
 
@@ -601,6 +622,13 @@ class NoteInkView(context: Context, private val host: Host) : View(context) {
         canvas.translate(o.x, o.y)
         // Готовые рисунки и нераспознанные штрихи — на слое под этим (layer): пока пишут, перерисовывается только живой штрих.
         live?.let { drawStroke(canvas, it, liveStyle ?: pendingStyle, 255) }
+        host.interimMark()?.let { m ->
+            markPaint.textSize = m.size
+            val fm = markPaint.fontMetrics
+            val w = markPaint.measureText(m.text)
+            canvas.drawRect(m.x, m.base + fm.ascent, m.x + w + Ui.dpf(context, 2f), m.base + fm.descent, markBg)
+            canvas.drawText(m.text, m.x, m.base, markPaint)
+        }
         // «Выделить»: обводка и рамка выделенного.
         if (mode == Mode.LASSO && lassoPts.size >= 4) {
             lassoPath.reset()

@@ -74,7 +74,7 @@ object Rich {
     const val SERIF = "serif"
     private val KINDS = setOf(B, I, U, S, HL, FC, SERIF)
     /** Виды, у которых есть значение (цвет): у одного куска — один цвет. */
-    private val VALUED = setOf(HL, FC)
+    val VALUED = setOf(HL, FC)
 
     /**
      * Текст строки стал другим: оформление сдвигается вместе с текстом. Изменённый кусок ищем по общему началу и концу.

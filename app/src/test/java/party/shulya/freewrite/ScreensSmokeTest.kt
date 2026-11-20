@@ -90,10 +90,8 @@ class ScreensSmokeTest {
 
         // 2. Палец по галочке второй задачи: «не сдано» → «сдано».
         afterPen()
-        val check = findAll(root) { it.contentDescription == "Не сдано" }.first()
-        val c = IntArray(2); val o = IntArray(2)
-        check.getLocationInWindow(c); ink.getLocationInWindow(o)
-        tap(ink, MotionEvent.TOOL_TYPE_FINGER, (c[0] - o[0] + check.width / 2).toFloat(), (c[1] - o[1] + check.height / 2).toFloat())
+        val check = openCheck(activity, ink)
+        tap(ink, MotionEvent.TOOL_TYPE_FINGER, check.x, check.y)
 
         screenshot(root, "note-portrait.png")
 
@@ -135,13 +133,16 @@ class ScreensSmokeTest {
         // Две лишние буквы в конце: «как дилаа» → «как дил».
         press(letter); press(letter)
         // Палец — между «и» и «л» в «дил», потом «буква»: «как дил» → «как дл».
-        val tv = findAll(root) { it is android.widget.TextView && it.text.toString().startsWith("как д") }.first() as android.widget.TextView
+        val tv = (controller.get() as NoteActivity).editors()[0]
         val ink = find(root, NoteInkView::class.java)
         val t = IntArray(2); val o = IntArray(2)
         tv.getLocationInWindow(t); ink.getLocationInWindow(o)
-        val x = t[0] - o[0] + tv.paddingLeft + tv.layout.getPrimaryHorizontal(6)
-        val y = t[1] - o[1] + tv.paddingTop + (tv.layout.getLineTop(0) + tv.layout.getLineBottom(0)) / 2f
+        val off = tv.text.indexOf("дил") + 2
+        val line = tv.layout.getLineForOffset(off)
+        val x = t[0] - o[0] + tv.totalPaddingLeft + tv.layout.getPrimaryHorizontal(off)
+        val y = t[1] - o[1] + tv.totalPaddingTop + (tv.layout.getLineTop(line) + tv.layout.getLineBottom(line)) / 2f
         tap(ink, MotionEvent.TOOL_TYPE_FINGER, x, y)
+        assertEquals("палец поставил курсор между «и» и «л»", off, tv.selectionStart)
         press(letter)
 
         controller.pause()
@@ -158,14 +159,14 @@ class ScreensSmokeTest {
             Intent(ctx, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, n.id),
         ).setup().get()
         idle()
-        val noteField = NoteActivity::class.java.getDeclaredField("note").apply { isAccessible = true }
         val insert = NoteActivity::class.java.getDeclaredMethod("insertAtCaret", String::class.java, Boolean::class.javaPrimitiveType)
             .apply { isAccessible = true }
         fun check(text: String, offset: Int, word: String, expected: String) {
-            val note = noteField.get(activity) as Note
-            note.blocks.clear(); note.blocks += Block.Para(text); note.caret = 0; note.caretOffset = offset
+            val e = activity.editors()[0]
+            e.text.replace(e.paraStart(1), e.paraEnd(1), text)
+            e.setSelection(if (offset < 0) e.paraEnd(1) else e.paraStart(1) + offset)
             insert.invoke(activity, word, false)
-            assertEquals("«$text» + «$word»", expected, ((noteField.get(activity) as Note).blocks[0] as Block.Para).text)
+            assertEquals("«$text» + «$word»", expected, (activity.model().blocks[0] as Block.Para).text)
         }
         check("Привет", -1, "на", "Привет на")      // обычное письмо: короткое слово через пробел
         check("Привет", -1, ",", "Привет,")          // знак препинания — без пробела
@@ -331,8 +332,21 @@ class ScreensSmokeTest {
         Intent(ctx, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, n.id),
     ).setup()
 
-    private fun noteOf(activity: NoteActivity): Note =
-        NoteActivity::class.java.getDeclaredField("note").apply { isAccessible = true }.get(activity) as Note
+    private fun noteOf(activity: NoteActivity): Note = activity.model()
+
+    /** Кружок первого неотмеченного пункта чек-листа — в координатах слоя пера. */
+    private fun openCheck(activity: NoteActivity, ink: View): android.graphics.PointF {
+        for (e in activity.editors()) for ((i, a) in e.paras.withIndex()) if (a.task && !a.done) {
+            val l = e.layout
+            val line = l.getLineForOffset(e.paraStart(i))
+            val p = IntArray(2); val o = IntArray(2)
+            e.getLocationInWindow(p); ink.getLocationInWindow(o)
+            val x = p[0] - o[0] + e.totalPaddingLeft + Ui.dpf(ctx, NoteActivity.INDENT_DP) * a.indent + Ui.dpf(ctx, 11.5f)
+            val y = p[1] - o[1] + e.totalPaddingTop + (l.getLineTop(line) + l.getLineBottom(line)) / 2f
+            return android.graphics.PointF(x, y)
+        }
+        error("нет неотмеченного пункта")
+    }
 
     /** Рамка рисунка: [l, t, r, b]. */
     private fun bounds(d: Drawing): FloatArray {
@@ -436,11 +450,12 @@ class ScreensSmokeTest {
         assertTrue("сдвинута вправо", noteOf(activity).blocks.filterIsInstance<Block.Image>()[0].xa > 0.2f)
 
         // И вниз, за «Третью строку»: встала после неё.
-        val third = findAll(root) { it is android.widget.TextView && it.text.toString().startsWith("Третья") }.first()
+        val third = activity.editors().first { it.text.contains("Третья") }
         val t = IntArray(2); val o = IntArray(2)
         third.getLocationInWindow(t); ink.getLocationInWindow(o)
         val r2 = rectInInk()
-        val targetY = (t[1] - o[1]) + third.height + 10f
+        val tl = third.layout
+        val targetY = (t[1] - o[1]) + third.totalPaddingTop + tl.getLineBottom(tl.getLineForOffset(third.text.indexOf("Третья"))) + 10f
         drag(ink, MotionEvent.TOOL_TYPE_FINGER, r2.centerX(), r2.centerY(), r2.centerX(), targetY + (r2.centerY() - r2.top))
         idle()
         controller.pause()
@@ -994,11 +1009,9 @@ class ScreensSmokeTest {
         idle()
         val root = activity.window.decorView
         val ink = find(root, NoteInkView::class.java)
-        val check = findAll(root) { it.contentDescription == "Не сдано" }.first()
-        val c = IntArray(2); val o = IntArray(2)
-        check.getLocationInWindow(c); ink.getLocationInWindow(o)
-        val x = (c[0] - o[0] + check.width / 2).toFloat()
-        val y = (c[1] - o[1] + check.height / 2).toFloat()
+        val check = openCheck(activity, ink)
+        val x = check.x
+        val y = check.y
         // Перо рядом — касание по галочке не считается.
         hoverPen(ink, x + 300f, y + 200f)
         tap(ink, MotionEvent.TOOL_TYPE_FINGER, x, y)
