@@ -1,37 +1,72 @@
 package party.shulya.freewrite
 
 /**
- * Починка ссылок при чтении доски (0.27.6, Владимир: «ведомость от 18-го стала пустая, хотя в таблицах у схем горит
- * «На подписи у заказчика от …»»).
+ * Проверка доски после ошибки 0.27.5 (номера новых предметов повторялись от запуска к запуску, см. [Ids]): ведомость или
+ * таблица получала новый номер, её схемы и строки оставались привязаны к старому и пропадали с глаз; у ведомости появлялись
+ * копии (переданная и старая «в сборке»).
  *
- * Причина: в 0.27.5 номера новых предметов повторялись от запуска к запуску (см. [Ids]). Когда номер ведомости совпал с номером
- * штриха или строки, при чтении доски ведомость получала новый номер, а её схемы оставались привязаны к старому — ведомость
- * пустела, схемы «висели» ни к чему. То же могло случиться с таблицей (строки и области плана «висят»). Здесь их возвращаем:
- *  - схемы без ведомости — в ту пустую ведомость, чей номер («З-14») записан в истории этих схем (добавление в сборку,
- *    передача, ответы пишутся с номером ведомости) и которая заведена не позже этой истории;
- *  - строки и области без таблицы — в таблицу, где лежит лист плана этих областей;
- *  - пустые копии таблицы (то же название и место — следы той же ошибки на других планшетах) убираются, если у оригинала
- *    есть содержимое; копии ведомости сливаются в одну — ту, чьё состояние совпадает с историей схем (0.28.1);
- *  - ведомости «в сборке», чьи схемы по истории переданы в ней, возвращается дата передачи (0.28.1).
- * Ничего не угадывается: нет однозначного ответа — предметы остаются как есть.
+ * С 0.28.2 приложение само ничего не исправляет (Владимир: «какого хрена приложение решает, что удалить и что восстановить»).
+ * [check] находит, что спряталось или сбилось, и описывает это простыми словами; исправляет [apply] — только когда человек
+ * нажал «Исправить» в окне «Проверка доски» (`BoardActivity.offerRepair`). Статусы и даты схем не меняются, позиции
+ * ведомостей и строки таблиц не удаляются.
+ *
+ * Что находит:
+ *  - строки и области плана, чья таблица пропала, — в таблицу, где лежит лист плана этих областей;
+ *  - схемы, чья ведомость пропала, — в ведомость с тем же номером («З-14») по истории этих схем, заведённую не позже этой
+ *    истории (в том числе в ведомость, где уже есть другие схемы: так возвращаются схемы, добавленные в переданную копию);
+ *  - копии одной ведомости (вид, номер, место) — оставить ту, чьё состояние совпадает с историей схем, схемы всех копий — в ней;
+ *  - ведомость «в сборке», чьи схемы по истории переданы в ней, — вернуть дату передачи.
+ * Нет однозначного ответа — ничего не предлагается.
  */
 object BoardRepair {
 
-    class Result {
+    /** Что исправить. Ссылки на предметы доски, для которой проверяли, — применять сразу ([run]). */
+    class Plan {
+        internal val recT = LinkedHashMap<BoardRec, String>()
+        internal val zoneT = LinkedHashMap<BoardZone, String>()
+        internal val dockT = LinkedHashMap<BoardTable, String>()
+        internal val fillT = LinkedHashMap<BoardFill, String>()
+        internal val itemV = LinkedHashMap<BoardVItem, String>()
+        /** Позиция → позиция той же схемы, у которой взять ответ (у этой ответа нет). */
+        internal val itemRes = LinkedHashMap<BoardVItem, BoardVItem>()
+        internal val vedomDrop = LinkedHashSet<BoardVedom>()
+        internal val tableDrop = LinkedHashSet<BoardTable>()
+        internal val made = LinkedHashMap<BoardVedom, String>()
+        internal val given = LinkedHashMap<BoardVedom, String>()
+
+        /** Что будет сделано — по строке на таблицу или ведомость, для окна «Проверка доски». */
+        val lines = ArrayList<String>()
+        val isEmpty get() = lines.isEmpty()
+
         var recs = 0
         var items = 0
         var copies = 0
         var states = 0
-        val any get() = recs + items + copies + states > 0
         override fun toString() = "строки $recs, схемы ведомостей $items, копии $copies, дата передачи по истории $states"
     }
 
-    fun run(b: Board): Result {
-        val res = Result()
-        if (b.tables.isNotEmpty()) tables(b, res)
-        if (b.vedoms.isNotEmpty()) vedoms(b, res)
-        if (res.any) runCatching { Trail.add("Починка ссылок доски: $res") }
-        return res
+    /** Проверить и сразу исправить (окно «Исправить», проверки). */
+    fun run(b: Board): Plan = check(b).also { if (!it.isEmpty) apply(b, it) }
+
+    fun check(b: Board): Plan {
+        val p = Plan()
+        if (b.tables.isNotEmpty()) tables(b, p)
+        if (b.vedoms.isNotEmpty()) vedoms(b, p)
+        return p
+    }
+
+    fun apply(b: Board, p: Plan) {
+        for ((r, t) in p.recT) r.t = t
+        for ((z, t) in p.zoneT) z.t = t
+        for ((t, d) in p.dockT) t.dock = d
+        for ((f, t) in p.fillT) f.lt = t
+        for ((i, src) in p.itemRes) { i.res = src.res; i.rd = src.rd }
+        for ((i, v) in p.itemV) i.v = v
+        for ((v, m) in p.made) v.made = m
+        if (p.vedomDrop.isNotEmpty()) b.vedoms.removeAll(p.vedomDrop)
+        if (p.tableDrop.isNotEmpty()) b.tables.removeAll(p.tableDrop)
+        for ((v, d) in p.given) v.given = d
+        runCatching { Trail.add("Проверка доски — исправлено: $p") }
     }
 
     // ---------------------------------------------------------------- таблицы
@@ -39,87 +74,69 @@ object BoardRepair {
     private fun sameTable(p: BoardTable, q: BoardTable) =
         p.x == q.x && p.y == q.y && p.scale == q.scale && p.title == q.title && p.kind == q.kind
 
-    private fun tables(b: Board, res: Result) {
+    private fun tables(b: Board, p: Plan) {
+        relinkTables(b, p)
+        // Пустая копия таблицы поверх таблицы со строками (та же на том же месте) — убрать.
+        val withRows = b.recs.mapTo(HashSet()) { p.recT[it] ?: it.t }
+        val withZones = b.zones.mapTo(HashSet()) { p.zoneT[it] ?: it.t }
+        for (c in b.tables) {
+            if (c.id in withRows || c.id in withZones) continue
+            val o = b.tables.firstOrNull { it !== c && it.id in withRows && sameTable(it, c) } ?: continue
+            p.tableDrop += c
+            p.copies++
+            p.lines += "Таблица «${IdTables.fullTitle(b, o)}» лежит на доске ещё и пустой копией поверх себя — убрать пустую копию."
+        }
+    }
+
+    private fun relinkTables(b: Board, p: Plan) {
         val ids = b.tables.mapTo(HashSet()) { it.id }
         val lost = LinkedHashSet<String>()
         for (r in b.recs) if (r.t.isNotEmpty() && r.t !in ids) lost += r.t
         for (z in b.zones) if (z.t.isNotEmpty() && z.t !in ids) lost += z.t
-        if (lost.isNotEmpty()) {
-            val bySheet = HashMap<String, MutableList<BoardTable>>()
-            for (t in b.tables) for (s in t.sheets) bySheet.getOrPut(s.id) { ArrayList() } += t
-            for (old in lost) {
-                val found = LinkedHashSet<BoardTable>()
-                for (z in b.zones) if (z.t == old) bySheet[z.s]?.let { found += it }
-                if (found.isEmpty()) continue
-                // Несколько таблиц с этим листом — только если это копии одной таблицы (та же на том же месте).
-                val first = found.first()
-                if (found.any { !sameTable(it, first) }) continue
-                val target = found.firstOrNull { t -> b.recs.any { it.t == t.id } } ?: first
-                for (r in b.recs) if (r.t == old) { r.t = target.id; res.recs++ }
-                for (z in b.zones) if (z.t == old) z.t = target.id
-                for (t in b.tables) if (t.dock == old) t.dock = target.id
-                for (f in b.fills) if (f.lt == old) f.lt = target.id
-            }
+        if (lost.isEmpty()) return
+        val bySheet = HashMap<String, MutableList<BoardTable>>()
+        for (t in b.tables) for (s in t.sheets) bySheet.getOrPut(s.id) { ArrayList() } += t
+        for (old in lost) {
+            val found = LinkedHashSet<BoardTable>()
+            for (z in b.zones) if (z.t == old) bySheet[z.s]?.let { found += it }
+            if (found.isEmpty()) continue
+            // Несколько таблиц с этим листом — только если это копии одной таблицы (та же на том же месте).
+            val first = found.first()
+            if (found.any { !sameTable(it, first) }) continue
+            val target = found.firstOrNull { t -> b.recs.any { it.t == t.id } } ?: first
+            var n = 0
+            for (r in b.recs) if (r.t == old) { p.recT[r] = target.id; n++ }
+            for (z in b.zones) if (z.t == old) p.zoneT[z] = target.id
+            for (t in b.tables) if (t.dock == old) p.dockT[t] = target.id
+            for (f in b.fills) if (f.lt == old) p.fillT[f] = target.id
+            p.recs += n
+            p.lines += "Таблица «${IdTables.fullTitle(b, target)}»: " +
+                (if (n > 0) "вернуть ${Ui.plural(n, "строку", "строки", "строк")} и разметку плана" else "вернуть разметку плана") +
+                " — они от неё отвязались и не видны."
         }
-        // Пустые копии таблицы с содержимым.
-        val withRows = b.recs.mapTo(HashSet()) { it.t }
-        val copies = b.tables.filter { c ->
-            c.id !in withRows && b.zones.none { it.t == c.id } &&
-                b.tables.any { o -> o !== c && o.id in withRows && sameTable(o, c) }
-        }
-        if (copies.isNotEmpty()) { b.tables.removeAll(copies.toSet()); res.copies += copies.size }
     }
 
     // ---------------------------------------------------------------- ведомости
 
-    private fun sameVedom(p: BoardVedom, q: BoardVedom) =
-        p.kind == q.kind && p.num == q.num && p.x == q.x && p.y == q.y && p.scale == q.scale
+    private fun copyKey(v: BoardVedom) = listOf(v.kind, v.num, v.x, v.y, v.scale)
 
-    private fun vedoms(b: Board, res: Result) {
-        val ids = b.vedoms.mapTo(HashSet()) { it.id }
-        val lost = b.vitems.filter { it.v !in ids }.groupBy { it.v }
-        if (lost.isNotEmpty()) {
-            val filled = b.vitems.filter { it.v in ids }.mapTo(HashSet()) { it.v }
-            for ((_, items) in lost) {
-                val recIds = items.mapTo(HashSet()) { it.r }
-                // По истории схем: номер ведомости → сколько схем группы, самое раннее событие.
-                val recsBy = HashMap<String, HashSet<String>>()
-                val firstAt = HashMap<String, Long>()
-                for (e in b.events) {
-                    if (e.vn.isEmpty() || e.r !in recIds) continue
-                    recsBy.getOrPut(e.vn) { HashSet() } += e.r
-                    val f = firstAt[e.vn]
-                    if (f == null || e.at < f) firstAt[e.vn] = e.at
-                }
-                if (recsBy.isEmpty()) continue
-                val candidates = b.vedoms.filter { v ->
-                    v.id !in filled && v.kind != Vedoms.LIST && recsBy[v.num] != null &&
-                        (v.made.isEmpty() || IdTables.isoOf(firstAt[v.num]!!) >= v.made)
-                }
-                val target = candidates.maxByOrNull { recsBy[it.num]!!.size } ?: continue
-                // Схемы этой ведомости — хотя бы половина группы; несколько кандидатов — только копии одной ведомости.
-                if (recsBy[target.num]!!.size * 2 < recIds.size) continue
-                if (candidates.any { it.num == target.num && !sameVedom(it, target) }) continue
-                for (i in items) i.v = target.id
-                filled += target.id
-                res.items += items.size
-            }
+    private fun state(v: BoardVedom, given: String = v.given): String =
+        if (given.isEmpty()) {
+            if (v.kind == Vedoms.LIST) "список" else "«Сборка" + (if (v.made.isNotEmpty()) " от " + IdTables.dateShort(v.made) else "") + "»"
+        } else "«" + Vedoms.giveLabel(v.kind) + " от " + IdTables.dateShort(given) + "»"
+
+    private fun vedoms(b: Board, p: Plan) {
+        val vOf = HashMap<BoardVItem, String>() // позиция → ведомость после исправления
+        for (i in b.vitems) vOf[i] = i.v
+        fun recsIn(v: BoardVedom): HashMap<String, BoardVItem> {
+            val m = HashMap<String, BoardVItem>()
+            for (i in b.vitems) if (vOf[i] == v.id) m.putIfAbsent(i.r, i)
+            return m
         }
-        mergeCopies(b, res)
-        restoreGiven(b, res)
-    }
 
-    /**
-     * Копии одной ведомости (тот же вид, номер и место — следы повтора номеров 0.27.5 на разных планшетах) сливаются в одну
-     * (0.28.1, Владимир: «снова слетела ведомость на подписи у заказчика от 18.11.26 — теперь там сборка от 17.11.26»).
-     * До 0.28.1 оставалась копия со схемами, а пустая убиралась — даже если пустая была переданной, а со схемами — старой,
-     * ещё в сборке. Теперь остаётся копия, чьё состояние совпадает с историей схем (переданная — если история о передаче
-     * молчит), схемы всех копий переходят к ней. Выбор не зависит от того, к какой копии сейчас привязаны схемы, —
-     * на всех планшетах получится одно и то же.
-     */
-    private fun mergeCopies(b: Board, res: Result) {
-        val groups = b.vedoms.groupBy { listOf(it.kind, it.num, it.x, it.y, it.scale) }
-        for (copies in groups.values) {
+        // 1. Копии одной ведомости: остаётся та, чьё состояние совпадает с историей схем (история молчит — переданная).
+        val survivor = HashMap<BoardVedom, BoardVedom>()
+        for (copies in b.vedoms.groupBy { copyKey(it) }.values) {
             if (copies.size < 2) continue
             val ids = copies.mapTo(HashSet()) { it.id }
             val items = b.vitems.filter { it.v in ids }
@@ -127,39 +144,70 @@ object BoardRepair {
             val keep = copies.sortedWith(compareByDescending<BoardVedom> {
                 if (hist != null) it.given == hist else it.given.isNotEmpty()
             }.thenByDescending { it.given }.thenBy { it.id }).first()
-            if (keep.made.isEmpty()) copies.map { it.made }.filter { it.isNotEmpty() }.minOrNull()?.let { keep.made = it }
-            // Схемы — к оставшейся копии; одна схема дважды — одна позиция (ответ берём, где он есть).
-            val byRec = HashMap<String, BoardVItem>()
-            for (i in items) if (i.v == keep.id) byRec.putIfAbsent(i.r, i)
-            val drop = HashSet<BoardVItem>()
-            for (i in items) {
-                if (i.v == keep.id) continue
-                val same = byRec[i.r]
-                if (same == null) { i.v = keep.id; byRec[i.r] = i; res.items++; continue }
-                if (same.res.isEmpty() && i.res.isNotEmpty()) { same.res = i.res; same.rd = i.rd }
-                drop += i
+            val have = recsIn(keep)
+            for (c in copies) {
+                if (c === keep) continue
+                survivor[c] = keep
+                p.vedomDrop += c
+                for (i in items) {
+                    if (i.v != c.id) continue
+                    val same = have[i.r]
+                    if (same == null) { vOf[i] = keep.id; p.itemV[i] = keep.id; have[i.r] = i }
+                    else if (same.res.isEmpty() && i.res.isNotEmpty() && same !in p.itemRes) p.itemRes[same] = i
+                }
             }
-            if (drop.isNotEmpty()) b.vitems.removeAll(drop)
-            val gone = copies.filter { it !== keep }.toSet()
-            b.vedoms.removeAll(gone)
-            res.copies += gone.size
+            if (keep.made.isEmpty()) copies.map { it.made }.filter { it.isNotEmpty() }.minOrNull()?.let { p.made[keep] = it }
+            p.copies += copies.size - 1
+            p.lines += "Ведомость «${keep.num}» лежит на доске " + (if (copies.size == 2) "двумя копиями" else "${copies.size} копиями") +
+                " друг на друге (" + copies.joinToString(" и ") { state(it) } + ") — оставить одну, ${state(keep)}, схемы всех копий — в ней."
         }
-    }
 
-    /**
-     * Ведомость «в сборке», хотя по истории её схемы переданы в ней (заказчику или в ПТО) и обратно в сборку не возвращались,
-     * а дата передачи у схем на месте, — вернуть ей дату передачи (её затёрла старая копия ведомости). Статусы и даты схем
-     * не меняются: они и так верные.
-     */
-    private fun restoreGiven(b: Board, res: Result) {
+        // 2. Схемы без ведомости — в ведомость с тем же номером по истории этих схем.
+        val ids = b.vedoms.mapTo(HashSet()) { it.id }
+        val lost = b.vitems.filter { it.v !in ids }.groupBy { it.v }
+        val back = LinkedHashMap<BoardVedom, Int>()
+        for ((_, items) in lost) {
+            val recIds = items.mapTo(HashSet()) { it.r }
+            // По истории схем: номер ведомости → сколько схем группы, самое раннее событие.
+            val recsBy = HashMap<String, HashSet<String>>()
+            val firstAt = HashMap<String, Long>()
+            for (e in b.events) {
+                if (e.vn.isEmpty() || e.r !in recIds) continue
+                recsBy.getOrPut(e.vn) { HashSet() } += e.r
+                val f = firstAt[e.vn]
+                if (f == null || e.at < f) firstAt[e.vn] = e.at
+            }
+            if (recsBy.isEmpty()) continue
+            val candidates = b.vedoms.filter { v ->
+                v.kind != Vedoms.LIST && recsBy[v.num] != null && (v.made.isEmpty() || IdTables.isoOf(firstAt[v.num]!!) >= v.made)
+            }
+            val best = candidates.maxByOrNull { recsBy[it.num]!!.size } ?: continue
+            // Схемы этой ведомости — хотя бы половина группы; с этим номером — одна ведомость (или копии одной).
+            if (recsBy[best.num]!!.size * 2 < recIds.size) continue
+            if (candidates.any { it.num == best.num && copyKey(it) != copyKey(best) }) continue
+            val target = survivor[best] ?: best
+            val have = recsIn(target)
+            var n = 0
+            for (i in items) {
+                val same = have[i.r]
+                if (same == null) { vOf[i] = target.id; p.itemV[i] = target.id; have[i.r] = i; n++ }
+                else if (same.res.isEmpty() && i.res.isNotEmpty() && same !in p.itemRes) p.itemRes[same] = i
+            }
+            if (n > 0) { back.merge(target, n, Int::plus); p.items += n }
+        }
+        for ((v, n) in back) p.lines += "Ведомость «${v.num}»: вернуть ${Ui.plural(n, "схему", "схемы", "схем")} — по истории " +
+            (if (n == 1) "она лежит" else "они лежат") + " в этой ведомости, но " + (if (n == 1) "не видна" else "не видны") + "."
+
+        // 3. Ведомость «в сборке», хотя по истории её схемы в ней переданы, — вернуть дату передачи.
         for (v in b.vedoms) {
-            if (!v.isDraft || v.kind == Vedoms.LIST) continue
-            val items = b.vitems.filter { it.v == v.id }
+            if (v in p.vedomDrop || !v.isDraft || v.kind == Vedoms.LIST) continue
+            val items = b.vitems.filter { vOf[it] == v.id }
             if (items.isEmpty()) continue
-            val d = historyGiven(b, v, items) ?: continue
-            if (d.isEmpty()) continue
-            v.given = d
-            res.states++
+            val d = historyGiven(b, v, items)?.takeIf { it.isNotEmpty() } ?: continue
+            p.given[v] = d
+            p.states++
+            p.lines += "Ведомость «${v.num}»: на доске ${state(v)}, а по истории схем её " +
+                Vedoms.giveVerb(v.kind).lowercase() + " ${IdTables.dateShort(d)} — вернуть ${state(v, d)}."
         }
     }
 

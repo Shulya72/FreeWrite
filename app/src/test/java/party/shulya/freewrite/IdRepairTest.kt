@@ -106,6 +106,12 @@ class IdRepairTest {
         assertEquals(0, IdTables.allRows(b, t).size)
 
         val back = reread(b)
+        // Само при чтении ничего не исправляет (0.28.2) — только кнопкой «Исправить» в окне «Проверка доски».
+        assertEquals(2, back.vedoms.size)
+        assertEquals(0, back.vitems.count { i -> back.vedoms.any { it.id == i.v } })
+        val plan = BoardRepair.check(back)
+        assertEquals(plan.lines.toString(), 4, plan.lines.size) // таблица: строки, пустая копия; ведомость: копии, схемы
+        BoardRepair.apply(back, plan)
         assertEquals("копии убраны", 1, back.vedoms.size)
         assertEquals(1, back.tables.size)
         val bv = back.vedoms[0]
@@ -115,9 +121,8 @@ class IdRepairTest {
         assertTrue(back.vitems.none { it.v == oldV })
         // Статусы и даты не тронуты.
         assertTrue(back.recs.all { it.igs == IdTables.IGS_CUST && it.dcust == "2026-11-18" })
-        // Повторное чтение ничего не меняет.
-        val again = reread(back)
-        assertEquals(back.toJsonString(withCamera = false), again.toJsonString(withCamera = false))
+        // Второй раз исправлять нечего.
+        assertTrue(BoardRepair.check(reread(back)).isEmpty)
     }
 
     @Test
@@ -132,6 +137,35 @@ class IdRepairTest {
         assertEquals(1, back.vedoms.size)
         assertEquals(0, Vedoms.items(back, back.vedoms[0]).size)
         assertEquals(4, back.vitems.count { it.v == v.id })
+    }
+
+    @Test
+    fun boardCheckAsksBeforeFixing() {
+        // 0.28.2, Владимир: «какого хрена приложение решает, что удалить и что восстановить» — только по кнопке.
+        val b = sample()
+        b.vedoms[0].id = Ids.next() // схемы «повисли»
+        BoardStore(ctx).save(b)
+        fun open() = Robolectric.buildActivity(BoardActivity::class.java,
+            Intent(ctx, BoardActivity::class.java).putExtra(BoardActivity.EXTRA_ID, b.id)).setup().get().also { idle() }
+        val a = open()
+        val d = a.repairDialog!!
+        assertTrue(d.isShowing)
+        val msg = shadowOf(d).message.toString()
+        assertTrue(msg, msg.contains("Ведомость «З-14»: вернуть 4 схемы"))
+        assertTrue(msg, msg.contains("Статусы и даты схем не меняются"))
+        d.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).performClick(); idle()
+        assertEquals("«Не сейчас» — ничего не тронуто", 0, Vedoms.items(a.board(), a.board().vedoms[0]).size)
+        a.offerRepair(); idle()
+        assertFalse("до следующего открытия не спрашивает", a.repairDialog!!.isShowing)
+        a.finish(); idle()
+        val a2 = open()
+        val d2 = a2.repairDialog!!
+        assertTrue(d2.isShowing)
+        d2.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick(); idle()
+        assertEquals(4, Vedoms.items(a2.board(), a2.board().vedoms[0]).size)
+        assertTrue(a2.board().recs.all { it.igs == IdTables.IGS_CUST && it.dcust == "2026-11-18" })
+        a2.undo(); idle()
+        assertEquals("«Отменить» — как было", 0, Vedoms.items(a2.board(), a2.board().vedoms[0]).size)
     }
 
     @Test

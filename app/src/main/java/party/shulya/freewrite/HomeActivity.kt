@@ -783,7 +783,6 @@ class HomeActivity : Activity() {
                     b.sync.pushedRev = ""
                     // Доска могла уже быть на планшете (подключались раньше, старой версией) — перечитать целиком.
                     Remote.apply(b, pulled.rows, refresh = true)
-                    BoardRepair.run(b)
                     b.sync.remoteSeq = pulled.next
                     b.sync.readBy = Remote.appVersion
                     boards.save(b)
