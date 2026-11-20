@@ -49,6 +49,8 @@ class HomeActivity : Activity() {
     /** Выбранная папка; пусто — все заметки. */
     private var folder = ""
     private var query = ""
+    /** Заставка при запуске (0.29.2). */
+    internal val splash by lazy { Splash(this) }
 
     /** Инициалы для кружка в шапке: «ВШ». */
     private fun initials(): String {
@@ -66,6 +68,8 @@ class HomeActivity : Activity() {
     private val prefs get() = getSharedPreferences("home", MODE_PRIVATE)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Окно до первого кадра — тёмно-синее, как заставка (`Theme.FreeWrite.Launch`), дальше — обычная тема (0.29.2).
+        setTheme(R.style.Theme_FreeWrite)
         super.onCreate(savedInstanceState)
         store = NoteStore(this)
         boards = BoardStore(this)
@@ -75,13 +79,14 @@ class HomeActivity : Activity() {
         folder = prefs.getString("folder", "") ?: ""
         if (folder.isNotEmpty() && folders.list().none { it.id == folder }) folder = ""
         setContentView(buildUi())
+        if (Splash.wanted(this, savedInstanceState)) splash.show()
         showTab(tab)
         openPlanFrom(intent)
         // Оповещения календаря: будильник мог пропасть (оптимизация батареи HarmonyOS) — поставить заново.
         runCatching { PlanAlarms.reschedule(this, planner.store.items) }
         checkUpdates(silent = true)
         // Первый запуск: представиться (для общих досок). Можно «Позже».
-        if (!Profile.isSet(this) && !Profile.skipped(this)) {
+        if (!Profile.isSet(this) && !Profile.skipped(this)) splash.after {
             window.decorView.post { if (!isFinishing) Profile.ask(this, required = false) { refreshProfile() } }
         }
     }
@@ -92,9 +97,11 @@ class HomeActivity : Activity() {
         // Прошлый раз приложение закрылось с ошибкой — предложить отчёт (0.26.2), один раз за запуск.
         if (!crashOffered) {
             crashOffered = true
-            window.decorView.postDelayed({
-                if (!isFinishing) CrashReport.pending(this)?.let { CrashReport.offer(this, it) }
-            }, 400)
+            splash.after {
+                window.decorView.postDelayed({
+                    if (!isFinishing) CrashReport.pending(this)?.let { CrashReport.offer(this, it) }
+                }, 400)
+            }
         }
     }
 

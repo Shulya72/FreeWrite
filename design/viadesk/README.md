@@ -11,5 +11,11 @@
 Шрифт названий — Montserrat Bold (© The Montserrat Project Authors, SIL Open Font License 1.1),
 `app/src/main/res/font/montserrat_bold.ttf`.
 
-Значок в приложении: `res/drawable-*/ic_launcher_foreground.png` (знак, нарисован из `viadesk-znak.svg`) +
-`res/drawable/ic_launcher_background.xml` (ночной синий).
+Значок в приложении (с 0.29.2) — картинка Владимира `viadesk-icon-1024.png`: белая рамка вокруг квадрата убрана,
+тёмно-синий фон продлён до краёв, знак уменьшен так, чтобы целиком помещался и в круге, и в «скруглённом квадрате»
+(радиус знака — 30 % стороны: безопасная зона значка Android — круг 66 из 108 dp). Из неё —
+`res/drawable-*/ic_launcher_foreground.png` (108…432 px, без прозрачности) и `res/drawable/ic_launcher_background.xml`
+(тот же градиент под ней). Прежний знак — `viadesk-znak.svg`, `viadesk-znachok.svg` (до 0.29.2).
+
+Заставка при запуске (0.29.2) — «Стекло»: светлый лист в клетку, бирюзовое свечение, знак и надпись на матовой плашке.
+Знак и надпись перерисованы векторно по баннеру Владимира `viadesk-banner.jpg`. Исходники и как пересобрать — `splash/README.md`.
