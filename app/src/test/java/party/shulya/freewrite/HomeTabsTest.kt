@@ -212,10 +212,10 @@ class HomeTabsTest {
         assertEquals(View.GONE, root.findViewWithTag<View>("home_new_note").visibility)
         assertTrue(texts(root).contains("КЖ 7.1.3 — Секция 3"))
         shot(root, "viadesk-boards.png")
-        // Вкладка «Задачи» — пока заглушка до календаря.
+        // Вкладка «Задачи» — календарь (0.29).
         root.findViewWithTag<View>("tab_tasks").performClick(); idle()
         assertEquals("Задачи", title.text.toString())
-        assertEquals(View.VISIBLE, root.findViewWithTag<View>("tasks_soon").visibility)
+        assertTrue(root.findViewWithTag<View>("plan_months").isShown)
         shot(root, "viadesk-tasks.png")
         ctl.pause().stop().destroy()
         // Открытая вкладка запоминается.
