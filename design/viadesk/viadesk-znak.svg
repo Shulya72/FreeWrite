@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="740" height="560" viewBox="0 0 740 560"><defs>
+  <filter id="grain" x="0" y="0" width="1" height="1"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .06 0"/></filter>
+  <filter id="lift" x="-30%" y="-30%" width="160%" height="175%"><feGaussianBlur in="SourceAlpha" stdDeviation="18"/><feOffset dy="24"/><feComponentTransfer><feFuncA type="linear" slope=".62"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <clipPath id="sq"><rect width="1024" height="1024" rx="230"/></clipPath>
+  <clipPath id="cutA"><rect x="0" y="330" width="1024" height="700"/></clipPath>
+  <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".34"/><stop offset=".2" stop-color="#fff" stop-opacity=".08"/><stop offset="1" stop-color="#fff" stop-opacity=".03"/></linearGradient>
+  <radialGradient id="glow" cx=".28" cy=".16" r=".85"><stop offset="0" stop-color="#fff" stop-opacity=".1"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+  <!-- А: лист -->
+  <linearGradient id="aBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2f3137"/><stop offset=".5" stop-color="#151619"/><stop offset="1" stop-color="#08080a"/></linearGradient>
+  <linearGradient id="aFront" gradientUnits="userSpaceOnUse" x1="381" y1="540" x2="519" y2="480"><stop offset="0" stop-color="#fdfdfe"/><stop offset=".42" stop-color="#e0e2e6"/><stop offset=".74" stop-color="#adb1b8"/><stop offset="1" stop-color="#787d85"/></linearGradient>
+  <linearGradient id="aLen" gradientUnits="userSpaceOnUse" x1="355" y1="250" x2="548" y2="765"><stop offset="0" stop-color="#fff" stop-opacity=".4"/><stop offset=".38" stop-color="#fff" stop-opacity="0"/><stop offset=".78" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".38"/></linearGradient>
+  <linearGradient id="aBack" gradientUnits="userSpaceOnUse" x1="598" y1="449" x2="694" y2="491"><stop offset="0" stop-color="#60646c"/><stop offset=".45" stop-color="#34373d"/><stop offset="1" stop-color="#18191c"/></linearGradient>
+  <!-- Б: перо -->
+  <linearGradient id="bBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#252c39"/><stop offset=".5" stop-color="#11141b"/><stop offset="1" stop-color="#07080b"/></linearGradient>
+  <linearGradient id="bL" gradientUnits="userSpaceOnUse" x1="318" y1="300" x2="512" y2="760"><stop offset="0" stop-color="#fbfcfd"/><stop offset=".45" stop-color="#d4d8de"/><stop offset=".8" stop-color="#959ba5"/><stop offset="1" stop-color="#6c727b"/></linearGradient>
+  <linearGradient id="bR" gradientUnits="userSpaceOnUse" x1="706" y1="300" x2="512" y2="760"><stop offset="0" stop-color="#bcc1c9"/><stop offset=".5" stop-color="#80868f"/><stop offset="1" stop-color="#474b52"/></linearGradient>
+  <mask id="nibCut" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024"><rect width="1024" height="1024" fill="#fff"/><path d="M426 290H598L512 560Z" fill="#000"/><circle cx="512" cy="578" r="17" fill="#000"/><rect x="508.5" y="586" width="7" height="210" fill="#000"/></mask>
+  <!-- В: росчерк -->
+  <linearGradient id="cBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a241e"/><stop offset=".5" stop-color="#13110e"/><stop offset="1" stop-color="#080706"/></linearGradient>
+  <linearGradient id="cG" gradientUnits="userSpaceOnUse" x1="300" y1="290" x2="760" y2="720"><stop offset="0" stop-color="#fff3dc"/><stop offset=".3" stop-color="#ecd3a2"/><stop offset=".62" stop-color="#c39a5c"/><stop offset="1" stop-color="#83602e"/></linearGradient>
+  <linearGradient id="cSheen" gradientUnits="userSpaceOnUse" x1="300" y1="300" x2="640" y2="640"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff" stop-opacity=".5"/><stop offset=".6" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+</defs><defs>
+  <linearGradient id="vdNavy" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#12425e"/><stop offset=".5" stop-color="#092638"/><stop offset="1" stop-color="#04141f"/></linearGradient>
+  <pattern id="vdGrid" patternUnits="userSpaceOnUse" width="64" height="64"><path d="M64 0V64M0 64H64" fill="none" stroke="#8fd8ff" stroke-opacity=".05" stroke-width="2"/></pattern>
+  <linearGradient id="vdTeal" gradientUnits="userSpaceOnUse" x1="182" y1="262" x2="590" y2="690"><stop offset="0" stop-color="#5ff7e6"/><stop offset=".45" stop-color="#08C9B5"/><stop offset="1" stop-color="#04988a"/></linearGradient>
+  <linearGradient id="vdPaper" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d6e3ea"/></linearGradient>
+  <linearGradient id="vdGlass" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1d5b7e"/><stop offset="1" stop-color="#0a2b40"/></linearGradient>
+  <filter id="vdGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="16"/></filter>
+  <clipPath id="vdTri"><path d="M352 262L832 262L596 701Z"/></clipPath>
+</defs><symbol id="vd-mark" viewBox="150 228 740 560">
+    <path d="M388 322L868 322L632 761Z" fill="url(#vdPaper)" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M370 292L850 292L614 731Z" fill="#08C9B5" fill-opacity=".45" stroke="#5ff7e6" stroke-opacity=".8" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M352 262L832 262L596 701Z" fill="url(#vdGlass)" stroke="#fff" stroke-opacity=".85" stroke-width="4" stroke-linejoin="round"/>
+    <g clip-path="url(#vdTri)"><path d="M300 330H900M300 390H900M300 490H900M300 590H900M520 262L252.6 760M640 262L372.6 760M760 262L492.6 760" stroke="#ffffff" stroke-opacity=".5" stroke-width="4"/></g>
+    <path d="M571 390 L691 390 L638 490 L518 490Z" fill="#FFB52E" opacity=".6" filter="url(#vdGlow)"/>
+    <path d="M571 390 L691 390 L638 490 L518 490Z" fill="#FFB52E" fill-opacity=".95"/>
+    <circle cx="571" cy="390" r="15" fill="#FFB52E" stroke="#fff" stroke-width="5"/><circle cx="691" cy="390" r="15" fill="#FFB52E" stroke="#fff" stroke-width="5"/><circle cx="638" cy="490" r="15" fill="#FFB52E" stroke="#fff" stroke-width="5"/><circle cx="518" cy="490" r="15" fill="#FFB52E" stroke="#fff" stroke-width="5"/>
+    <path d="M182 326L352 326L590 754L420 754Z" fill="#08C9B5" fill-opacity=".3" stroke="#08C9B5" stroke-opacity=".3" stroke-width="36" stroke-linejoin="round"/>
+    <path d="M182 294L352 294L590 722L420 722Z" fill="#08C9B5" fill-opacity=".55" stroke="#08C9B5" stroke-opacity=".55" stroke-width="36" stroke-linejoin="round"/>
+    <g filter="url(#lift)"><path d="M182 262L352 262L590 690L420 690Z" fill="url(#vdTeal)" stroke="url(#vdTeal)" stroke-width="36" stroke-linejoin="round"/></g>
+    <path d="M176 254L356 254" stroke="#fff" stroke-opacity=".75" stroke-width="4" stroke-linecap="round"/></symbol>
+<symbol id="vd-mono" viewBox="150 228 740 560">
+    <path d="M388 322L868 322L632 761Z" fill="none" stroke="currentColor" stroke-width="16" stroke-linejoin="round"/>
+    <path d="M370 292L850 292L614 731Z" fill="none" stroke="currentColor" stroke-width="16" stroke-linejoin="round"/>
+    <path d="M352 262L832 262L596 701Z" fill="none" stroke="currentColor" stroke-width="18" stroke-linejoin="round"/>
+    <g clip-path="url(#vdTri)"><path d="M300 330H900M300 390H900M300 490H900M300 590H900M520 262L252.6 760M640 262L372.6 760M760 262L492.6 760" stroke="currentColor" stroke-width="9"/></g>
+    <path d="M571 390 L691 390 L638 490 L518 490Z" fill="currentColor"/>
+    <path d="M182 262L352 262L590 690L420 690Z" fill="currentColor" stroke="currentColor" stroke-width="36" stroke-linejoin="round"/></symbol>
+<symbol id="mk-viadesk" viewBox="0 0 1024 1024"><g clip-path="url(#sq)"><rect width="1024" height="1024" fill="url(#vdNavy)"/><rect width="1024" height="1024" fill="url(#vdGrid)"/><rect width="1024" height="1024" fill="url(#glow)"/><rect width="1024" height="1024" filter="url(#grain)"/></g><rect x="1.5" y="1.5" width="1021" height="1021" rx="229" fill="none" stroke="url(#rim)" stroke-width="3"/><g transform="translate(-2 8)">
+    <path d="M388 322L868 322L632 761Z" fill="url(#vdPaper)" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M370 292L850 292L614 731Z" fill="#08C9B5" fill-opacity=".45" stroke="#5ff7e6" stroke-opacity=".8" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M352 262L832 262L596 701Z" fill="url(#vdGlass)" stroke="#fff" stroke-opacity=".85" stroke-width="4" stroke-linejoin="round"/>
+    <g clip-path="url(#vdTri)"><path d="M300 330H900M300 390H900M300 490H900M300 590H900M520 262L252.6 760M640 262L372.6 760M760 262L492.6 760" stroke="#ffffff" stroke-opacity=".5" stroke-width="4"/></g>
+    <path d="M571 390 L691 390 L638 490 L518 490Z" fill="#FFB52E" opacity=".6" filter="url(#vdGlow)"/>
+    <path d="M571 390 L691 390 L638 490 L518 490Z" fill="#FFB52E" fill-opacity=".95"/>
+    <circle cx="571" cy="390" r="15" fill="#FFB52E" stroke="#fff" stroke-width="5"/><circle cx="691" cy="390" r="15" fill="#FFB52E" stroke="#fff" stroke-width="5"/><circle cx="638" cy="490" r="15" fill="#FFB52E" stroke="#fff" stroke-width="5"/><circle cx="518" cy="490" r="15" fill="#FFB52E" stroke="#fff" stroke-width="5"/>
+    <path d="M182 326L352 326L590 754L420 754Z" fill="#08C9B5" fill-opacity=".3" stroke="#08C9B5" stroke-opacity=".3" stroke-width="36" stroke-linejoin="round"/>
+    <path d="M182 294L352 294L590 722L420 722Z" fill="#08C9B5" fill-opacity=".55" stroke="#08C9B5" stroke-opacity=".55" stroke-width="36" stroke-linejoin="round"/>
+    <g filter="url(#lift)"><path d="M182 262L352 262L590 690L420 690Z" fill="url(#vdTeal)" stroke="url(#vdTeal)" stroke-width="36" stroke-linejoin="round"/></g>
+    <path d="M176 254L356 254" stroke="#fff" stroke-opacity=".75" stroke-width="4" stroke-linecap="round"/></g></symbol>
+<symbol id="mk-viadesk-small" viewBox="0 0 1024 1024"><g clip-path="url(#sq)"><rect width="1024" height="1024" fill="url(#vdNavy)"/><rect width="1024" height="1024" fill="url(#vdGrid)"/><rect width="1024" height="1024" fill="url(#glow)"/><rect width="1024" height="1024" filter="url(#grain)"/></g><rect x="1.5" y="1.5" width="1021" height="1021" rx="229" fill="none" stroke="url(#rim)" stroke-width="3"/><g transform="translate(-2 8)">
+    <path d="M388 322L868 322L632 761Z" fill="url(#vdPaper)" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M370 292L850 292L614 731Z" fill="#08C9B5" fill-opacity=".45" stroke="#5ff7e6" stroke-opacity=".8" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M352 262L832 262L596 701Z" fill="url(#vdGlass)" stroke="#fff" stroke-opacity=".85" stroke-width="4" stroke-linejoin="round"/>
+    
+    <path d="M571 390 L691 390 L638 490 L518 490Z" fill="#FFB52E" opacity=".6" filter="url(#vdGlow)"/>
+    <path d="M571 390 L691 390 L638 490 L518 490Z" fill="#FFB52E" fill-opacity=".95"/>
+    
+    <path d="M182 326L352 326L590 754L420 754Z" fill="#08C9B5" fill-opacity=".3" stroke="#08C9B5" stroke-opacity=".3" stroke-width="36" stroke-linejoin="round"/>
+    <path d="M182 294L352 294L590 722L420 722Z" fill="#08C9B5" fill-opacity=".55" stroke="#08C9B5" stroke-opacity=".55" stroke-width="36" stroke-linejoin="round"/>
+    <g filter="url(#lift)"><path d="M182 262L352 262L590 690L420 690Z" fill="url(#vdTeal)" stroke="url(#vdTeal)" stroke-width="36" stroke-linejoin="round"/></g>
+    <path d="M176 254L356 254" stroke="#fff" stroke-opacity=".75" stroke-width="4" stroke-linecap="round"/></g></symbol><use href="#vd-mark" width="740" height="560"/></svg>

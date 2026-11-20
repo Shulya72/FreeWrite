@@ -49,7 +49,7 @@ object Trail {
                 cur.renameTo(p1)
             }
         }
-        add("Запуск FreeWrite ${BuildConfig.VERSION_NAME}")
+        add("Запуск ViaDesk ${BuildConfig.VERSION_NAME}")
     }
 
     fun memShort(): String {
@@ -244,7 +244,7 @@ object CrashReport {
     fun build(ctx: Context): String {
         val sb = StringBuilder()
         val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-        sb.append("FreeWrite ").append(BuildConfig.VERSION_NAME).append(" (").append(BuildConfig.VERSION_CODE).append(") — отчёт о работе\n")
+        sb.append("ViaDesk ").append(BuildConfig.VERSION_NAME).append(" (").append(BuildConfig.VERSION_CODE).append(") — отчёт о работе\n")
         sb.append("Время: ").append(now).append("\n")
         runCatching { sb.append("Устройство: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append(" · ").append(DeviceInfo.osLine())
             .append(" · Android ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n") }
@@ -289,7 +289,7 @@ object CrashReport {
     /** Окно в Ежедневнике после вылета: «Отправить» / «Скопировать» / «Не надо». */
     internal var dialog: AlertDialog? = null
     fun offer(a: Activity, head: String) {
-        dialog = AlertDialog.Builder(a).setTitle("FreeWrite закрылся с ошибкой")
+        dialog = AlertDialog.Builder(a).setTitle("ViaDesk закрылся с ошибкой")
             .setMessage("$head.\n\nОтправьте отчёт разработчику — по нему найдём причину. В отчёте нет ваших записей, только " +
                 "сведения о работе приложения.")
             .setPositiveButton("Отправить") { _, _ -> markSeen(a); share(a, build(a)) }
@@ -301,13 +301,13 @@ object CrashReport {
 
     fun share(a: Activity, text: String) {
         val intent = Intent(Intent.ACTION_SEND).setType("text/plain")
-            .putExtra(Intent.EXTRA_SUBJECT, "FreeWrite ${BuildConfig.VERSION_NAME} — отчёт о работе")
+            .putExtra(Intent.EXTRA_SUBJECT, "ViaDesk ${BuildConfig.VERSION_NAME} — отчёт о работе")
             .putExtra(Intent.EXTRA_TEXT, text)
         try { a.startActivity(Intent.createChooser(intent, "Отправить отчёт")) } catch (_: Throwable) { copy(a, text) }
     }
 
     fun copy(a: Activity, text: String) {
-        a.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Отчёт FreeWrite", text))
+        a.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Отчёт ViaDesk", text))
         android.widget.Toast.makeText(a, "Отчёт скопирован — вставьте его в сообщение", android.widget.Toast.LENGTH_LONG).show()
     }
 }

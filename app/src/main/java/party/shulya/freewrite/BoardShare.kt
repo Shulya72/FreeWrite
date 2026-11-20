@@ -143,7 +143,7 @@ object BoardShare {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = MIME
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "Доска «$title» — FreeWrite")
+            putExtra(Intent.EXTRA_SUBJECT, "Доска «$title» — ViaDesk")
             clipData = ClipData.newRawUri(file.name, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
@@ -233,7 +233,7 @@ object BoardShare {
         return (board ?: throw IllegalArgumentException(NOT_BOARD)) to copied
     }
 
-    const val NOT_BOARD = "Это не файл доски FreeWrite"
+    const val NOT_BOARD = "Это не файл доски ViaDesk"
 
     private fun readLimited(input: InputStream, limit: Long): String {
         val out = ByteArrayOutputStream()

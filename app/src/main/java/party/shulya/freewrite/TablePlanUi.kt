@@ -934,7 +934,7 @@ class PlanUi(private val a: BoardActivity) {
                 finding = false
                 runCatching { wait.dismiss() }
                 r.onFailure { e ->
-                    android.util.Log.w("FreeWrite", "find", e)
+                    android.util.Log.w("ViaDesk", "find", e)
                     AlertDialog.Builder(a).setTitle("Не получилось").setMessage("Не удалось прочитать линии PDF (${e.javaClass.simpleName}). Можно разметить вручную: «Элементы» → «Добавить элемент вручную».")
                         .setPositiveButton("Понятно", null).show()
                 }

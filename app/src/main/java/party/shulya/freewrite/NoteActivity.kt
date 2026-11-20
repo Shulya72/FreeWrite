@@ -147,7 +147,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         val id = intent.getStringExtra(EXTRA_ID)
         note = id?.let { store.load(it) } ?: Note.create("Совещание").also { store.save(it) }
         lineHeightPx = Ui.dp(this, 36f)
-        engine = HandwritingEngine { android.util.Log.i("FreeWrite", it) }
+        engine = HandwritingEngine { android.util.Log.i("ViaDesk", it) }
         engine.onChanged = { updateBanner() }
         buildUi()
         setContentView(rootView)
@@ -1410,7 +1410,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     private fun restore(x: Snap): Note =
         Note(note.id, x.title, note.created, note.updated, x.blocks.mapTo(ArrayList()) { copyBlock(it) }, ArrayList(x.drawings), x.caret)
-            .apply { caretOffset = x.caretOffset }
+            .apply { caretOffset = x.caretOffset; folder = note.folder; pinned = note.pinned }
 
     private fun pushUndo() {
         undoStack.addLast(snap())
@@ -1448,6 +1448,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
     }
 
     private fun changed(render: Boolean = true) {
+        note.updated = System.currentTimeMillis() // список заметок (0.28) — по времени правки
         if (render) {
             if (imageEditing) renderPending = true else renderBlocks()
         }

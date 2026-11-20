@@ -115,7 +115,7 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
         setContentView(root)
         applyOrientation(resources.configuration.orientation)
 
-        addLog("Запуск FreeWrite ${BuildConfig.VERSION_NAME}")
+        addLog("Запуск ViaDesk ${BuildConfig.VERSION_NAME}")
         readPreviousCrash()
         staticDevice = try {
             DeviceInfo.staticLines(this)
@@ -443,7 +443,7 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
 
     private fun buildReport(): String {
         val sb = StringBuilder()
-        sb.append("FreeWrite ").append(BuildConfig.VERSION_NAME).append(" — отчёт проверки (этап 1)\n")
+        sb.append("ViaDesk ").append(BuildConfig.VERSION_NAME).append(" — отчёт проверки (этап 1)\n")
         sb.append("Время: ").append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())).append("\n\n")
         sb.append("== Устройство ==\n")
         for ((k, v) in staticDevice) sb.append(k).append(": ").append(v).append('\n')
@@ -475,12 +475,12 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
     private fun shareReport() {
         val intent = Intent(Intent.ACTION_SEND)
             .setType("text/plain")
-            .putExtra(Intent.EXTRA_SUBJECT, "FreeWrite — отчёт проверки")
+            .putExtra(Intent.EXTRA_SUBJECT, "ViaDesk — отчёт проверки")
             .putExtra(Intent.EXTRA_TEXT, buildReport())
         try {
             startActivity(Intent.createChooser(intent, "Отправить отчёт"))
         } catch (t: Throwable) {
-            copyToClipboard("Отчёт FreeWrite", buildReport())
+            copyToClipboard("Отчёт ViaDesk", buildReport())
             toast("Не удалось открыть «Поделиться». Отчёт скопирован — вставьте его в сообщение.")
         }
     }
@@ -500,7 +500,7 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
             addView(panel, ViewGroup.LayoutParams(MATCH, WRAP))
         }
 
-        panel.addView(label("FreeWrite", 22f, bold = true, color = ACCENT))
+        panel.addView(label("ViaDesk", 22f, bold = true, color = ACCENT))
         panel.addView(label("Этап 1 · проверка планшета · версия ${BuildConfig.VERSION_NAME}", 12f, color = MUTED))
 
         // 1. Модель распознавания
@@ -583,7 +583,7 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
         resCard.addView(
             buttonRow(
                 smallButton("Копировать текст") {
-                    copyToClipboard("Текст FreeWrite", docEdit.text.toString())
+                    copyToClipboard("Текст ViaDesk", docEdit.text.toString())
                     toast("Текст скопирован")
                 },
                 smallButton("Удалить слово") { deleteLastWord() },
@@ -640,7 +640,7 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
             buttonRow(
                 smallButton("Отправить отчёт") { shareReport() },
                 smallButton("Скопировать отчёт") {
-                    copyToClipboard("Отчёт FreeWrite", buildReport())
+                    copyToClipboard("Отчёт ViaDesk", buildReport())
                     toast("Отчёт скопирован")
                 },
             ),
@@ -802,7 +802,7 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
     private fun timeNow(): String = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
 
     private companion object {
-        const val TAG = "FreeWrite"
+        const val TAG = "ViaDesk"
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
         val INK = Color.rgb(26, 32, 56)

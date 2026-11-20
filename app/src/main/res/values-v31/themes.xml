@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ (HarmonyOS 4): заставка при запуске — знак ViaDesk на ночном синем. -->
+    <style name="Theme.FreeWrite" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">#092638</item>
+        <item name="android:colorPrimaryDark">#FBFCFD</item>
+        <item name="android:colorAccent">#0A8F82</item>
+        <item name="android:statusBarColor">#FBFCFD</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">#FBFCFD</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowBackground">#EDF2F5</item>
+        <item name="android:windowSplashScreenBackground">#092638</item>
+    </style>
+</resources>

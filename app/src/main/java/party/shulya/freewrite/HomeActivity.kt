@@ -6,13 +6,13 @@ import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.os.Bundle
-import android.text.SpannableString
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -20,20 +20,35 @@ import android.widget.TextView
 import android.widget.Toast
 import java.io.File
 
-/** Ежедневник: записи по дням, «Новая запись», проверка планшета и обновление. */
+/**
+ * Главный экран ViaDesk (0.28): три вкладки внизу — Заметки, Задачи, Доски. Заметки — как на айфоне: поиск, папки,
+ * закреплённые сверху, разбивка по дням. Доски — как раньше. Задачи (календарь) — в следующих версиях.
+ */
 class HomeActivity : Activity() {
 
     private lateinit var store: NoteStore
     private lateinit var boards: BoardStore
-    private lateinit var list: LinearLayout
+    private lateinit var folders: NoteFolders
     private lateinit var updateBar: LinearLayout
     private lateinit var updateText: TextView
     private lateinit var updateButton: TextView
+    private lateinit var titleView: TextView
+    private lateinit var notesList: LinearLayout
+    private lateinit var boardsList: LinearLayout
+    private lateinit var folderRow: LinearLayout
+    private lateinit var countText: TextView
+    private lateinit var compose: View
+    private val pages = LinkedHashMap<String, View>()
+    private val tabs = LinkedHashMap<String, LinearLayout>()
     private var release: Updater.Release? = null
     private var downloaded: File? = null
     private var avatarText: TextView? = null
     private var avatarIcon: ImageView? = null
     private var phone = false
+    private var tab = TAB_NOTES
+    /** Выбранная папка; пусто — все заметки. */
+    private var folder = ""
+    private var query = ""
 
     /** Инициалы для кружка в шапке: «ВШ». */
     private fun initials(): String {
@@ -48,13 +63,19 @@ class HomeActivity : Activity() {
     }
 
     private fun dp(v: Float) = Ui.dp(this, v)
+    private val prefs get() = getSharedPreferences("home", MODE_PRIVATE)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = NoteStore(this)
         boards = BoardStore(this)
+        folders = NoteFolders(this)
         phone = Input.isPhone(this)
+        tab = prefs.getString("tab", TAB_NOTES) ?: TAB_NOTES
+        folder = prefs.getString("folder", "") ?: ""
+        if (folder.isNotEmpty() && folders.list().none { it.id == folder }) folder = ""
         setContentView(buildUi())
+        showTab(tab)
         checkUpdates(silent = true)
         // Первый запуск: представиться (для общих досок). Можно «Позже».
         if (!Profile.isSet(this) && !Profile.skipped(this)) {
@@ -64,7 +85,7 @@ class HomeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        renderList()
+        renderAll()
         // Прошлый раз приложение закрылось с ошибкой — предложить отчёт (0.26.2), один раз за запуск.
         if (!crashOffered) {
             crashOffered = true
@@ -74,34 +95,38 @@ class HomeActivity : Activity() {
         }
     }
 
-    /**
-     * Ежедневник (0.12): компактная шапка (название, кружок с инициалами, меню «⋮»), три плитки
-     * «Запись / Доска / По коду», ниже — записи и доски по дням. На планшете то же, только просторнее
-     * и с подписями на плитках; ширина — не больше 760 dp.
-     */
-    private fun buildUi(): View {
-        val scroll = ScrollView(this).apply { setBackgroundColor(Ui.DESK); isFillViewport = true }
-        val outer = FrameLayout(this)
-        val side = if (phone) 16f else 28f
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(side), dp(if (phone) 14f else 24f), dp(side), dp(28f))
-        }
+    private fun renderAll() {
+        renderNotes()
+        renderBoards()
+    }
+
+    // ---------------------------------------------------------------- каркас: шапка, страницы, вкладки
+
+    /** Колонка по центру: на планшете не шире 760 dp. */
+    private fun centered(child: View): FrameLayout {
         val maxW = dp(760f)
         val w = if (resources.displayMetrics.widthPixels > maxW) maxW else Ui.MATCH
-        outer.addView(col, FrameLayout.LayoutParams(w, Ui.WRAP).apply { gravity = Gravity.CENTER_HORIZONTAL })
-        scroll.addView(outer)
+        return FrameLayout(this).apply { addView(child, FrameLayout.LayoutParams(w, Ui.WRAP).apply { gravity = Gravity.CENTER_HORIZONTAL }) }
+    }
 
-        // Шапка: FreeWrite и дата, справа — кружок с инициалами и «⋮».
-        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val brandCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val brand = SpannableString("FreeWrite").apply {
-            setSpan(ForegroundColorSpan(Ui.ACCENT), 4, 9, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    private fun buildUi(): View {
+        val side = if (phone) 16f else 28f
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(Ui.DESK)
+            // Поиск не забирает курсор при открытии — клавиатура только по касанию поля.
+            isFocusableInTouchMode = true
+            descendantFocusability = android.view.ViewGroup.FOCUS_BEFORE_DESCENDANTS
         }
-        brandCol.addView(Ui.text(this, "", if (phone) 26f else 30f, Ui.INK, bold = true).apply { text = brand; includeFontPadding = false })
-        brandCol.addView(Ui.text(this, Ui.longDate(System.currentTimeMillis()), 14f, Ui.MUTED).apply { setPadding(0, dp(2f), 0, 0) })
-        head.addView(brandCol, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
 
+        // Шапка: крупное название вкладки, справа — кружок с инициалами и «⋮».
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(side), dp(if (phone) 12f else 20f), dp(side - 6f), dp(6f))
+        }
+        titleView = Ui.text(this, "Заметки", if (phone) 28f else 34f, Ui.INK).apply {
+            typeface = Ui.brandFont(this@HomeActivity); includeFontPadding = false; tag = "home_title"; letterSpacing = -0.02f
+        }
+        head.addView(titleView, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         val avatar = FrameLayout(this).apply {
             tag = "home_profile"
             contentDescription = "Как вас зовут"
@@ -131,7 +156,7 @@ class HomeActivity : Activity() {
             setOnClickListener { v -> showMenu(v) }
         }
         head.addView(more, LinearLayout.LayoutParams(dp(40f), dp(40f)).apply { marginStart = dp(4f) })
-        col.addView(head)
+        root.addView(centered(head), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         refreshProfile()
 
         // Плашка обновления
@@ -150,27 +175,385 @@ class HomeActivity : Activity() {
         }
         updateBar.addView(updateText, LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginEnd = dp(8f) })
         updateBar.addView(updateButton)
-        col.addView(updateBar, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(14f) })
+        val upWrap = FrameLayout(this).apply { setPadding(dp(side), dp(4f), dp(side), dp(4f)); addView(updateBar) }
+        root.addView(centered(upWrap), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
 
-        // Три плитки: новая запись, новая доска, подключиться к общей доске по коду.
+        // Страницы вкладок
+        val content = FrameLayout(this)
+        pages[TAB_NOTES] = notesPage(side)
+        pages[TAB_TASKS] = tasksPage(side)
+        pages[TAB_BOARDS] = boardsPage(side)
+        for (v in pages.values) content.addView(v, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
+        compose = ImageView(this).apply {
+            tag = "home_new_note"
+            contentDescription = "Новая заметка"
+            setImageResource(R.drawable.ic_compose)
+            imageTintList = ColorStateList.valueOf(Color.WHITE)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Ui.ACCENT)
+            }
+            elevation = dp(6f).toFloat()
+            setPadding(dp(15f), dp(15f), dp(15f), dp(15f))
+            isClickable = true
+            setOnClickListener { newNote() }
+        }
+        content.addView(compose, FrameLayout.LayoutParams(dp(56f), dp(56f)).apply {
+            gravity = Gravity.BOTTOM or Gravity.END; marginEnd = dp(side); bottomMargin = dp(16f)
+        })
+        root.addView(content, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
+
+        // Вкладки внизу
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Ui.PAPER)
+            setPadding(dp(8f), dp(6f), dp(8f), dp(8f))
+            tag = "home_tabs"
+        }
+        bar.addView(tabButton(TAB_NOTES, R.drawable.ic_note, "Заметки"), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        bar.addView(tabButton(TAB_TASKS, R.drawable.ic_calendar, "Задачи"), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        bar.addView(tabButton(TAB_BOARDS, R.drawable.ic_board, "Доски"), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        root.addView(View(this).apply { setBackgroundColor(Ui.RULE) }, LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+        root.addView(bar, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        root.post { root.requestFocus() }
+        return root
+    }
+
+    private fun tabButton(id: String, icon: Int, label: String): LinearLayout {
+        val b = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            tag = "tab_$id"
+            contentDescription = label
+            setPadding(0, dp(6f), 0, dp(5f))
+            isClickable = true
+            setOnClickListener { showTab(id) }
+        }
+        b.addView(ImageView(this).apply { setImageResource(icon) }, LinearLayout.LayoutParams(dp(26f), dp(26f)))
+        b.addView(Ui.text(this, label, 12f, Ui.INK2, bold = true).apply { gravity = Gravity.CENTER; setPadding(0, dp(2f), 0, 0) })
+        tabs[id] = b
+        return b
+    }
+
+    private fun showTab(id: String) {
+        tab = if (id in pages) id else TAB_NOTES
+        prefs.edit().putString("tab", tab).apply()
+        for ((k, v) in pages) v.visibility = if (k == tab) View.VISIBLE else View.GONE
+        for ((k, b) in tabs) {
+            val on = k == tab
+            val c = if (on) Ui.ACCENT else Ui.INK2
+            (b.getChildAt(0) as ImageView).imageTintList = ColorStateList.valueOf(c)
+            (b.getChildAt(1) as TextView).setTextColor(c)
+            b.background = if (on) Ui.rounded(this, Ui.ACCENT_SOFT, null, 16f) else null
+        }
+        titleView.text = when (tab) { TAB_TASKS -> "Задачи"; TAB_BOARDS -> "Доски"; else -> "Заметки" }
+        compose.visibility = if (tab == TAB_NOTES) View.VISIBLE else View.GONE
+    }
+
+    private fun scrollPage(side: Float, fill: (LinearLayout) -> Unit): ScrollView {
+        val scroll = ScrollView(this).apply { isFillViewport = true }
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(side), dp(6f), dp(side), dp(96f))
+        }
+        fill(col)
+        scroll.addView(centered(col))
+        return scroll
+    }
+
+    // ---------------------------------------------------------------- Заметки
+
+    private fun notesPage(side: Float): View = scrollPage(side) { col ->
+        // Поиск
+        val search = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ui.rounded(this@HomeActivity, Color.argb(16, 9, 38, 56), null, 12f)
+            setPadding(dp(10f), 0, dp(10f), 0)
+        }
+        search.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_search); imageTintList = ColorStateList.valueOf(Ui.MUTED)
+        }, LinearLayout.LayoutParams(dp(20f), dp(20f)))
+        val edit = EditText(this).apply {
+            tag = "notes_search"
+            hint = "Поиск"
+            isSingleLine = true
+            textSize = 16f
+            background = null
+            setTextColor(Ui.INK)
+            setHintTextColor(Ui.MUTED)
+            setPadding(dp(8f), dp(9f), dp(4f), dp(9f))
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(e: Editable?) { query = e?.toString().orEmpty(); renderNotes() }
+            })
+        }
+        search.addView(edit, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        col.addView(search, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
+
+        // Папки
+        folderRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; tag = "folder_row" }
+        val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(folderRow) }
+        col.addView(hs, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(12f) })
+
+        notesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "notes_list" }
+        col.addView(notesList, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        countText = Ui.text(this, "", 13f, Ui.MUTED).apply { gravity = Gravity.CENTER; tag = "notes_count"; setPadding(0, dp(16f), 0, 0) }
+        col.addView(countText, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+    }
+
+    private fun folderChip(label: String, on: Boolean, tag: String): TextView = Ui.text(this, label, 14f, if (on) Color.WHITE else Ui.INK, bold = on).apply {
+        this.tag = tag
+        isSingleLine = true
+        background = if (on) Ui.rounded(this@HomeActivity, Ui.ACCENT, null, 18f) else Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 18f)
+        setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
+        isClickable = true
+    }
+
+    private fun renderFolders(all: List<Note>) {
+        folderRow.removeAllViews()
+        val list = folders.list()
+        val lp = { LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { marginEnd = dp(8f) } }
+        folderRow.addView(folderChip("Все заметки · ${all.size}", folder.isEmpty(), "folder_all").apply {
+            setOnClickListener { pickFolder("") }
+        }, lp())
+        for ((i, f) in list.withIndex()) {
+            val n = all.count { it.folder == f.id }
+            folderRow.addView(folderChip("${f.name} · $n", folder == f.id, "folder_$i").apply {
+                setOnClickListener { pickFolder(f.id) }
+                setOnLongClickListener { folderMenu(f); true }
+            }, lp())
+        }
+        folderRow.addView(folderChip("+ Папка", false, "folder_add").apply {
+            setTextColor(Ui.ACCENT)
+            setOnClickListener { askFolderName("Новая папка", "") { name -> val f = folders.add(name); pickFolder(f.id) } }
+        }, lp())
+    }
+
+    private fun pickFolder(id: String) {
+        folder = id
+        prefs.edit().putString("folder", id).apply()
+        renderNotes()
+    }
+
+    private fun askFolderName(heading: String, current: String, done: (String) -> Unit) {
+        val edit = EditText(this).apply {
+            setText(current); setSelection(current.length); isSingleLine = true; hint = "Например, Работа"; tag = "folder_name"
+        }
+        val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(heading)
+            .setView(box)
+            .setPositiveButton("Готово") { _, _ -> edit.text.toString().trim().takeIf { it.isNotEmpty() }?.let(done) }
+            .setNegativeButton("Отмена", null)
+            .create()
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        dialog.show()
+        edit.requestFocus()
+    }
+
+    private fun folderMenu(f: NoteFolder) {
+        AlertDialog.Builder(this)
+            .setTitle(f.name)
+            .setItems(arrayOf("Переименовать", "Удалить папку")) { _, which ->
+                if (which == 0) askFolderName("Название папки", f.name) { name -> folders.rename(f.id, name); renderNotes() }
+                else AlertDialog.Builder(this)
+                    .setMessage("Удалить папку «${f.name}»? Заметки из неё останутся — во «Всех заметках».")
+                    .setPositiveButton("Удалить") { _, _ ->
+                        folders.delete(f.id, store)
+                        if (folder == f.id) folder = ""
+                        renderNotes()
+                    }
+                    .setNegativeButton("Отмена", null)
+                    .show()
+            }
+            .show()
+    }
+
+    private fun renderNotes() {
+        val all = store.list()
+        val now = System.currentTimeMillis()
+        renderFolders(all)
+        notesList.removeAllViews()
+        val sections = NotesList.arrange(all, folder, query, now)
+        val shown = sections.sumOf { it.second.size }
+        if (sections.isEmpty()) {
+            val msg = when {
+                query.isNotBlank() -> "Ничего не нашлось по «${query.trim()}»"
+                folder.isNotEmpty() -> "В этой папке пока пусто. Новая заметка — кнопка с карандашом внизу справа: она попадёт сюда."
+                else -> "Здесь будут ваши заметки. Кнопка с карандашом внизу справа — новая заметка: пишите от руки, слова соберутся в текст."
+            }
+            notesList.addView(Ui.text(this, msg, 15f, Ui.INK2).apply {
+                background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
+                setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+            }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(16f) })
+        }
+        val names = folders.list().associate { it.id to it.name }
+        for ((title, notes) in sections) {
+            val h = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4f), dp(18f), 0, dp(8f)) }
+            if (title == NotesList.PINNED) h.addView(ImageView(this).apply {
+                setImageResource(R.drawable.ic_pin); imageTintList = ColorStateList.valueOf(Ui.AMBER)
+            }, LinearLayout.LayoutParams(dp(18f), dp(18f)).apply { marginEnd = dp(6f) })
+            h.addView(Ui.text(this, title, 19f, Ui.INK).apply { typeface = Ui.brandFont(this@HomeActivity) })
+            notesList.addView(h)
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
+            }
+            for ((i, n) in notes.withIndex()) {
+                if (i > 0) card.addView(View(this).apply { setBackgroundColor(Ui.RULE) },
+                    LinearLayout.LayoutParams(Ui.MATCH, dp(1f)).apply { marginStart = dp(16f) })
+                card.addView(noteRow(n, now, if (folder.isEmpty()) names[n.folder] else null))
+            }
+            notesList.addView(card, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
+        countText.text = if (shown == 0) "" else Ui.plural(shown, "заметка", "заметки", "заметок")
+    }
+
+    /** Строка заметки: название, под ним время и первая строка текста; в «Всех заметках» — ещё и папка. */
+    private fun noteRow(n: Note, now: Long, folderName: String?): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16f), dp(11f), dp(16f), dp(12f))
+            isClickable = true
+            setOnClickListener { open(n.id) }
+            setOnLongClickListener { noteMenu(n); true }
+        }
+        row.addView(Ui.text(this, n.title.ifBlank { "Новая заметка" }, 17f, Ui.INK, bold = true).apply {
+            isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END; tag = "row_title"
+        })
+        val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(2f), 0, 0) }
+        line.addView(Ui.text(this, NotesList.rowTime(NotesList.edited(n), now), 14f, Ui.INK).apply { setPadding(0, 0, dp(8f), 0) })
+        line.addView(Ui.text(this, n.preview.ifEmpty { "Нет дополнительного текста" }, 14f, Ui.MUTED).apply {
+            isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        row.addView(line)
+        val chips = ArrayList<TextView>()
+        if (n.tasksDone > 0) chips += Ui.chip(this, "${n.tasksDone} сдано", Ui.OK, Ui.OK_SOFT)
+        if (n.tasksOpen > 0) chips += Ui.chip(this, "${n.tasksOpen} не сдано", Ui.BAD, Ui.BAD_SOFT)
+        if (!folderName.isNullOrEmpty() || chips.isNotEmpty()) {
+            val flow = Ui.FlowRow(this).apply { hGap = dp(6f); vGap = dp(6f); setPadding(0, dp(6f), 0, 0) }
+            if (!folderName.isNullOrEmpty()) flow.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                addView(ImageView(this@HomeActivity).apply {
+                    setImageResource(R.drawable.ic_folder); imageTintList = ColorStateList.valueOf(Ui.MUTED)
+                }, LinearLayout.LayoutParams(dp(15f), dp(15f)).apply { marginEnd = dp(4f) })
+                addView(Ui.text(this@HomeActivity, folderName, 13f, Ui.MUTED).apply { tag = "row_folder" })
+            })
+            for (c in chips) flow.addView(c)
+            row.addView(flow, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
+        return row
+    }
+
+    private fun open(id: String) {
+        startActivity(Intent(this, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, id))
+    }
+
+    private fun newNote() {
+        askTitle("Новая заметка", "Заметка " + Ui.shortDate(System.currentTimeMillis())) { title ->
+            val n = Note.create(title)
+            n.folder = folder // новая заметка — в открытую папку
+            store.save(n)
+            open(n.id)
+        }
+    }
+
+    private fun noteMenu(n: Note) {
+        AlertDialog.Builder(this)
+            .setTitle(n.title)
+            .setItems(arrayOf(if (n.pinned) "Открепить" else "Закрепить", "Переместить в папку", "Переименовать", "Удалить")) { _, which ->
+                when (which) {
+                    0 -> { n.pinned = !n.pinned; store.save(n); renderNotes() }
+                    1 -> moveDialog(n)
+                    2 -> rename(n)
+                    else -> confirmDelete(n)
+                }
+            }
+            .show()
+    }
+
+    private fun moveDialog(n: Note) {
+        val list = folders.list()
+        val items = arrayOf("Без папки") + list.map { it.name } + arrayOf("+ Новая папка")
+        AlertDialog.Builder(this)
+            .setTitle("Переместить «${n.title}»")
+            .setItems(items) { _, which ->
+                when {
+                    which == 0 -> { n.folder = ""; store.save(n); renderNotes() }
+                    which <= list.size -> { n.folder = list[which - 1].id; store.save(n); renderNotes() }
+                    else -> askFolderName("Новая папка", "") { name -> val f = folders.add(name); n.folder = f.id; store.save(n); renderNotes() }
+                }
+            }
+            .show()
+    }
+
+    private fun rename(n: Note) {
+        val edit = EditText(this).apply { setText(n.title); setSelection(n.title.length); isSingleLine = true }
+        val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
+        AlertDialog.Builder(this)
+            .setTitle("Название заметки")
+            .setView(box)
+            .setPositiveButton("Готово") { _, _ ->
+                val t = edit.text.toString().trim()
+                if (t.isNotEmpty()) { n.title = t; n.updated = System.currentTimeMillis(); store.save(n); renderNotes() }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun confirmDelete(n: Note) {
+        AlertDialog.Builder(this)
+            .setMessage("Удалить заметку «${n.title}»? Вернуть её будет нельзя.")
+            .setPositiveButton("Удалить") { _, _ -> store.delete(n); renderNotes() }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    // ---------------------------------------------------------------- Задачи (календарь — в 0.30)
+
+    private fun tasksPage(side: Float): View = scrollPage(side) { col ->
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 16f)
+            setPadding(dp(20f), dp(24f), dp(20f), dp(24f))
+            tag = "tasks_soon"
+        }
+        card.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_calendar); imageTintList = ColorStateList.valueOf(Ui.ACCENT)
+            background = Ui.rounded(this@HomeActivity, Ui.ACCENT_SOFT, null, 16f); setPadding(dp(12f), dp(12f), dp(12f), dp(12f))
+        }, LinearLayout.LayoutParams(dp(60f), dp(60f)))
+        card.addView(Ui.text(this, Ui.longDate(System.currentTimeMillis()).replaceFirstChar { it.uppercase() }, 20f, Ui.INK).apply {
+            typeface = Ui.brandFont(this@HomeActivity); gravity = Gravity.CENTER; setPadding(0, dp(14f), 0, dp(6f))
+        })
+        card.addView(Ui.text(this, "Здесь будет календарь, как на айфоне: месяц и день по часам, задачи и события со временем, " +
+            "напоминание за час, поиск по словам — например, «ВСК». Появится в следующих версиях.", 15f, Ui.INK2).apply {
+            gravity = Gravity.CENTER
+        })
+        col.addView(card, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(10f) })
+    }
+
+    // ---------------------------------------------------------------- Доски
+
+    private fun boardsPage(side: Float): View = scrollPage(side) { col ->
+        // Три плитки: новая доска, подключиться по коду, открыть файл.
         val tiles = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; tag = "home_tiles" }
         val gap = dp(if (phone) 8f else 12f)
-        tiles.addView(tile(R.drawable.ic_note, if (phone) "Запись" else "Новая запись", "Совещание, звонок — от руки в текст", "home_new_note") { newNote() },
+        tiles.addView(tile(R.drawable.ic_board, if (phone) "Доска" else "Новая доска", "Чертежи, таблицы, статусы", "home_new_board") { newBoard() },
             LinearLayout.LayoutParams(0, Ui.MATCH, 1f))
-        tiles.addView(tile(R.drawable.ic_board, if (phone) "Доска" else "Новая доска", "Чертежи, статусы, выноски", "home_new_board") { newBoard() },
-            LinearLayout.LayoutParams(0, Ui.MATCH, 1f).apply { marginStart = gap })
         tiles.addView(tile(R.drawable.ic_join, "По коду", "К общей доске коллеги", "home_join") { joinDialog() },
             LinearLayout.LayoutParams(0, Ui.MATCH, 1f).apply { marginStart = gap })
-        col.addView(tiles, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(if (phone) 16f else 22f) })
-
-        list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(list, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
-        col.addView(Ui.text(this, "FreeWrite ${BuildConfig.VERSION_NAME}", 12f, Ui.MUTED).apply {
+        tiles.addView(tile(R.drawable.ic_open_file, if (phone) "Файл" else "Из файла", "Доска или Nebo", "home_open_file") { pickBoardFile() },
+            LinearLayout.LayoutParams(0, Ui.MATCH, 1f).apply { marginStart = gap })
+        col.addView(tiles, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
+        boardsList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(boardsList, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
+        col.addView(Ui.text(this, "ViaDesk ${BuildConfig.VERSION_NAME}", 12f, Ui.MUTED).apply {
             gravity = Gravity.CENTER
             tag = "home_version"
             setPadding(0, dp(18f), 0, 0)
         }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        return scroll
     }
 
     /** Плитка действия: на телефоне — значок и слово, на планшете — ещё и подпись. */
@@ -208,53 +591,27 @@ class HomeActivity : Activity() {
         return t
     }
 
-    /** «⋮»: файл доски, обновления, проверка устройства; внизу — версия. */
-    private fun showMenu(anchor: View) {
-        val m = android.widget.PopupMenu(this, anchor)
-        m.menu.add(0, MENU_OPEN_FILE, 0, "Открыть файл доски")
-        m.menu.add(0, MENU_UPDATES, 1, "Проверить обновления")
-        m.menu.add(0, MENU_CHECK, 2, if (phone) "Проверка устройства" else "Проверка планшета")
-        m.menu.add(0, MENU_PROFILE, 3, Profile.name(this).ifEmpty { "Как вас зовут?" })
-        m.menu.add(0, MENU_REPORT, 4, "Отправить отчёт о работе")
-        m.menu.add(0, 0, 5, "Версия ${BuildConfig.VERSION_NAME}").isEnabled = false
-        m.setOnMenuItemClickListener { onMenu(it.itemId); true }
-        m.show()
-    }
-
-    private fun onMenu(id: Int) {
-        when (id) {
-            MENU_OPEN_FILE -> pickBoardFile()
-            MENU_UPDATES -> checkUpdates(silent = false)
-            MENU_CHECK -> startActivity(Intent(this, DiagnosticsActivity::class.java))
-            MENU_PROFILE -> Profile.ask(this, required = false) { refreshProfile() }
-            MENU_REPORT -> { CrashReport.markSeen(this); CrashReport.share(this, CrashReport.build(this)) }
-        }
-    }
-
-    private fun renderList() {
-        list.removeAllViews()
-        // Записи и доски вместе, по дням, новые сверху.
-        val entries: List<Pair<Long, () -> View>> =
-            store.list().map { n -> n.created to { noteRow(n) } } +
-                boards.list().map { b -> b.created to { boardRow(b) } }
-        if (entries.isEmpty()) {
-            list.addView(Ui.text(this, "Здесь появятся ваши записи и доски. «Запись» — пишите от руки, слова соберутся в текст. " +
-                "«Доска» — чертежи и статусы. «По коду» — общая доска коллеги.", 15f, Ui.INK2).apply {
+    private fun renderBoards() {
+        boardsList.removeAllViews()
+        val all = boards.list()
+        if (all.isEmpty()) {
+            boardsList.addView(Ui.text(this, "Здесь будут ваши доски: чертежи, таблицы ИД, ведомости и планы. «Новая доска» — начать, " +
+                "«По коду» — подключиться к общей доске коллеги.", 15f, Ui.INK2).apply {
                 background = Ui.rounded(this@HomeActivity, Ui.PAPER, Ui.RULE, 14f)
                 setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
             }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(16f) })
             return
         }
         var lastDay = -1L
-        for ((created, row) in entries.sortedByDescending { it.first }) {
-            val day = Ui.startOfDay(created)
+        for (b in all.sortedByDescending { it.created }) {
+            val day = Ui.startOfDay(b.created)
             if (day != lastDay) {
                 lastDay = day
-                list.addView(Ui.text(this, Ui.dayTitle(created), 13f, Ui.MUTED, bold = true).apply {
+                boardsList.addView(Ui.text(this, Ui.dayTitle(b.created), 13f, Ui.MUTED, bold = true).apply {
                     setPadding(dp(4f), dp(16f), 0, dp(6f))
                 })
             }
-            list.addView(row(), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { bottomMargin = dp(8f) })
+            boardsList.addView(boardRow(b), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { bottomMargin = dp(8f) })
         }
     }
 
@@ -372,7 +729,7 @@ class HomeActivity : Activity() {
     private fun joinDialog() {
         val t = RemoteSync.transport()
         if (t == null) {
-            Toast.makeText(this, "В этой сборке нет адреса сервера — обновите FreeWrite", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "В этой сборке нет адреса сервера — обновите ViaDesk", Toast.LENGTH_LONG).show()
             return
         }
         val edit = EditText(this).apply {
@@ -430,7 +787,7 @@ class HomeActivity : Activity() {
                     b.sync.remoteSeq = pulled.next
                     b.sync.readBy = Remote.appVersion
                     boards.save(b)
-                    renderList()
+                    renderAll()
                     Toast.makeText(this, "Подключено: «${b.title}»", Toast.LENGTH_LONG).show()
                     openBoard(b.id)
                 }.onFailure { e ->
@@ -453,9 +810,9 @@ class HomeActivity : Activity() {
         val code = Remote.prettyInvite(b.sync.remoteInvite)
         AlertDialog.Builder(this)
             .setTitle("Код для коллег")
-            .setMessage("Доска «${b.title}»\n\n$code\n\nКоллега: Ежедневник → «Подключиться по коду» → ввести код.")
+            .setMessage("Доска «${b.title}»\n\n$code\n\nКоллега: Доски → «По коду» → ввести код.")
             .setPositiveButton("Поделиться кодом") { _, _ ->
-                val text = "Подключись к доске «${b.title}» в FreeWrite: Ежедневник → «Подключиться по коду» → $code"
+                val text = "Подключись к доске «${b.title}» в ViaDesk: Доски → «По коду» → $code"
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text)
                 }, "Отправить код"))
@@ -482,12 +839,12 @@ class HomeActivity : Activity() {
                 "Руководству — кнопка «Ссылка для руководства» на сайте: по ней доску можно только смотреть.")
             .setPositiveButton("Отправить себе") { _, _ ->
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Доска «${b.title}» — FreeWrite на компьютере: $link")
+                    type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Доска «${b.title}» — ViaDesk на компьютере: $link")
                 }, "Отправить ссылку"))
             }
             .setNeutralButton("Скопировать") { _, _ ->
                 getSystemService(android.content.ClipboardManager::class.java)
-                    ?.setPrimaryClip(android.content.ClipData.newPlainText("FreeWrite", link))
+                    ?.setPrimaryClip(android.content.ClipData.newPlainText("ViaDesk", link))
                 Toast.makeText(this, "Ссылка скопирована", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Закрыть", null)
@@ -514,14 +871,14 @@ class HomeActivity : Activity() {
                         .setView(box)
                         .setPositiveButton("Готово") { _, _ ->
                             val t = edit.text.toString().trim()
-                            if (t.isNotEmpty()) { boards.rename(b.id, t); renderList() }
+                            if (t.isNotEmpty()) { boards.rename(b.id, t); renderAll() }
                         }
                         .setNegativeButton("Отмена", null)
                         .show()
                 } else {
                     AlertDialog.Builder(this)
                         .setMessage("Удалить доску «${b.title}»? Вернуть её будет нельзя.")
-                        .setPositiveButton("Удалить") { _, _ -> boards.delete(b.id); renderList() }
+                        .setPositiveButton("Удалить") { _, _ -> boards.delete(b.id); renderAll() }
                         .setNegativeButton("Отмена", null)
                         .show()
                 }
@@ -529,57 +886,29 @@ class HomeActivity : Activity() {
             .show()
     }
 
-    private fun noteRow(n: Note): View {
-        val chips = ArrayList<TextView>()
-        if (n.tasksDone > 0) chips += Ui.chip(this, "${n.tasksDone} сдано", Ui.OK, Ui.OK_SOFT)
-        if (n.tasksOpen > 0) chips += Ui.chip(this, "${n.tasksOpen} не сдано", Ui.BAD, Ui.BAD_SOFT)
-        return entryRow(R.drawable.ic_note, n.title, n.created, n.preview.ifEmpty { "Запись" }, chips).apply {
-            setOnClickListener { open(n.id) }
-            setOnLongClickListener { noteMenu(n); true }
+    /** «⋮»: файл доски, новая папка, обновления, проверка устройства; внизу — версия. */
+    private fun showMenu(anchor: View) {
+        val m = android.widget.PopupMenu(this, anchor)
+        m.menu.add(0, MENU_OPEN_FILE, 0, "Открыть файл доски")
+        m.menu.add(0, MENU_FOLDER, 1, "Новая папка заметок")
+        m.menu.add(0, MENU_UPDATES, 2, "Проверить обновления")
+        m.menu.add(0, MENU_CHECK, 3, if (phone) "Проверка устройства" else "Проверка планшета")
+        m.menu.add(0, MENU_PROFILE, 4, Profile.name(this).ifEmpty { "Как вас зовут?" })
+        m.menu.add(0, MENU_REPORT, 5, "Отправить отчёт о работе")
+        m.menu.add(0, 0, 6, "ViaDesk ${BuildConfig.VERSION_NAME}").isEnabled = false
+        m.setOnMenuItemClickListener { onMenu(it.itemId); true }
+        m.show()
+    }
+
+    private fun onMenu(id: Int) {
+        when (id) {
+            MENU_OPEN_FILE -> pickBoardFile()
+            MENU_FOLDER -> { showTab(TAB_NOTES); askFolderName("Новая папка", "") { name -> val f = folders.add(name); pickFolder(f.id) } }
+            MENU_UPDATES -> checkUpdates(silent = false)
+            MENU_CHECK -> startActivity(Intent(this, DiagnosticsActivity::class.java))
+            MENU_PROFILE -> Profile.ask(this, required = false) { refreshProfile() }
+            MENU_REPORT -> { CrashReport.markSeen(this); CrashReport.share(this, CrashReport.build(this)) }
         }
-    }
-
-    private fun open(id: String) {
-        startActivity(Intent(this, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, id))
-    }
-
-    private fun newNote() {
-        askTitle("Новая запись", "Запись " + Ui.shortDate(System.currentTimeMillis())) { title ->
-            val n = Note.create(title)
-            store.save(n)
-            open(n.id)
-        }
-    }
-
-    private fun noteMenu(n: Note) {
-        AlertDialog.Builder(this)
-            .setTitle(n.title)
-            .setItems(arrayOf("Переименовать", "Удалить")) { _, which ->
-                if (which == 0) rename(n) else confirmDelete(n)
-            }
-            .show()
-    }
-
-    private fun rename(n: Note) {
-        val edit = EditText(this).apply { setText(n.title); setSelection(n.title.length); isSingleLine = true }
-        val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
-        AlertDialog.Builder(this)
-            .setTitle("Название записи")
-            .setView(box)
-            .setPositiveButton("Готово") { _, _ ->
-                val t = edit.text.toString().trim()
-                if (t.isNotEmpty()) { n.title = t; store.save(n); renderList() }
-            }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
-    private fun confirmDelete(n: Note) {
-        AlertDialog.Builder(this)
-            .setMessage("Удалить запись «${n.title}»? Вернуть её будет нельзя.")
-            .setPositiveButton("Удалить") { _, _ -> store.delete(n); renderList() }
-            .setNegativeButton("Отмена", null)
-            .show()
     }
 
     // ---------------------------------------------------------------- обновление
@@ -640,7 +969,7 @@ class HomeActivity : Activity() {
 
     private fun install(file: File) {
         if (!Updater.install(this, file)) {
-            Toast.makeText(this, "Разрешите FreeWrite устанавливать приложения, вернитесь и нажмите «Установить»", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Разрешите ViaDesk устанавливать приложения, вернитесь и нажмите «Установить»", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -651,6 +980,10 @@ class HomeActivity : Activity() {
         private const val MENU_CHECK = 3
         private const val MENU_PROFILE = 4
         private const val MENU_REPORT = 5
+        private const val MENU_FOLDER = 6
+        const val TAB_NOTES = "notes"
+        const val TAB_TASKS = "tasks"
+        const val TAB_BOARDS = "boards"
         /** Окно «закрылся с ошибкой» уже показывали в этом запуске. */
         internal var crashOffered = false
     }

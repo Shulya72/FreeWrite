@@ -74,7 +74,7 @@ class CrashReportTest {
         assertTrue("в следе — только главный поток", !text.contains("RenderThread"))
         assertTrue(text, text.contains("== Журнал: прошлый запуск =="))
         assertTrue(text, text.contains("Долгий кадр 640 мс"))
-        assertTrue(text, text.contains("Запуск FreeWrite " + BuildConfig.VERSION_NAME))
+        assertTrue(text, text.contains("Запуск ViaDesk " + BuildConfig.VERSION_NAME))
 
         // «Не надо» — больше не спрашивает.
         d.getButton(AlertDialog.BUTTON_NEGATIVE).performClick(); idle()

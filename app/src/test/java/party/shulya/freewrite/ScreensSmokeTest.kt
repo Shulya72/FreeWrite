@@ -525,16 +525,12 @@ class ScreensSmokeTest {
     fun home_newNoteAndBoardAskTitle() {
         val home = Robolectric.buildActivity(HomeActivity::class.java).setup().get()
         idle()
-        fun card(title: String): View {
-            var v: View = findAll(home.window.decorView) { it is android.widget.TextView && it.text.toString() == title }.first()
-            while (!v.isClickable) v = v.parent as View
-            return v
-        }
-        card("Новая запись").performClick()
+        // Новая заметка — круглая кнопка с карандашом во вкладке «Заметки».
+        home.window.decorView.findViewWithTag<View>("home_new_note").performClick()
         idle()
         val dlg = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
         val input = dlg.window!!.decorView.findViewWithTag<android.widget.EditText>("title_input")
-        assertTrue("предложено название: ${input.text}", input.text.toString().startsWith("Запись "))
+        assertTrue("предложено название: ${input.text}", input.text.toString().startsWith("Заметка "))
         screenshot(dlg.window!!.decorView.rootView, "new-note-title.png")
         input.setText("Планёрка 8:30")
         dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
@@ -542,8 +538,10 @@ class ScreensSmokeTest {
         val id = shadowOf(home).nextStartedActivity.getStringExtra(NoteActivity.EXTRA_ID)!!
         assertEquals("Планёрка 8:30", NoteStore(ctx).load(id)!!.title)
 
-        // Доска: оставили предложенное название.
-        card("Новая доска").performClick()
+        // Доска: вкладка «Доски» → «Новая доска», оставили предложенное название.
+        home.window.decorView.findViewWithTag<View>("tab_boards").performClick()
+        idle()
+        home.window.decorView.findViewWithTag<View>("home_new_board").performClick()
         idle()
         org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()

@@ -18,18 +18,26 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-/** Цвета и мелкие помощники интерфейса — по макету «рабочий журнал». */
+/**
+ * Цвета и мелкие помощники интерфейса. С 0.28 — цвета ViaDesk: ночной синий #092638, бирюза #08C9B5, янтарь #FFB52E.
+ * Бирюза на белом плохо читается текстом, поэтому ACCENT (надписи, выбранные кнопки) — её тёмный оттенок, а яркая
+ * TEAL — для значков и заливок. Размеры досок и таблиц от цветов не зависят.
+ */
 object Ui {
-    val DESK = Color.rgb(230, 234, 240)
-    val PAPER = Color.rgb(252, 253, 254)
-    val INK = Color.rgb(22, 34, 58)
-    val INK2 = Color.rgb(75, 88, 115)
-    val MUTED = Color.rgb(133, 146, 168)
-    val RULE = Color.rgb(211, 218, 229)
-    val LINE = Color.argb(30, 40, 80, 140)
-    val MARGIN = Color.argb(56, 212, 71, 12)
-    val ACCENT = Color.rgb(212, 71, 12)
-    val ACCENT_SOFT = Color.rgb(253, 230, 216)
+    val NAVY = Color.rgb(9, 38, 56)
+    val TEAL = Color.rgb(8, 201, 181)
+    val AMBER = Color.rgb(255, 181, 46)
+    val DESK = Color.rgb(237, 242, 245)
+    val PAPER = Color.rgb(251, 252, 253)
+    val INK = NAVY
+    val INK2 = Color.rgb(74, 100, 117)
+    val MUTED = Color.rgb(128, 151, 165)
+    val RULE = Color.rgb(215, 225, 231)
+    val LINE = Color.argb(34, 9, 60, 90)
+    val MARGIN = Color.argb(110, 255, 181, 46)
+    val ACCENT = Color.rgb(10, 143, 130)
+    val ACCENT_SOFT = Color.rgb(219, 245, 241)
+    val AMBER_SOFT = Color.rgb(255, 241, 214)
     val PEN_BLUE = Color.rgb(31, 79, 209)
     val PEN_RED = Color.rgb(194, 40, 43)
     val OK = Color.rgb(35, 128, 58)
@@ -38,6 +46,12 @@ object Ui {
     val BAD_SOFT = Color.rgb(251, 226, 226)
     val WARN = Color.rgb(168, 106, 16)
     val WARN_SOFT = Color.rgb(252, 240, 212)
+
+    private var brand: Typeface? = null
+
+    /** Шрифт названий ViaDesk (Montserrat Bold, свободная лицензия OFL) — только для крупных заголовков экранов. */
+    fun brandFont(ctx: Context): Typeface = brand ?: (runCatching { ctx.resources.getFont(R.font.montserrat_bold) }.getOrNull()
+        ?: Typeface.DEFAULT_BOLD).also { brand = it }
 
     const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT

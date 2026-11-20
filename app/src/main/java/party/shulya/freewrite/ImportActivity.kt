@@ -58,8 +58,8 @@ class ImportActivity : Activity() {
                         is Received.Nebo -> doneNebo(got.result)
                     }
                 }.onFailure { t ->
-                    android.util.Log.w("FreeWrite", "import", t)
-                    val why = if (t is IllegalArgumentException) t.message else "файл повреждён или это не доска FreeWrite (${t.javaClass.simpleName})"
+                    android.util.Log.w("ViaDesk", "import", t)
+                    val why = if (t is IllegalArgumentException) t.message else "файл повреждён или это не доска ViaDesk (${t.javaClass.simpleName})"
                     showError("Не удалось открыть: $why.")
                 }
             }
@@ -121,7 +121,7 @@ class ImportActivity : Activity() {
             background = Ui.rounded(this@ImportActivity, Ui.PAPER, Ui.RULE, 16f)
             setPadding(dp(22f), dp(20f), dp(22f), dp(18f))
         }
-        heading = Ui.text(this, if (looksLikeInsert(intent)) "На доску FreeWrite" else "Файл доски FreeWrite", 20f, Ui.INK, bold = true)
+        heading = Ui.text(this, if (looksLikeInsert(intent)) "На доску ViaDesk" else "Файл доски ViaDesk", 20f, Ui.INK, bold = true)
         card.addView(heading)
         message = Ui.text(this, "Открываю и сверяю с вашими досками…", 16f, Ui.INK2).apply {
             tag = "import_message"
