@@ -164,12 +164,13 @@ class HomeTabsTest {
         val inWork = texts(root.findViewWithTag("notes_list"))
         assertTrue(inWork.toString(), "Акты на армирование" in inWork && "Звонок технадзору" !in inWork)
         // Новая заметка из папки попадает в неё.
+        // 0.30: без окна «Название» — сразу лист с клавиатурой, курсор в названии.
         root.findViewWithTag<View>("home_new_note").performClick(); idle()
-        val dlg = ShadowAlertDialog.getLatestAlertDialog()
-        assertTrue(dlg.window!!.decorView.findViewWithTag<android.widget.EditText>("title_input").text.startsWith("Заметка "))
-        dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick(); idle()
-        val newId = shadowOf(a).nextStartedActivity.getStringExtra(NoteActivity.EXTRA_ID)!!
+        val started = shadowOf(a).nextStartedActivity
+        assertTrue("сразу с клавиатурой", started.getBooleanExtra(NoteActivity.EXTRA_KEYS, false))
+        val newId = started.getStringExtra(NoteActivity.EXTRA_ID)!!
         assertEquals(work.id, store.load(newId)!!.folder)
+        store.load(newId)?.let { store.delete(it) } // пустая — как будто ушли, ничего не написав
         root.findViewWithTag<View>("folder_all").performClick(); idle()
 
         // Поиск по словам из текста.

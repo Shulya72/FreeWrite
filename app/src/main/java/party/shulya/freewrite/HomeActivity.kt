@@ -479,13 +479,13 @@ class HomeActivity : Activity() {
         startActivity(Intent(this, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, id))
     }
 
+    /** Новая заметка (0.30, как на айфоне): сразу лист с клавиатурой, курсор — в названии; ничего не написали — не останется. */
     private fun newNote() {
-        askTitle("Новая заметка", "Заметка " + Ui.shortDate(System.currentTimeMillis())) { title ->
-            val n = Note.create(title)
-            n.folder = folder // новая заметка — в открытую папку
-            store.save(n)
-            open(n.id)
-        }
+        val n = Note.create("")
+        n.folder = folder // новая заметка — в открытую папку
+        n.paper = NotePaper.default(this)
+        store.save(n)
+        startActivity(Intent(this, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, n.id).putExtra(NoteActivity.EXTRA_KEYS, true))
     }
 
     private fun noteMenu(n: Note) {

@@ -107,9 +107,9 @@ class NoteKeyboardTest {
         assertFieldAtCaret(a, edit, note()) // поле — внутри строки задачи, рядом с галочкой
         edit.append("\n"); idle()
         edit.append("Исполнительная съёмка"); idle()
-        root.findViewWithTag<View>("keys_enter").performClick(); idle()
+        edit.append("\n"); idle()
         assertEquals("пустая задача", listOf("Геодезия — съёмка секции 3", "☐ Акты АОСР", "☐ Исполнительная съёмка", "☐ "), texts(note()))
-        root.findViewWithTag<View>("keys_enter").performClick(); idle()
+        edit.append("\n"); idle()
         edit.append("Следующая планёрка — понедельник"); idle()
         assertEquals(listOf("Геодезия — съёмка секции 3", "☐ Акты АОСР", "☐ Исполнительная съёмка", "Следующая планёрка — понедельник"), texts(note()))
         shot(root, "note-keyboard.png")

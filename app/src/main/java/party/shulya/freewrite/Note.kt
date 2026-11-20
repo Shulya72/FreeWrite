@@ -11,10 +11,23 @@ import java.util.UUID
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/** Блок записи: абзац текста, строка-задача или картинка. */
+/**
+ * Блок записи: абзац текста, строка-задача (пункт чек-листа) или картинка. С 0.30 у абзаца — стиль ([ParaStyle]), у абзаца и
+ * пункта — отступ и оформление кусков ([TextSpan]: жирный, курсив, маркер, цвет…).
+ */
 sealed class Block {
-    class Para(var text: String) : Block()
-    class Task(var text: String, var done: Boolean) : Block()
+    class Para(
+        override var text: String,
+        var style: String = ParaStyle.BODY,
+        override var indent: Int = 0,
+        override val spans: MutableList<TextSpan> = ArrayList(),
+    ) : Block(), TextLine
+    class Task(
+        override var text: String,
+        var done: Boolean,
+        override var indent: Int = 0,
+        override val spans: MutableList<TextSpan> = ArrayList(),
+    ) : Block(), TextLine
     /**
      * Картинка. width/height — размер файла в пикселях.
      * wf — ширина на листе в долях ширины текста (0 — как вставлена: не шире 560 dp);
@@ -156,6 +169,15 @@ class Note(
     /** Закреплена — стоит в списке сверху (0.28). */
     var pinned: Boolean = false
 
+    /** Разлиновка листа (0.30): [NotePaper.LINES] — в линейку (как было), [NotePaper.GRID] — в клетку, [NotePaper.NONE] — без. */
+    var paper: String = NotePaper.LINES
+
+    /**
+     * Раскладка листа, по которой лежат рисунки (0.30): 1 — до 0.30 (название и дата другой высоты, строки не по клеткам) —
+     * при первом открытии рисунки сдвигаются вслед за своими строками ([NoteActivity]); 2 — лист по клеткам.
+     */
+    var layoutV: Int = 2
+
     /** Весь текст заметки одной строкой — для поиска. */
     val searchText: String
         get() = buildString {
@@ -182,7 +204,7 @@ class Note(
 
     fun toJson(): JSONObject {
         val o = JSONObject()
-        o.put("v", 1)
+        o.put("v", layoutV)
         o.put("id", id)
         o.put("title", title)
         o.put("created", created)
@@ -191,12 +213,13 @@ class Note(
         o.put("caretOff", caretOffset)
         if (folder.isNotEmpty()) o.put("folder", folder)
         if (pinned) o.put("pinned", true)
+        if (paper != NotePaper.LINES) o.put("paper", paper)
         val bl = JSONArray()
         for (b in blocks) {
             val j = JSONObject()
             when (b) {
-                is Block.Para -> { j.put("t", "p"); j.put("text", b.text) }
-                is Block.Task -> { j.put("t", "task"); j.put("text", b.text); j.put("done", b.done) }
+                is Block.Para -> { j.put("t", "p"); j.put("text", b.text); if (b.style.isNotEmpty()) j.put("st", b.style); lineJson(j, b) }
+                is Block.Task -> { j.put("t", "task"); j.put("text", b.text); j.put("done", b.done); lineJson(j, b) }
                 is Block.Image -> {
                     j.put("t", "img"); j.put("file", b.file); j.put("w", b.width); j.put("h", b.height)
                     if (b.wf > 0f) j.put("wf", b.wf.toDouble())
@@ -229,18 +252,26 @@ class Note(
      */
     fun toJsonString(): String {
         val sb = StringBuilder(4096 + drawings.size * 400)
-        sb.append("{\"v\":1,\"id\":").append(JSONObject.quote(id))
+        sb.append("{\"v\":").append(layoutV).append(",\"id\":").append(JSONObject.quote(id))
         sb.append(",\"title\":").append(JSONObject.quote(title))
         sb.append(",\"created\":").append(created).append(",\"updated\":").append(updated)
         sb.append(",\"caret\":").append(caret).append(",\"caretOff\":").append(caretOffset)
         if (folder.isNotEmpty()) sb.append(",\"folder\":").append(JSONObject.quote(folder))
         if (pinned) sb.append(",\"pinned\":true")
+        if (paper != NotePaper.LINES) sb.append(",\"paper\":").append(JSONObject.quote(paper))
         sb.append(",\"blocks\":[")
         for ((i, b) in blocks.withIndex()) {
             if (i > 0) sb.append(',')
             when (b) {
-                is Block.Para -> sb.append("{\"t\":\"p\",\"text\":").append(JSONObject.quote(b.text)).append('}')
-                is Block.Task -> sb.append("{\"t\":\"task\",\"text\":").append(JSONObject.quote(b.text)).append(",\"done\":").append(b.done).append('}')
+                is Block.Para -> {
+                    sb.append("{\"t\":\"p\",\"text\":").append(JSONObject.quote(b.text))
+                    if (b.style.isNotEmpty()) sb.append(",\"st\":").append(JSONObject.quote(b.style))
+                    lineJson(sb, b); sb.append('}')
+                }
+                is Block.Task -> {
+                    sb.append("{\"t\":\"task\",\"text\":").append(JSONObject.quote(b.text)).append(",\"done\":").append(b.done)
+                    lineJson(sb, b); sb.append('}')
+                }
                 is Block.Image -> {
                     sb.append("{\"t\":\"img\",\"file\":").append(JSONObject.quote(b.file)).append(",\"w\":").append(b.width).append(",\"h\":").append(b.height)
                     if (b.wf > 0f) sb.append(",\"wf\":").append(b.wf.toDouble())
@@ -258,6 +289,17 @@ class Note(
         return sb.toString()
     }
 
+    /** Отступ и оформление строки — в JSON только если есть (строка без них — как до 0.30). */
+    private fun lineJson(j: JSONObject, l: TextLine) {
+        if (l.indent > 0) j.put("in", l.indent)
+        if (l.spans.isNotEmpty()) j.put("sp", Rich.jsonArray(l.spans))
+    }
+
+    private fun lineJson(sb: StringBuilder, l: TextLine) {
+        if (l.indent > 0) sb.append(",\"in\":").append(l.indent)
+        if (l.spans.isNotEmpty()) { sb.append(",\"sp\":"); Rich.json(sb, l.spans) }
+    }
+
     companion object {
         fun create(title: String): Note {
             val now = System.currentTimeMillis()
@@ -269,13 +311,18 @@ class Note(
             val bl = o.optJSONArray("blocks") ?: JSONArray()
             for (i in 0 until bl.length()) {
                 val j = bl.getJSONObject(i)
+                val text = j.optString("text")
+                val indent = j.optInt("in").coerceIn(0, ParaStyle.MAX_INDENT)
                 when (j.optString("t")) {
-                    "task" -> blocks += Block.Task(j.optString("text"), j.optBoolean("done"))
+                    "task" -> blocks += Block.Task(text, j.optBoolean("done"), indent, Rich.parse(j.optJSONArray("sp"), text.length))
                     "img" -> blocks += Block.Image(
                         j.optString("file"), j.optInt("w"), j.optInt("h"),
                         j.optDouble("wf", 0.0).toFloat(), j.optDouble("xa", 0.0).toFloat(),
                     )
-                    else -> blocks += Block.Para(j.optString("text"))
+                    else -> blocks += Block.Para(
+                        text, j.optString("st").takeIf { it in ParaStyle.ALL } ?: ParaStyle.BODY, indent,
+                        Rich.parse(j.optJSONArray("sp"), text.length),
+                    )
                 }
             }
             if (blocks.isEmpty()) blocks += Block.Para("")
@@ -301,9 +348,27 @@ class Note(
                 caretOffset = o.optInt("caretOff", -1)
                 folder = o.optString("folder")
                 pinned = o.optBoolean("pinned")
+                paper = o.optString("paper", NotePaper.LINES).takeIf { it in NotePaper.ALL } ?: NotePaper.LINES
+                layoutV = o.optInt("v", 1)
             }
         }
     }
+}
+
+/** Разлиновка листа заметки (0.30): шаг линейки и клетки — строка текста. */
+object NotePaper {
+    const val NONE = "none"
+    const val LINES = "lines"
+    const val GRID = "grid"
+    val ALL = listOf(NONE, LINES, GRID)
+
+    /** Для новых заметок («Для всех новых заметок» в окне «Разлиновка»); пока не выбирали — в линейку, как было. */
+    fun default(ctx: Context): String =
+        ctx.getSharedPreferences("notes", Context.MODE_PRIVATE).getString("paper", LINES)?.takeIf { it in ALL } ?: LINES
+
+    fun setDefault(ctx: Context, p: String) = ctx.getSharedPreferences("notes", Context.MODE_PRIVATE).edit().putString("paper", p).apply()
+
+    fun label(p: String) = when (p) { NONE -> "Без разметки"; GRID -> "В клетку"; else -> "В линейку" }
 }
 
 /** Хранение записей: по файлу JSON на запись, картинки — отдельными файлами. */
