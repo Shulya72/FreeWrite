@@ -218,10 +218,12 @@ class TableDraw {
         val widths = FloatArray(cols.size)
         for ((ci, c) in cols.withIndex()) {
             var w = tw(c.title(), HEAD_FONT, true) + 2 * PAD
-            if (c.isStatus) {
+            if (c.isStatus || c.isList) {
                 val seen = HashSet<String>()
                 for (r in allRowsList) { val n = IdTables.cellText(b, r, c.k); if (seen.add(n)) w = max(w, tw(n, FONT, true) + 22f + 2 * PAD) }
                 w = min(max(w, if (c.k == TableCol.IGS) 120f else 70f), 300f)
+            } else if (c.isMark) {
+                w = max(w, 44f)
             } else {
                 if (c.isDate) w = max(w, tw("00.00.00", FONT, false) + 2 * PAD)
                 else if (c.isVol) for (r in allRowsList) w = max(w, tw(IdTables.cellText(b, r, c.k), FONT, false) + 2 * PAD + 4f)
@@ -710,6 +712,32 @@ class TableDraw {
 
     private fun cell(canvas: Canvas, b: Board, r: BoardRec, c: TableCol, cx: Float, ry: Float, cw: Float, k: Float) {
         val cy = ry + ROW_H / 2f * k
+        // Свои столбцы (0.30.1): отметка — зелёная ✓, список — «таблетка» цвета варианта.
+        if (c.isMark) {
+            if (r.get(c.k).isBlank()) return
+            text.textSize = (FONT + 3f) * k; text.isFakeBoldText = true; text.color = Ui.OK
+            canvas.drawText(TableCol.CHECK, cx + PAD * k + 4f * k, cy + text.textSize * 0.36f, text)
+            text.isFakeBoldText = false
+            return
+        }
+        if (c.isList) {
+            val v = r.get(c.k)
+            if (v.isBlank()) return
+            val col = c.optColor(v)
+            text.textSize = FONT * k
+            text.isFakeBoldText = true
+            val name = fit(v, cw - 2 * PAD * k - 22f * k)
+            val pw = text.measureText(name) + 22f * k
+            rect.set(cx + PAD * k, ry + 4.5f * k, cx + PAD * k + pw, ry + (ROW_H - 4.5f) * k)
+            fill.color = Board.statusBg(col)
+            canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, fill)
+            line.color = Board.statusFg(col); line.strokeWidth = 1.2f * k
+            canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, line)
+            text.color = Board.statusFg(col)
+            canvas.drawText(name, cx + (PAD + 11f) * k, cy + text.textSize * 0.36f, text)
+            text.isFakeBoldText = false
+            return
+        }
         if (c.isStatus) {
             val st = IdTables.status(b, IdTables.groupOf(c.k), r.get(c.k))
             text.textSize = FONT * k
@@ -836,7 +864,21 @@ class TableDraw {
             val ry = top + (VOL_HEAD + VOLP_HEAD + wi * VOLP_ROW) * k
             line.color = Color.rgb(227, 232, 239); line.strokeWidth = 1f * k
             canvas.drawLine(x0 + 10f * k, ry, x0 + w - 10f * k, ry, line)
-            txt(wk, L + 6f * k, ry + 26f * k, 15f, Ui.INK, bold = true)
+            // Длинный вид работ («Монтаж трубопровода», «Устройство защитного слоя») — в две строки, на цифры не наезжает.
+            text.textSize = 15f * k; text.isFakeBoldText = true
+            val maxW = (VOLP_WORK - 26f) * k
+            val lines = ArrayList<String>()
+            var cur = ""
+            for (word in wk.split(' ').filter { it.isNotEmpty() }) {
+                val tryS = if (cur.isEmpty()) word else "$cur $word"
+                if (cur.isEmpty() || text.measureText(tryS) <= maxW) cur = tryS else { lines += cur; cur = word }
+            }
+            if (cur.isNotEmpty()) lines += cur
+            val shown = if (lines.size <= 2) lines else listOf(lines[0], lines.drop(1).joinToString(" "))
+            for ((li, ln) in shown.withIndex()) {
+                text.textSize = 15f * k; text.isFakeBoldText = true
+                txt(fit(ln, maxW), L + 6f * k, ry + (26f + li * 18f) * k, 15f, Ui.INK, bold = true)
+            }
             var sumF = 0.0; var sumP = 0.0; var allP = true; var unit = ""
             for ((pi, p) in parts.withIndex()) {
                 val v = vol.firstOrNull { IdTables.norm(it.work) == IdTables.norm(wk) && it.part == p.key } ?: continue

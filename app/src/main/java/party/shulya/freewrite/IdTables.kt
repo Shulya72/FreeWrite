@@ -51,7 +51,15 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
      */
     var kind = ""
 
-    fun kindDef(): TableKinds.Kind? = TableKinds.of(kind) ?: if (kind.isEmpty()) TableKinds.LEGACY else null
+    /**
+     * Свой вид (0.30.1, «Редактор таблиц»): у таблицы из своего шаблона ([TableKinds.isUser]) — его устройство целиком (название,
+     * раздел проводника, части объёма, виды работ), в JSON таблицы `kd`. Таблица несёт свой вид с собой — у коллег и на сайте
+     * она такая же, даже без шаблона.
+     */
+    var ownKind: TableKinds.Kind? = null
+
+    fun kindDef(): TableKinds.Kind? =
+        if (TableKinds.isUser(kind)) ownKind else TableKinds.of(kind) ?: if (kind.isEmpty()) TableKinds.LEGACY else null
 
     /** Части «Объёма по схеме» (пусто — один объём). */
     fun parts(): List<TableKinds.Part> = kindDef()?.parts ?: emptyList()
@@ -72,7 +80,8 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
         val out = ArrayList<TableCol>(cols.size + parts.size)
         for (c in cols) {
             if (c.k != TableCol.VOL) { out += c; continue }
-            for (p in parts) if (cols.none { it.k == TableKinds.col(p.key) }) out += TableCol(TableKinds.col(p.key), hidden = c.hidden)
+            for (p in parts) if (cols.none { it.k == TableKinds.col(p.key) })
+                out += TableCol(TableKinds.col(p.key), name = if (TableKinds.isUser(kind)) p.name else "", hidden = c.hidden)
         }
         return out
     }
@@ -96,21 +105,47 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
  */
 class VolPlan(var work: String, var value: String, var unit: String, var part: String = "")
 
-/** Столбец таблицы: встроенный ([TableCol.ZAH]…) или свой текстовый (ключ «c…»). name — своё название (пусто — обычное). */
-class TableCol(val k: String, var name: String = "", var hidden: Boolean = false) {
-    val custom: Boolean get() = k.startsWith("c")
+/** Вариант своего столбца-списка (0.30.1): название и цвет «таблетки». */
+class ColOpt(var name: String, var color: Int) {
+    fun copy() = ColOpt(name, color)
+}
+
+/**
+ * Столбец таблицы: встроенный ([TableCol.ZAH]…) или свой (ключ «c…»). name — своё название (пусто — обычное). У своего с
+ * 0.30.1 — вид ([type]: текст, [NUM] число, [DATEC] дата, [MARK] отметка ✓, [LIST] список вариантов [opts] с цветом).
+ */
+class TableCol(val k: String, var name: String = "", var hidden: Boolean = false, var type: String = "",
+               val opts: MutableList<ColOpt> = ArrayList()) {
+    /** Свой столбец (ключ «c…» из [newCustomKey]; «con» и «ck» — встроенные, хоть и на ту же букву). */
+    val custom: Boolean get() = isCustomKey(k)
     val isStatus: Boolean get() = k == IGS || k == CK || k == DWG
-    val isDate: Boolean get() = k == DATE || k == DCUST || k == DPTO
+    val isDate: Boolean get() = k == DATE || k == DCUST || k == DPTO || (custom && type == DATEC)
     val isVol: Boolean get() = k == VOL || k.startsWith("$VOL.")
+    val isMark: Boolean get() = custom && type == MARK
+    val isList: Boolean get() = custom && type == LIST
+    val isNum: Boolean get() = custom && type == NUM
     /** Часть объёма этого столбца (0.24; null — не часть). */
     val part: String? get() = TableKinds.partOf(k)
 
     fun title(): String = name.ifEmpty { defaultName(k) }
     /** Название для списков и Excel: у части объёма — «Объём · Стены». */
     fun longTitle(): String = if (part != null) "Объём · " + title() else title()
-    fun copy() = TableCol(k, name, hidden)
+    fun copy() = TableCol(k, name, hidden, type, opts.mapTo(ArrayList()) { it.copy() })
+
+    /** Цвет варианта списка (нет такого — серый). */
+    fun optColor(v: String): Int = opts.firstOrNull { it.name == v }?.color ?: Color.rgb(140, 150, 160)
 
     companion object {
+        /** Виды своих столбцов (0.30.1): "" — текст. */
+        const val NUM = "num"
+        const val DATEC = "date"
+        const val MARK = "mark"
+        const val LIST = "list"
+        val TYPES = listOf("", NUM, DATEC, MARK, LIST)
+        fun typeName(t: String) = when (t) { NUM -> "Число"; DATEC -> "Дата"; MARK -> "Отметка ✓"; LIST -> "Список"; else -> "Текст" }
+        /** Отметка в ячейке. */
+        const val CHECK = "✓"
+
         /** Участок (0.22.1, Владимир: «шифр КЖ8, участок LM1, LM2…, захватка — этаж»): перед захваткой. */
         const val UCH = "uch"
         const val ZAH = "zah"
@@ -153,9 +188,14 @@ class TableCol(val k: String, var name: String = "", var hidden: Boolean = false
         /** Столбцы по умолчанию для таблицы (у вида — свои скрытые: «Тип конструкции»). */
         fun defaultsFor(t: BoardTable): List<TableCol> {
             val hidden = t.kindDef()?.hidden ?: emptySet()
-            return orderFor(t).map { TableCol(it, hidden = it in hidden) }
+            val user = TableKinds.isUser(t.kind)
+            return orderFor(t).map { k ->
+                TableCol(k, name = if (user) TableKinds.partOf(k)?.let { p -> t.parts().firstOrNull { it.key == p }?.name }.orEmpty() else "",
+                    hidden = k in hidden)
+            }
         }
         fun newCustomKey(): String = "c" + Ids.next().take(6)
+        fun isCustomKey(k: String) = k.startsWith("c") && k !in ORDER
     }
 }
 
@@ -369,13 +409,11 @@ object IdTables {
             sb.append(",\"cols\":[")
             for ((i, c) in t.cols.withIndex()) {
                 if (i > 0) sb.append(',')
-                sb.append("{\"k\":").append(JSONObject.quote(c.k))
-                if (c.name.isNotEmpty()) sb.append(",\"n\":").append(JSONObject.quote(c.name))
-                if (c.hidden) sb.append(",\"h\":1")
-                sb.append('}')
+                colJson(sb, c)
             }
             sb.append(']')
         }
+        t.ownKind?.takeIf { TableKinds.isUser(t.kind) }?.let { sb.append(",\"kd\":"); TableKinds.kindJson(sb, it) }
         if (t.plan.isNotEmpty()) {
             sb.append(",\"plan\":[")
             for ((i, p) in t.plan.values.withIndex()) {
@@ -395,11 +433,32 @@ object IdTables {
         return sb.toString()
     }
 
+    /** Столбец в JSON: ключ, своё название, скрыт; у своего — вид и варианты (только если есть: старые таблицы — как были). */
+    fun colJson(sb: StringBuilder, c: TableCol) {
+        sb.append("{\"k\":").append(JSONObject.quote(c.k))
+        if (c.name.isNotEmpty()) sb.append(",\"n\":").append(JSONObject.quote(c.name))
+        if (c.hidden) sb.append(",\"h\":1")
+        if (c.custom && c.type.isNotEmpty()) sb.append(",\"ty\":").append(JSONObject.quote(c.type))
+        if (c.custom && c.opts.isNotEmpty()) {
+            sb.append(",\"op\":[")
+            for ((i, o) in c.opts.withIndex()) { if (i > 0) sb.append(','); sb.append('[').append(JSONObject.quote(o.name)).append(',').append(o.color).append(']') }
+            sb.append(']')
+        }
+        sb.append('}')
+    }
+
+    fun parseCol(c: JSONObject, k: String = c.optString("k")): TableCol {
+        val col = TableCol(k, c.optString("n"), c.optInt("h") == 1, c.optString("ty").takeIf { it in TableCol.TYPES }.orEmpty())
+        c.optJSONArray("op")?.let { a -> for (i in 0 until a.length()) a.optJSONArray(i)?.let { o -> col.opts += ColOpt(o.optString(0), o.optInt(1)) } }
+        return col
+    }
+
     fun parseTable(j: JSONObject): BoardTable {
         val t = BoardTable(j.optDouble("x").toFloat(), j.optDouble("y").toFloat(),
             j.optDouble("scale", 1.0).toFloat().takeIf { it > 0f && it.isFinite() } ?: 1f, j.optString("title"))
         t.id = j.optString("id", "")
         t.kind = j.optString("kind")
+        if (TableKinds.isUser(t.kind)) t.ownKind = j.optJSONObject("kd")?.let { TableKinds.parseKind(t.kind, it) }
         val order = TableCol.orderFor(t)
         j.optJSONArray("cols")?.let { a ->
             val seen = HashSet<String>()
@@ -407,8 +466,8 @@ object IdTables {
                 val c = a.optJSONObject(i) ?: continue
                 val k = c.optString("k")
                 // «Объём по схеме» в списке таблицы с частями (список до 0.24) остаётся: части встают на его место при показе.
-                if (k.isEmpty() || !seen.add(k) || !(k in order || k == TableCol.VOL || (k.startsWith("c") && TableKinds.partOf(k) == null))) continue
-                t.cols += TableCol(k, c.optString("n"), c.optInt("h") == 1)
+                if (k.isEmpty() || !seen.add(k) || !(k in order || k == TableCol.VOL || (TableCol.isCustomKey(k) && TableKinds.partOf(k) == null))) continue
+                t.cols += parseCol(c, k)
             }
             // Встроенный столбец, которого нет в списке (список из прошлой версии), — после соседа слева по обычному порядку.
             if (t.cols.isNotEmpty()) for ((oi, k) in order.withIndex()) if (k !in seen && !(TableKinds.partOf(k) != null && TableCol.VOL in seen)) {
@@ -500,7 +559,7 @@ object IdTables {
 
     /** Ключ значения ячейки для отбора: статус — его номер, дата — «2026-11-16», объём — число, текст — без регистра. */
     fun filterKey(b: Board, r: BoardRec, col: String): String {
-        val c = TableCol(col)
+        val c = if (TableCol.isCustomKey(col)) tableOf(b, r)?.allCols()?.firstOrNull { it.k == col } ?: TableCol(col) else TableCol(col)
         val v = r.get(col).trim()
         return when {
             c.isStatus -> status(b, groupOf(col), v).id
@@ -520,21 +579,22 @@ object IdTables {
      */
     fun filterValues(b: Board, t: BoardTable, col: String): List<FilterValue> {
         val f = t.filter
-        val c = TableCol(col)
+        val c = t.allCols().firstOrNull { it.k == col } ?: TableCol(col)
         val counts = LinkedHashMap<String, Int>()
         val labels = HashMap<String, String>()
         for (r in allRows(b, t)) {
             if (f != null && !f.matches(b, r, except = col)) continue
             val k = filterKey(b, r, col)
             counts[k] = (counts[k] ?: 0) + 1
-            if (k !in labels) labels[k] = filterLabel(b, col, k, r.get(col).trim())
+            if (k !in labels) labels[k] = filterLabel(b, col, k, r.get(col).trim(), c)
         }
         // Отобранные значения, которых сейчас нет (строку поменяли) — тоже в списке, чтобы их можно было снять.
-        f?.cols?.get(col)?.forEach { k -> if (k !in counts) { counts[k] = 0; labels[k] = filterLabel(b, col, k, k) } }
+        f?.cols?.get(col)?.forEach { k -> if (k !in counts) { counts[k] = 0; labels[k] = filterLabel(b, col, k, k, c) } }
         val order: Comparator<String> = when {
             c.isStatus -> { val ids = b.statuses(groupOf(col)).map { it.id }; compareBy { k -> ids.indexOf(k).let { if (it < 0) Int.MAX_VALUE else it } } }
             c.isDate -> compareBy { it }
-            c.isVol -> compareBy { volNum(it) }
+            c.isVol || c.isNum -> compareBy { volNum(it) }
+            c.isList -> { val names = c.opts.map { it.name.lowercase(Locale.ROOT) }; compareBy { k -> names.indexOf(k).let { if (it < 0) Int.MAX_VALUE else it } } }
             else -> Comparator { p, q -> naturalCompare(labels[p]!!, labels[q]!!) }
         }
         return counts.keys.sortedWith(Comparator<String> { p, q -> if (p.isEmpty() != q.isEmpty()) (if (p.isEmpty()) 1 else -1) else 0 }.then(order))
@@ -542,9 +602,10 @@ object IdTables {
     }
 
     /** Как показать значение в окне отбора ([raw] — как написано в ячейке). */
-    fun filterLabel(b: Board, col: String, key: String, raw: String): String {
+    fun filterLabel(b: Board, col: String, key: String, raw: String, def: TableCol? = null): String {
         if (key.isEmpty()) return EMPTY_LABEL
-        val c = TableCol(col)
+        val c = def ?: TableCol(col)
+        if (c.isMark) return TableCol.CHECK
         return when {
             c.isStatus -> status(b, groupOf(col), key).name
             c.isDate -> dateShort(key)
@@ -718,7 +779,17 @@ object IdTables {
         TableCol.DATE, TableCol.DCUST, TableCol.DPTO -> dateShort(r.get(k))
         TableCol.VOL -> if (r.vol.isEmpty() || tableOf(b, r)?.parts()?.isNotEmpty() == true) "" else volText(r.vol) + tableOf(b, r)?.let { t -> unitFor(t, r.work).let { u -> if (u.isEmpty()) "" else " $u" } }.orEmpty()
         else -> if (TableKinds.partOf(k) != null) r.get(k).let { v -> if (v.isEmpty()) "" else volText(v) + tableOf(b, r)?.let { t -> unitFor(t, r.work).let { u -> if (u.isEmpty()) "" else " $u" } }.orEmpty() }
+            else if (TableCol.isCustomKey(k)) customText(tableOf(b, r)?.allCols()?.firstOrNull { it.k == k }, r.get(k))
             else r.get(k)
+    }
+
+    /** Текст своего столбца (0.30.1): дата — «20.11.26», отметка — «✓», число — с запятой. */
+    fun customText(c: TableCol?, v: String): String = when {
+        v.isEmpty() || c == null -> v
+        c.type == TableCol.DATEC -> dateShort(v)
+        c.type == TableCol.MARK -> TableCol.CHECK
+        c.type == TableCol.NUM -> v.replace('.', ',')
+        else -> v
     }
 
     // ---------------------------------------------------------------- захватки на плане (0.22)
@@ -787,8 +858,12 @@ object IdTables {
         return when {
             "опалуб" in w -> "м²"
             "армир" in w || "арматур" in w -> "т"
+            // Сети (0.30.1): трубопровод и лотки — метрами, колодцы — штуками, основание и защитный слой — кубами.
+            "трубопровод" in w || "труб" in w || "лотк" in w || "лоток" in w || "кабел" in w -> "м"
+            "колодц" in w || "колодез" in w -> "шт"
             "монтаж" in w -> "шт"
-            "бетон" in w || "засыпк" in w || "разработ" in w || "кладк" in w || "грунт" in w -> "м³"
+            "бетон" in w || "засыпк" in w || "разработ" in w || "кладк" in w || "грунт" in w || "песчан" in w || "основани" in w ||
+                "защитн" in w || "щеб" in w -> "м³"
             else -> ""
         }
     }

@@ -219,6 +219,23 @@ def demo(key):
                         rec["v"] = "%.1f" % ((6.5 if con == "Марш" else 4.2) if w == "Опалубка" else (2.1 if con == "Марш" else 1.4))
                     items.append((rid, "rec", json.dumps(rec, ensure_ascii=False)))
                     o2 += 1
+    # Своя таблица (0.30.1, «Редактор таблиц»): «Наружные сети К1» — вид в самой таблице (kd), свои столбцы: PDF — список, Акт — отметка.
+    items.append(("tu1", "table", json.dumps({"id": "tu1", "x": 100, "y": 7600, "scale": 1.6, "title": "НВК 3.1", "kind": "u:demo0001",
+        "kd": {"n": "Наружные сети К1", "s": "Сети", "p": [["qtr001", "Труба"], ["qkl001", "Колодцы"]],
+               "w": ["Разработка", "Песчаное основание", "Монтаж трубопровода", "Монтаж колодцев"]},
+        "cols": [{"k": "aosr"}, {"k": "nsch", "h": 1}, {"k": "uch", "n": "Месяц"}, {"k": "zah", "n": "Участок"}, {"k": "con", "h": 1}, {"k": "work"},
+                 {"k": "vol"}, {"k": "cpdf01", "n": "PDF", "ty": "list", "op": [["Нет", argb(190, 42, 42)], ["Есть", argb(214, 150, 20)], ["Проверен", argb(35, 128, 58)]]},
+                 {"k": "cakt01", "n": "Акт", "ty": "mark"}, {"k": "date"}, {"k": "ck"}, {"k": "dwg"}, {"k": "igs"}, {"k": "dcust", "h": 1}, {"k": "dpto", "h": 1},
+                 {"k": "who"}, {"k": "note"}]}, ensure_ascii=False)))
+    for n, (w, part, v, pdf) in enumerate([("Разработка", "qtr001", "", "Проверен"), ("Песчаное основание", "qtr001", "", "Есть"),
+                                           ("Монтаж трубопровода", "qtr001", "86.5", "Есть"), ("Монтаж колодцев", "qkl001", "3", "Нет")]):
+        rec = {"id": "ru%d" % n, "t": "tu1", "o": n + 1, "na": "АОСР НВК-%03d" % (n + 1), "u": "Ноябрь", "z": "Уч. 1", "w": w,
+               "sid": "i1", "ck": "k1", "dwg": "d1", "x": {"cpdf01": pdf}}
+        if v:
+            rec["vp"] = {part: v}
+        if n < 2:
+            rec["x"]["cakt01"] = "✓"
+        items.append(("ru%d" % n, "rec", json.dumps(rec, ensure_ascii=False)))
     items.append(("fl3", "fill", json.dumps({"id": "fl3", "pts": [1600, 400, 1900, 400, 1900, 700, 1600, 700],
                                              "color": argb(255, 152, 0), "alpha": 0.35, "lt": "tb2", "lu": "LM1", "lz": "3 этаж"},
                                             ensure_ascii=False)))
