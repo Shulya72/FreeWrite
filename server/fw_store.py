@@ -5,7 +5,10 @@ boards   — доска: ключ, название, код-приглашени
 invites  — код-приглашение → доска;
 objects  — предметы досок (доска, id) → rev, вид, данные, удалён ли, seq; индекс по (доска, seq)
            для «что нового после seq»;
-images   — готовые картинки: имя → доска, число частей, размер.
+images   — готовые картинки: имя → доска, число частей, размер;
+history  — журнал (0.28.3, Владимир: «журнал на сервере делай»): каждая версия предмета, которую заменила более поздняя
+           правка или удаление, — с тем, кто и когда её заменил. Хранится 30 дней (TTL YDB), потом удаляется сама.
+           Ключ (доска, время замены, id, rev) — свежие записи читаются подряд от конца.
 
 Ответ YDB на один запрос — не больше 1000 строк, поэтому id в запросах идут пачками по 500,
 а pull отдаёт не больше 500 предметов за раз.
@@ -18,6 +21,7 @@ import ydb.iam
 import ydb.retries
 
 from fw_errors import ApiError, busy, forbidden, not_found
+from fw_journal import history_rows
 
 TABLES = [
     ("boards", """
@@ -51,6 +55,17 @@ TABLES = [
         )"""),
 ]
 
+# Журнал — отдельно от TABLES: если YDB не создаст его, сервер работает дальше, просто без журнала.
+HISTORY_DAYS = 30
+HISTORY_DDL = """
+    CREATE TABLE history (
+        board_id Utf8, at Uint64, id Utf8, rev Utf8,
+        kind Utf8, body Utf8, device Utf8, author Utf8,
+        by_rev Utf8, by_device Utf8, by_author Utf8, by_deleted Bool,
+        PRIMARY KEY (board_id, at, id, rev)
+    )
+    WITH (TTL = Interval("P%dD") ON at AS MILLISECONDS)""" % HISTORY_DAYS
+
 Q_BOARD = """
 DECLARE $b AS Utf8;
 SELECT board_id, secret, title, invite, seq, n_objects, owner, view_code, view_key FROM boards WHERE board_id = $b;
@@ -79,6 +94,26 @@ INSERT INTO views (code, board_id) VALUES ($c, $b);
 Q_REVS = """
 DECLARE $b AS Utf8; DECLARE $ids AS List<Utf8>;
 SELECT id, rev FROM objects WHERE board_id = $b AND id IN $ids;
+"""
+Q_OLD = """
+DECLARE $b AS Utf8; DECLARE $ids AS List<Utf8>;
+SELECT id, rev, kind, deleted, body, device, author FROM objects WHERE board_id = $b AND id IN $ids;
+"""
+Q_HISTORY_PUT = """
+DECLARE $rows AS List<Struct<board_id: Utf8, at: Uint64, id: Utf8, rev: Utf8, kind: Utf8, body: Utf8, device: Utf8,
+                             author: Utf8, by_rev: Utf8, by_device: Utf8, by_author: Utf8, by_deleted: Bool>>;
+UPSERT INTO history SELECT * FROM AS_TABLE($rows);
+"""
+Q_HISTORY = """
+DECLARE $b AS Utf8; DECLARE $before AS Uint64; DECLARE $skip AS List<Utf8>; DECLARE $n AS Uint64;
+SELECT at, id, rev, kind, body, device, author, by_rev, by_device, by_author, by_deleted FROM history
+WHERE board_id = $b AND at < $before AND kind NOT IN $skip
+ORDER BY at DESC, id
+LIMIT $n;
+"""
+Q_HISTORY_DELETE = """
+DECLARE $b AS Utf8;
+DELETE FROM history WHERE board_id = $b;
 """
 Q_UPSERT = """
 DECLARE $rows AS List<Struct<board_id: Utf8, id: Utf8, rev: Utf8, kind: Utf8, deleted: Bool,
@@ -157,6 +192,7 @@ class YdbStore:
                                  credentials=ydb.iam.MetadataUrlCredentials())
         self.driver.wait(fail_fast=True, timeout=10)
         self.pool = ydb.SessionPool(self.driver, size=4)
+        self.history_ok = False
         self._ensure_schema()
 
     # ------------------------------------------------------------ служебное
@@ -189,6 +225,18 @@ class YdbStore:
                     print("add column boards.%s" % col)
                     session.execute_scheme("ALTER TABLE boards ADD COLUMN %s Utf8;" % col)
         self._run(fn)
+
+        def hist(session):
+            try:
+                session.describe_table("%s/history" % self.database)
+            except (ydb.SchemeError, ydb.NotFound):
+                print("create table history")
+                session.execute_scheme(HISTORY_DDL)
+        try:
+            self._run(hist)
+            self.history_ok = True
+        except Exception as e:  # noqa: BLE001 — без журнала доска работает как раньше
+            print("history table unavailable: %s: %s" % (type(e).__name__, e))
 
     def _read(self, query: str, params: dict):
         def fn(session):
@@ -264,6 +312,8 @@ class YdbStore:
                 tx.rollback()
                 raise forbidden()
             imgs = tx.execute(session.prepare(Q_BOARD_IMAGES), {"$b": board_id})[0].rows
+            if self.history_ok:
+                tx.execute(session.prepare(Q_HISTORY_DELETE), {"$b": board_id})
             tx.execute(session.prepare(Q_DELETE), {"$b": board_id, "$invite": b["invite"]}, commit_tx=True)
             return [(r.name, r.parts) for r in imgs]
         return self._run(fn)
@@ -283,11 +333,14 @@ class YdbStore:
                 tx.rollback()
                 raise forbidden()
             cur = {}
-            q_revs = session.prepare(Q_REVS)
+            old_rows = {}
+            q_revs = session.prepare(Q_OLD if self.history_ok else Q_REVS)
             ids = [c["id"] for c in changes]
             for i in range(0, len(ids), 500):
                 for r in tx.execute(q_revs, {"$b": board_id, "$ids": ids[i:i + 500]})[0].rows:
                     cur[r.id] = r.rev
+                    if self.history_ok:
+                        old_rows[r.id] = r
             seq = b["seq"]
             count = b["n_objects"]
             out = []
@@ -310,6 +363,11 @@ class YdbStore:
             q_up = session.prepare(Q_UPSERT)
             for i in range(0, len(out), 500):
                 tx.execute(q_up, {"$rows": out[i:i + 500]})
+            hist = history_rows(board_id, now, out, old_rows)
+            if hist:
+                q_h = session.prepare(Q_HISTORY_PUT)
+                for i in range(0, len(hist), 500):
+                    tx.execute(q_h, {"$rows": hist[i:i + 500]})
             title = _title_of([c for c in changes if c["id"] in {o["id"] for o in out}])
             tx.execute(session.prepare(Q_BOARD_UPDATE), {"$b": board_id, "$seq": seq, "$n": count,
                                                          "$now": now, "$title": title}, commit_tx=True)
@@ -336,6 +394,29 @@ class YdbStore:
             out = [{"id": r.id, "rev": r.rev, "kind": r.kind or "", "deleted": bool(r.deleted),
                     "body": r.body or "", "seq": r.seq, "author": r.author or ""} for r in rs[0].rows]
             return b["seq"], b["title"], out
+        return self._run(fn)
+
+    def history(self, board_id, key, before, limit, skip):
+        """Журнал: заменённые версии предметов, от свежих к старым, время замены < before (мс)."""
+        if not self.history_ok:
+            raise ApiError(503, "no_history", "Журнал на сервере ещё не готов")
+
+        def fn(session):
+            tx = session.transaction(ydb.SnapshotReadOnly())
+            rows = tx.execute(session.prepare(Q_BOARD), {"$b": board_id})[0].rows
+            if not rows:
+                tx.commit()
+                raise not_found()
+            b = self._board_row(rows[0])
+            if not hmac.compare_digest(b["secret"].encode(), key.encode()):
+                tx.commit()
+                raise forbidden()
+            rs = tx.execute(session.prepare(Q_HISTORY), {"$b": board_id, "$before": before, "$skip": list(skip),
+                                                         "$n": limit}, commit_tx=True)
+            return [{"at": r.at, "id": r.id, "rev": r.rev, "kind": r.kind or "", "body": r.body or "",
+                     "device": r.device or "", "author": r.author or "", "by_rev": r.by_rev or "",
+                     "by_device": r.by_device or "", "by_author": r.by_author or "",
+                     "by_deleted": bool(r.by_deleted)} for r in rs[0].rows]
         return self._run(fn)
 
     # ------------------------------------------------------------ картинки

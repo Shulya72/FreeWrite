@@ -13,6 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import fw_journal  # noqa: E402
 import index as main  # noqa: E402
 from fw_errors import ApiError, forbidden, not_found  # noqa: E402
 
@@ -24,6 +25,7 @@ class MemoryStore:
         self.objects = {}  # (board, id) -> row
         self.imgs = {}
         self.views = {}
+        self.hist = []  # строки журнала, как в YDB (history)
 
     def _auth(self, board_id, key):
         b = self.boards.get(board_id)
@@ -84,8 +86,12 @@ class MemoryStore:
             out.append(dict(c, seq=seq, author=author))
         if count > max_objects:
             raise ApiError(507, "full", "full")
+        from types import SimpleNamespace
+        olds = {r["id"]: SimpleNamespace(**dict({"device": "", "author": ""}, **self.objects[(board_id, r["id"])]))
+                for r in out if (board_id, r["id"]) in self.objects}
+        self.hist += fw_journal.history_rows(board_id, now, [dict(r, device=device) for r in out], olds)
         for r in out:
-            self.objects[(board_id, r["id"])] = r
+            self.objects[(board_id, r["id"])] = dict(r, device=device)
             if r["id"] == "~title" and not r["deleted"]:
                 b["title"] = json.loads(r["body"])["title"]
         b["seq"], b["n_objects"] = seq, count
@@ -96,6 +102,12 @@ class MemoryStore:
         rows = sorted((r for (bid, _), r in self.objects.items() if bid == board_id and r["seq"] > since),
                       key=lambda r: r["seq"])[:limit]
         return b["seq"], b["title"], rows
+
+    def history(self, board_id, key, before, limit, skip):
+        self._auth(board_id, key)
+        rows = [h for h in self.hist if h["board_id"] == board_id and h["at"] < before and h["kind"] not in skip]
+        rows.sort(key=lambda h: (-h["at"], h["id"]))
+        return [dict(h) for h in rows[:limit]]
 
     def images(self, names):
         return {n: self.imgs[n] for n in names if n in self.imgs}
@@ -113,6 +125,7 @@ class MemoryStore:
             del self.imgs[n]
         for k in [k for k in self.objects if k[0] == board_id]:
             del self.objects[k]
+        self.hist = [h for h in self.hist if h["board_id"] != board_id]
         del self.invites[b["invite"]]
         if b.get("view_code"):
             del self.views[b["view_code"]]
@@ -152,6 +165,8 @@ class ApiTest(unittest.TestCase):
     def setUp(self):
         main._store = MemoryStore()
         main._blob = MemoryBlob()
+        self._now = main.now_ms
+        self.addCleanup(lambda: setattr(main, "now_ms", self._now))
 
     def call(self, op, http=True, **kw):
         req = dict(kw, op=op)
@@ -423,6 +438,65 @@ class ApiTest(unittest.TestCase):
         self.ok("delete", board=BOARD, key=key)
         status, body = self.call("view", code=code)
         self.assertEqual(404, status)
+
+    def test_history_keeps_replaced_and_deleted_versions(self):
+        """Журнал (0.28.3): прежние версии предметов — кто и когда их заменил или удалил; старая правка журнал не трогает."""
+        c = self.create(); b, key = c["board"], c["key"]
+        t1 = lambda ms, text, dev="vlad01": {"id": "v1", "rev": rev(ms, 0, dev), "k": "vedom", "d": json.dumps({"num": text})}
+        main.now_ms = lambda: 1_000
+        self.ok("push", board=b, key=key, device="vlad01", author="Владимир", changes=[t1(100, "З-14 сборка")])
+        main.now_ms = lambda: 2_000
+        self.ok("push", board=b, key=key, device="vlad01", author="Владимир", changes=[t1(200, "З-14 на подписи")])
+        main.now_ms = lambda: 2_500
+        self.ok("push", board=b, key=key, device="kolya2", author="Коля", changes=[t1(150, "старое", "kolya2")])  # старее — не принята
+        main.now_ms = lambda: 3_000
+        self.ok("push", board=b, key=key, device="phone1", author="Телефон", changes=[
+            {"id": "v1", "rev": rev(300, 0, "phone1"), "k": "vedom", "x": 1},
+            {"id": "s1", "rev": rev(300, 1, "phone1"), "k": "stroke", "d": "{}"}])
+        main.now_ms = lambda: 4_000
+        self.ok("push", board=b, key=key, device="phone1", changes=[{"id": "s1", "rev": rev(400, 0, "phone1"), "k": "stroke", "x": 1}])
+        h = self.ok("history", board=b, key=key)
+        self.assertFalse(h["more"])
+        self.assertEqual([(e["id"], e["at"]) for e in h["entries"]], [("s1", 4000), ("v1", 3000), ("v1", 2000)])
+        gone = h["entries"][1]
+        self.assertEqual(json.loads(gone["d"])["num"], "З-14 на подписи")
+        self.assertEqual((gone["bx"], gone["by"], gone["a"]), (1, "Телефон", "Владимир"))
+        changed = h["entries"][2]
+        self.assertEqual(json.loads(changed["d"])["num"], "З-14 сборка")
+        self.assertNotIn("bx", changed)
+        self.assertEqual(changed["br"], rev(200))
+        # Штрихи не нужны — не присылать.
+        h = self.ok("history", board=b, key=key, skip=["stroke"])
+        self.assertEqual([e["id"] for e in h["entries"]], ["v1", "v1"])
+        # Страницы: before.
+        h = self.ok("history", board=b, key=key, before=3000)
+        self.assertEqual([e["at"] for e in h["entries"]], [2000])
+        # Только с ключом доски.
+        code = self.ok("view_link", board=b, key=key)["code"]
+        vkey = self.ok("view", code=code)["key"]
+        status, body = self.call("history", board=b, key=vkey)
+        self.assertEqual(status, 403)
+        status, body = self.call("history", board=b, key=key, skip=["Не вид"])
+        self.assertEqual(status, 400)
+        # Доску убрали — журнал тоже.
+        self.ok("delete", board=b, key=key)
+        self.assertEqual(main._store.hist, [])
+
+    def test_history_pages_keep_one_push_together(self):
+        c = self.create(); b, key = c["board"], c["key"]
+        for k in range(3):  # три отправки по 4 правки
+            main.now_ms = lambda k=k: 10_000 + k * 1000
+            self.ok("push", board=b, key=key, changes=[
+                {"id": "r%d" % i, "rev": rev(100 + k * 10, i), "k": "rec", "d": json.dumps({"k": k})} for i in range(4)])
+        got = []
+        before = 0
+        while True:
+            h = self.ok("history", board=b, key=key, limit=6, before=before)
+            got.append([e["at"] for e in h["entries"]])
+            if not h["more"]:
+                break
+            before = h["next"]
+        self.assertEqual(got, [[12000] * 4, [11000] * 4])
 
     def test_server_error_is_short(self):
         class Broken(MemoryStore):
