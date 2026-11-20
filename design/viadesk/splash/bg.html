@@ -1,0 +1,592 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<script src="hero.js"></script><style>@font-face{font-family:VMontserrat;src:url(../../../app/src/main/res/font/montserrat_bold.ttf);font-weight:700}
+html,body{margin:0;padding:0;background:#0A2133;overflow:hidden}svg{display:block}</style>
+</head><body>
+<script>
+const P = new URLSearchParams(location.search);
+const V = P.get('v'), W = +P.get('w'), H = +P.get('h');
+const s = W / 800;
+const lw = (x) => Math.max(0.55, x * s);
+const cy = H / 2, bh = W * 406 / 1536, bt = cy - bh / 2, bb = cy + bh / 2;
+let seed = 11;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const f = (n) => (Math.round(n * 100) / 100);
+const BLUE = (a) => `rgba(110,178,235,${a})`;
+const TEAL = (a) => `rgba(8,201,181,${a})`;
+const AMBER = (a) => `rgba(255,181,46,${a})`;
+let out = [], free = [], toFree = false;
+const add = (x) => (toFree ? free : out).push(x);
+const line = (x1, y1, x2, y2, c, w, extra = '') => add(`<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${c}" stroke-width="${f(w)}" ${extra}/>`);
+const poly = (pts, attrs) => add(`<polygon points="${pts.map(p => f(p[0]) + ',' + f(p[1])).join(' ')}" ${attrs}/>`);
+const pline = (pts, attrs) => add(`<polyline points="${pts.map(p => f(p[0]) + ',' + f(p[1])).join(' ')}" fill="none" ${attrs}/>`);
+const circ = (x, y, r, attrs) => add(`<circle cx="${f(x)}" cy="${f(y)}" r="${f(r)}" ${attrs}/>`);
+const text = (x, y, t, size, c, extra = '') => add(`<text x="${f(x)}" y="${f(y)}" font-family="Inter, DejaVu Sans, sans-serif" font-size="${f(size)}" fill="${c}" text-anchor="middle" dominant-baseline="central" ${extra}>${t}</text>`);
+
+// Маска: украшения гаснут к полосе картинки посередине.
+const fadeStops = () => {
+  const p = (y) => Math.max(0, Math.min(1, y / H));
+  return `<stop offset="0" stop-color="#fff"/>
+    <stop offset="${p(bt - 0.11 * H)}" stop-color="#fff"/>
+    <stop offset="${p(bt + 0.10 * bh)}" stop-color="#000"/>
+    <stop offset="${p(bb - 0.10 * bh)}" stop-color="#000"/>
+    <stop offset="${p(bb + 0.11 * H)}" stop-color="#fff"/>
+    <stop offset="1" stop-color="#fff"/>`;
+};
+
+const defs = `
+<linearGradient id="base" x1="0" y1="0" x2="0" y2="${H}" gradientUnits="userSpaceOnUse">
+  <stop offset="0" stop-color="#051526"/><stop offset="0.5" stop-color="#0A2133"/><stop offset="1" stop-color="#04121F"/>
+</linearGradient>
+<radialGradient id="glow" cx="${W / 2}" cy="${cy}" r="${Math.max(W, H) * 0.55}" gradientUnits="userSpaceOnUse">
+  <stop offset="0" stop-color="rgba(26,104,160,0.38)"/><stop offset="0.45" stop-color="rgba(18,80,130,0.14)"/><stop offset="1" stop-color="rgba(10,40,70,0)"/>
+</radialGradient>
+<radialGradient id="vign" cx="${W / 2}" cy="${cy}" r="${Math.hypot(W, H) * 0.6}" gradientUnits="userSpaceOnUse">
+  <stop offset="0.6" stop-color="rgba(0,0,0,0)"/><stop offset="1" stop-color="rgba(0,6,14,0.55)"/>
+</radialGradient>
+<linearGradient id="fadeg" x1="0" y1="0" x2="0" y2="${H}" gradientUnits="userSpaceOnUse">${fadeStops()}</linearGradient>
+<mask id="fade" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="url(#fadeg)"/></mask>
+<filter id="gl" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${f(3.2 * s)}" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="gl2" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${f(7 * s)}" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="blurL" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${f(40 * s)}"/></filter>
+<filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${f(10 * s)}"/></filter>
+`;
+
+// ------------------------------------------------------------------ А. Чертёж
+function blueprint() {
+  const g = W / 40;
+  add(`<pattern id="grid" width="${f(g * 5)}" height="${f(g * 5)}" patternUnits="userSpaceOnUse" x="${f((W % (g * 5)) / 2)}" y="${f(cy % (g * 5))}">
+    <path d="${[1, 2, 3, 4].map(i => `M${f(i * g)} 0V${f(g * 5)}M0 ${f(i * g)}H${f(g * 5)}`).join('')}" stroke="${BLUE(0.06)}" stroke-width="${lw(0.7)}"/>
+    <path d="M0 0V${f(g * 5)}M0 0H${f(g * 5)}" stroke="${BLUE(0.12)}" stroke-width="${lw(0.9)}"/></pattern>`);
+  toFree = true;
+  add(`<rect width="${W}" height="${H}" fill="url(#grid)"/>`);
+  if (P.get('ext')) extend();
+  toFree = false;
+  // Рамка листа и штамп.
+  const m = 14 * s;
+  add(`<rect x="${f(m)}" y="${f(m)}" width="${f(W - 2 * m)}" height="${f(H - 2 * m)}" fill="none" stroke="${BLUE(0.22)}" stroke-width="${lw(1)}"/>`);
+  const tw = 190 * s, th = 58 * s, tx = W - m - tw, ty = H - m - th;
+  add(`<rect x="${f(tx)}" y="${f(ty)}" width="${f(tw)}" height="${f(th)}" fill="rgba(8,30,50,0.5)" stroke="${BLUE(0.3)}" stroke-width="${lw(1)}"/>`);
+  line(tx, ty + th * 0.45, tx + tw, ty + th * 0.45, BLUE(0.25), lw(0.8));
+  line(tx + tw * 0.62, ty, tx + tw * 0.62, ty + th, BLUE(0.25), lw(0.8));
+  line(tx + tw * 0.62, ty + th * 0.72, tx + tw, ty + th * 0.72, BLUE(0.2), lw(0.7));
+  text(tx + tw * 0.31, ty + th * 0.24, 'ViaDesk', 11 * s, BLUE(0.55), 'font-weight="600"');
+  text(tx + tw * 0.31, ty + th * 0.72, 'План этажа · захватки', 7.2 * s, BLUE(0.4));
+  text(tx + tw * 0.81, ty + th * 0.24, 'Лист', 7 * s, BLUE(0.4));
+  text(tx + tw * 0.81, ty + th * 0.6, '1', 9 * s, BLUE(0.5));
+
+  // План сверху.
+  const x0 = 0.11 * W, x1 = 0.89 * W, y0 = 0.085 * H + 34 * s, y1 = bt - 0.075 * H;
+  plan(x0, y0, x1 - x0, y1 - y0);
+  // Плита снизу с захватками.
+  slab(0.11 * W, bb + 0.085 * H, 0.78 * W, H - (bb + 0.085 * H) - 0.12 * H);
+}
+
+function extend() {
+  // Волны: от левого края снизу — вверх вправо, за знаком (как волны на самой картинке, но сплошные).
+  add(`<linearGradient id="wf" x1="0" y1="${f(bb + 0.07 * H)}" x2="${f(0.34 * W)}" y2="${f(bt - 0.06 * H)}" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#4F95D8" stop-opacity="0"/><stop offset="0.18" stop-color="#4F95D8" stop-opacity="0.55"/>
+    <stop offset="0.55" stop-color="#2BB3C9" stop-opacity="0.45"/><stop offset="1" stop-color="#08C9B5" stop-opacity="0"/></linearGradient>`);
+  const em = [[118, 92], [330, 78], [600, 60], [612, 190], [470, 362], [250, 368], [110, 140]]
+    .map(([x, y]) => [x * W / 1536, bt + y * bh / 406]);
+  add(`<filter id="mb" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="${f(9 * s)}"/></filter>
+    <mask id="wm" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="#fff"/>
+    <polygon points="${em.map(p => f(p[0]) + ',' + f(p[1])).join(' ')}" fill="#000" filter="url(#mb)"/></mask><g mask="url(#wm)">`);
+  for (let k = 0; k < 15; k++) {
+    const pts = [];
+    for (let t = 0; t <= 1.0001; t += 0.02) {
+      const x = -0.04 * W + t * 0.40 * W + k * 5.5 * s;
+      const y = bb + 0.07 * H - t * (bb - bt + 0.13 * H) + k * 7.5 * s
+        + 18 * s * Math.sin(t * 5.3 + k * 0.22) + 7 * s * Math.sin(t * 13 - k * 0.4);
+      pts.push([x, y]);
+    }
+    pline(pts, `stroke="url(#wf)" stroke-width="${lw(k % 4 === 0 ? 1.15 : 0.75)}" stroke-opacity="${f(0.55 + 0.45 * Math.sin(k * 0.7) ** 2)}"`);
+  }
+  add(`</g>`);
+  // Земля под домом: линии уходят от основания дома вправо-вниз и влево, гаснут.
+  const gy = bt + 0.855 * bh, gx = 0.80 * W;
+  add(`<radialGradient id="gr" cx="${f(0.93 * W)}" cy="${f(gy)}" r="${f(0.33 * W)}" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#5A9AD8" stop-opacity="0.55"/><stop offset="0.6" stop-color="#3D7FC0" stop-opacity="0.22"/>
+    <stop offset="1" stop-color="#3D7FC0" stop-opacity="0"/></radialGradient>`);
+  add(`<ellipse cx="${f(0.92 * W)}" cy="${f(gy)}" rx="${f(0.26 * W)}" ry="${f(0.025 * H)}" fill="rgba(60,130,200,0.10)" filter="url(#blur)"/>`);
+  for (let k = 0; k < 9; k++) {   // пологие линии рельефа под домом
+    const pts = [];
+    for (let x = 0.56 * W; x <= W + 4 * s; x += 6 * s) {
+      const u = (x - 0.56 * W) / (0.44 * W);
+      pts.push([x, gy + k * k * 2.6 * s + 6 * s * k - 26 * s * (1 - u) * (1 - u) * (k / 8) + 4 * s * Math.sin(u * 7 + k)]);
+    }
+    pline(pts, `stroke="url(#gr)" stroke-width="${lw(k === 0 ? 1.2 : 0.8)}"`);
+  }
+  for (let i = -3; i <= 6; i++) {   // перспектива от основания дома
+    const x0 = gx + i * 0.035 * W;
+    line(x0, gy, x0 + i * 0.04 * W - 0.07 * W, gy + 0.05 * H, 'url(#gr)', lw(0.8));
+  }
+}
+
+function axes(x0, y0, w, h, us, vs, labU, labV) {
+  const ax = BLUE(0.2), r = 9 * s;
+  for (let i = 0; i < us.length; i++) {
+    const x = x0 + us[i] * w;
+    line(x, y0 - 24 * s, x, y0 + h + 14 * s, ax, lw(0.8), `stroke-dasharray="${f(14 * s)} ${f(3 * s)} ${f(2 * s)} ${f(3 * s)}"`);
+    circ(x, y0 - 24 * s - r, r, `fill="none" stroke="${BLUE(0.38)}" stroke-width="${lw(0.9)}"`);
+    text(x, y0 - 24 * s - r, labU[i], 9 * s, BLUE(0.55));
+  }
+  for (let i = 0; i < vs.length; i++) {
+    const y = y0 + vs[i] * h;
+    line(x0 - 24 * s, y, x0 + w + 14 * s, y, ax, lw(0.8), `stroke-dasharray="${f(14 * s)} ${f(3 * s)} ${f(2 * s)} ${f(3 * s)}"`);
+    circ(x0 - 24 * s - r, y, r, `fill="none" stroke="${BLUE(0.38)}" stroke-width="${lw(0.9)}"`);
+    text(x0 - 24 * s - r, y, labV[i], 9 * s, BLUE(0.55));
+  }
+}
+
+function plan(x0, y0, w, h) {
+  const us = [0, 0.25, 0.5, 0.75, 1], vs = [0, 0.46, 1];
+  axes(x0, y0, w, h, us, vs, ['1', '2', '3', '4', '5'], ['А', 'Б', 'В']);
+  const X = (u) => x0 + u * w, Y = (v) => y0 + v * h;
+  // Комнаты: залитые захватки.
+  const room = (u0, v0, u1, v1, fill, stroke, dots) => {
+    const p = [[X(u0), Y(v0)], [X(u1), Y(v0)], [X(u1), Y(v1)], [X(u0), Y(v1)]];
+    poly(p, `fill="${fill}" stroke="${stroke}" stroke-width="${lw(1.4)}"`);
+    if (dots) for (const q of p) circ(q[0], q[1], 3.6 * s, `fill="${AMBER(1)}" filter="url(#gl)"`);
+  };
+  room(0.5, 0, 0.75, 0.46, AMBER(0.16), AMBER(0.85), true);
+  room(0, 0.46, 0.5, 1, TEAL(0.09), TEAL(0.5), false);
+  // Стены с проёмами.
+  const wall = BLUE(0.42), t = lw(5.5);
+  const seg = (u0, v0, u1, v1) => line(X(u0), Y(v0), X(u1), Y(v1), wall, t, 'stroke-linecap="square"');
+  // Наружные: верх с окнами.
+  const win = (u0, v0, u1, v1) => { // окно: три тонкие линии
+    const dx = X(u1) - X(u0), dy = Y(v1) - Y(v0), L = Math.hypot(dx, dy), nx = -dy / L * 2.2 * s, ny = dx / L * 2.2 * s;
+    for (const k of [-1, 0, 1]) line(X(u0) + nx * k, Y(v0) + ny * k, X(u1) + nx * k, Y(v1) + ny * k, BLUE(0.45), lw(0.7));
+  };
+  const top = [[0, 0.06], [0.06, 0.18], [0.18, 0.32], [0.32, 0.44], [0.44, 0.56], [0.56, 0.69], [0.69, 0.81], [0.81, 0.94], [0.94, 1]];
+  top.forEach((q, i) => (i % 2 === 0 ? seg(q[0], 0, q[1], 0) : win(q[0], 0, q[1], 0)));
+  top.forEach((q, i) => (i % 2 === 0 ? seg(q[0], 1, q[1], 1) : win(q[0], 1, q[1], 1)));
+  seg(0, 0, 0, 0.2); win(0, 0.2, 0, 0.32); seg(0, 0.32, 0, 0.62); win(0, 0.62, 0, 0.8); seg(0, 0.8, 0, 1);
+  seg(1, 0, 1, 0.2); win(1, 0.2, 1, 0.32); seg(1, 0.32, 1, 0.62); win(1, 0.62, 1, 0.8); seg(1, 0.8, 1, 1);
+  // Внутренние и двери.
+  const door = (u, v, du, dv, rr) => { // проём и дуга двери
+    const x = X(u), y = Y(v), r = rr * w;
+    add(`<path d="M${f(x)} ${f(y)} l${f(du * r)} ${f(dv * r)} A${f(r)} ${f(r)} 0 0 ${du * dv >= 0 ? 1 : 0} ${f(x + (dv !== 0 ? Math.sign(dv) * r * (du === 0 ? 1 : 0) : 0) + (du !== 0 ? 0 : 0))} ${f(y)}" fill="none" stroke="${BLUE(0.3)}" stroke-width="${lw(0.8)}"/>`);
+  };
+  seg(0, 0.46, 0.08, 0.46); seg(0.15, 0.46, 0.33, 0.46); seg(0.4, 0.46, 0.58, 0.46); seg(0.65, 0.46, 0.83, 0.46); seg(0.9, 0.46, 1, 0.46);
+  seg(0.25, 0, 0.25, 0.46); seg(0.5, 0, 0.5, 0.46); seg(0.75, 0, 0.75, 0.46);
+  seg(0.5, 0.46, 0.5, 0.62); seg(0.5, 0.76, 0.5, 1);
+  for (const u of [0.08, 0.33, 0.58, 0.83]) {
+    const x = X(u), y = Y(0.46), r = 0.07 * w;
+    add(`<path d="M${f(x)} ${f(y)} L${f(x)} ${f(y - r)} A${f(r)} ${f(r)} 0 0 1 ${f(x + r)} ${f(y)}" fill="none" stroke="${BLUE(0.3)}" stroke-width="${lw(0.8)}"/>`);
+  }
+  { const x = X(0.5), y = Y(0.62), r = 0.14 * h;
+    add(`<path d="M${f(x)} ${f(y)} L${f(x + r)} ${f(y)} A${f(r)} ${f(r)} 0 0 1 ${f(x)} ${f(y + r)}" fill="none" stroke="${BLUE(0.3)}" stroke-width="${lw(0.8)}"/>`); }
+  // Колонны на пересечениях осей.
+  for (const u of [0, 0.25, 0.5, 0.75, 1]) for (const v of [0, 0.46, 1]) {
+    const c = 8 * s;
+    add(`<rect x="${f(X(u) - c / 2)}" y="${f(Y(v) - c / 2)}" width="${f(c)}" height="${f(c)}" fill="${BLUE(0.5)}"/>`);
+  }
+  // Лестница в правой нижней комнате.
+  for (let i = 0; i <= 8; i++) line(X(0.8) + i * 0.012 * w, Y(0.58), X(0.8) + i * 0.012 * w, Y(0.88), BLUE(0.22), lw(0.7));
+  add(`<rect x="${f(X(0.8))}" y="${f(Y(0.58))}" width="${f(0.096 * w)}" height="${f(0.30 * h)}" fill="none" stroke="${BLUE(0.3)}" stroke-width="${lw(0.8)}"/>`);
+  // Размерная цепочка снизу.
+  const yd = Y(1) + 30 * s;
+  line(X(0), yd, X(1), yd, BLUE(0.3), lw(0.8));
+  for (const u of us) line(X(u) - 4 * s, yd + 4 * s, X(u) + 4 * s, yd - 4 * s, BLUE(0.45), lw(1));
+  for (let i = 0; i < 4; i++) text((X(us[i]) + X(us[i + 1])) / 2, yd - 8 * s, '6000', 8 * s, BLUE(0.45));
+  text(X(0.625), Y(0.23), 'Захватка 3', 9 * s, AMBER(0.85), 'font-weight="600"');
+  text(X(0.25), Y(0.73), 'Захватка 1 · забетонирована', 8.5 * s, TEAL(0.75));
+}
+
+function slab(x0, y0, w, h) {
+  const X = (u) => x0 + u * w, Y = (v) => y0 + v * h;
+  axes(x0, y0, w, h, [0, 1 / 3, 2 / 3, 1], [0, 0.5, 1], ['1', '2', '3', '4'], ['А', 'Б', 'В']);
+  const zig = (u, n) => { // шов-зигзаг поперёк плиты
+    const pts = []; for (let i = 0; i <= n; i++) pts.push([X(u + (i % 2 ? 0.012 : -0.012)), Y(i / n)]); return pts;
+  };
+  const z1 = zig(0.36, 14), z2 = zig(0.69, 14);
+  const outline = [[X(0), Y(0)], [X(1), Y(0)], [X(1), Y(1)], [X(0), Y(1)]];
+  poly([[X(0), Y(0)], ...z1, [X(0), Y(1)]], `fill="${TEAL(0.13)}" stroke="none"`);
+  poly([...z1, ...z2.slice().reverse()], `fill="${AMBER(0.15)}" stroke="none"`);
+  poly(outline, `fill="none" stroke="${BLUE(0.45)}" stroke-width="${lw(2.2)}"`);
+  pline(z1, `stroke="${TEAL(0.8)}" stroke-width="${lw(1.4)}"`);
+  pline(z2, `stroke="${AMBER(0.9)}" stroke-width="${lw(1.4)}"`);
+  // Отверстия в плите.
+  for (const [u, v] of [[0.15, 0.3], [0.52, 0.7], [0.86, 0.35]]) {
+    add(`<rect x="${f(X(u))}" y="${f(Y(v))}" width="${f(0.06 * w)}" height="${f(0.12 * h)}" fill="none" stroke="${BLUE(0.4)}" stroke-width="${lw(0.9)}"/>`);
+    line(X(u), Y(v), X(u) + 0.06 * w, Y(v) + 0.12 * h, BLUE(0.3), lw(0.7));
+    line(X(u) + 0.06 * w, Y(v), X(u), Y(v) + 0.12 * h, BLUE(0.3), lw(0.7));
+  }
+  const lab = (u, t, c) => { circ(X(u), Y(0.5), 13 * s, `fill="rgba(6,22,40,0.85)" stroke="${c}" stroke-width="${lw(1.3)}"`); text(X(u), Y(0.5), t, 11 * s, c, 'font-weight="700"'); };
+  lab(0.18, '1', TEAL(0.95)); lab(0.525, '2', AMBER(1)); lab(0.85, '3', BLUE(0.7));
+  for (const q of [z1[0], z2[0], z1[z1.length - 1], z2[z2.length - 1]]) circ(q[0], q[1], 3.2 * s, `fill="${AMBER(1)}" filter="url(#gl)"`);
+}
+
+// ------------------------------------------------------------------ Б. Стройка
+function construction() {
+  // Звёзды.
+  for (let i = 0; i < 170; i++) {
+    const y = Math.pow(rnd(), 1.7) * (bt - 0.02 * H), x = rnd() * W, r = (0.4 + rnd() * 0.9) * s;
+    circ(x, y, r, `fill="${rnd() < 0.15 ? TEAL(0.6) : 'rgba(200,225,255,' + f(0.18 + rnd() * 0.5) + ')'}"`);
+  }
+  // Земля в перспективе.
+  const yh = bb + 0.05 * H, vx = W / 2;
+  add(`<linearGradient id="gfade" x1="0" y1="${f(yh)}" x2="0" y2="${H}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#000"/><stop offset="0.25" stop-color="#fff"/><stop offset="1" stop-color="#fff"/></linearGradient>
+    <mask id="gm" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="url(#gfade)"/></mask>`);
+  add(`<ellipse cx="${f(W / 2)}" cy="${f(yh)}" rx="${f(W * 0.75)}" ry="${f(0.05 * H)}" fill="${TEAL(0.16)}" filter="url(#blur)"/>`);
+  add(`<g mask="url(#gm)">`);
+  for (let i = -14; i <= 14; i++) line(vx, yh, vx + i * W * 0.16, H, TEAL(0.2), lw(0.8));
+  for (let k = 1; k <= 12; k++) { const y = yh + (H - yh) * Math.pow(k / 12, 2.1); line(0, y, W, y, TEAL(0.2), lw(0.8)); }
+  add(`</g>`);
+  line(0, yh, W, yh, TEAL(0.35), lw(1));
+  // Дома: изометрия.
+  const iso = (x, y, a, b, z) => [x + (a - b) * 0.866, y - (a + b) * 0.5 - z];
+  const house = (x, y, A, B, floors, fh, opts = {}) => {
+    const C = BLUE(0.5), C2 = BLUE(0.26), w = lw(1.1);
+    const full = floors - (opts.open ? 1 : 0);
+    const Z = full * fh;
+    // Грани
+    poly([iso(x, y, 0, 0, 0), iso(x, y, A, 0, 0), iso(x, y, A, 0, Z), iso(x, y, 0, 0, Z)], `fill="rgba(30,80,130,0.18)" stroke="${C}" stroke-width="${w}"`);
+    poly([iso(x, y, 0, 0, 0), iso(x, y, 0, B, 0), iso(x, y, 0, B, Z), iso(x, y, 0, 0, Z)], `fill="rgba(20,60,105,0.22)" stroke="${C}" stroke-width="${w}"`);
+    poly([iso(x, y, 0, 0, Z), iso(x, y, A, 0, Z), iso(x, y, A, B, Z), iso(x, y, 0, B, Z)], `fill="rgba(40,100,160,0.12)" stroke="${C}" stroke-width="${w}"`);
+    for (let k = 1; k < full; k++) {
+      pline([iso(x, y, 0, B, k * fh), iso(x, y, 0, 0, k * fh), iso(x, y, A, 0, k * fh)], `stroke="${C2}" stroke-width="${lw(0.8)}"`);
+    }
+    const na = Math.round(A / (22 * s)), nb = Math.round(B / (22 * s));
+    for (let i = 1; i < na; i++) line(...iso(x, y, i * A / na, 0, 0), ...iso(x, y, i * A / na, 0, Z), C2, lw(0.7));
+    for (let i = 1; i < nb; i++) line(...iso(x, y, 0, i * B / nb, 0), ...iso(x, y, 0, i * B / nb, Z), C2, lw(0.7));
+    // Окна-огоньки.
+    for (let k = 0; k < full; k++) for (let i = 0; i < na; i++) if (rnd() < 0.16) {
+      const p = [iso(x, y, i * A / na + 3 * s, 0, k * fh + 4 * s), iso(x, y, (i + 1) * A / na - 3 * s, 0, k * fh + 4 * s), iso(x, y, (i + 1) * A / na - 3 * s, 0, (k + 1) * fh - 4 * s), iso(x, y, i * A / na + 3 * s, 0, (k + 1) * fh - 4 * s)];
+      poly(p, `fill="${rnd() < 0.5 ? AMBER(0.35) : 'rgba(150,200,255,0.25)'}"`);
+    }
+    if (opts.open) { // верхний этаж — колонны и плита-захватка
+      const Z2 = Z + fh;
+      for (let i = 0; i <= na; i += 2) for (let j = 0; j <= nb; j += 2) line(...iso(x, y, i * A / na, j * B / nb, Z), ...iso(x, y, i * A / na, j * B / nb, Z2), BLUE(0.6), lw(1.2));
+      const top = [iso(x, y, 0, 0, Z2), iso(x, y, A * 0.55, 0, Z2), iso(x, y, A * 0.55, B, Z2), iso(x, y, 0, B, Z2)];
+      poly(top, `fill="${AMBER(0.22)}" stroke="${AMBER(0.95)}" stroke-width="${lw(1.4)}" filter="url(#gl)"`);
+      for (const q of top) circ(q[0], q[1], 3 * s, `fill="${AMBER(1)}" filter="url(#gl)"`);
+      poly([iso(x, y, A * 0.55, 0, Z2), iso(x, y, A, 0, Z2), iso(x, y, A, B, Z2), iso(x, y, A * 0.55, B, Z2)], `fill="none" stroke="${BLUE(0.45)}" stroke-width="${lw(1)}" stroke-dasharray="${f(5 * s)} ${f(4 * s)}"`);
+    }
+  };
+  const fh = 0.017 * H;
+  house(0.17 * W, H * 0.95, 0.21 * W, 0.12 * W, 7, fh);
+  house(0.83 * W, H * 0.985, 0.13 * W, 0.24 * W, 11, fh, { open: true });
+  house(0.47 * W, H * 1.02, 0.14 * W, 0.12 * W, 5, fh);
+  // Кран.
+  const mx = 0.70 * W, jy = 0.12 * H, apex = 0.055 * H, mw = 14 * s, ground = H * 0.80;
+  const C = BLUE(0.55), cw = lw(1.1);
+  line(mx, apex, mx, ground, C, cw); line(mx + mw, jy, mx + mw, ground, C, cw);
+  { const pts = []; let left = true; for (let y = jy; y < ground; y += mw) { pts.push([left ? mx : mx + mw, y]); left = !left; } pline(pts, `stroke="${BLUE(0.35)}" stroke-width="${lw(0.8)}"`); }
+  const j0 = 0.03 * W, j1 = mx + mw + 0.17 * W, jh = 11 * s;
+  line(j0, jy, j1, jy, C, cw); line(j0 + 10 * s, jy - jh, mx, jy - jh, C, cw);
+  { const pts = []; let up = false; for (let x = j0 + 10 * s; x < mx; x += jh) { pts.push([x, up ? jy - jh : jy]); up = !up; } pline(pts, `stroke="${BLUE(0.35)}" stroke-width="${lw(0.8)}"`); }
+  line(mx + mw / 2, apex, j0 + 0.2 * W, jy - jh, BLUE(0.35), lw(0.8)); line(mx + mw / 2, apex, j1 - 0.02 * W, jy, BLUE(0.35), lw(0.8));
+  add(`<rect x="${f(j1 - 0.07 * W)}" y="${f(jy)}" width="${f(0.05 * W)}" height="${f(16 * s)}" fill="rgba(60,120,180,0.35)" stroke="${C}" stroke-width="${cw}"/>`);
+  add(`<rect x="${f(mx - 6 * s)}" y="${f(jy + 4 * s)}" width="${f(mw + 12 * s)}" height="${f(14 * s)}" fill="rgba(60,120,180,0.3)" stroke="${C}" stroke-width="${cw}"/>`);
+  const tx = 0.26 * W, ly = 0.27 * H;
+  add(`<rect x="${f(tx - 8 * s)}" y="${f(jy)}" width="${f(16 * s)}" height="${f(6 * s)}" fill="${C}"/>`);
+  line(tx - 3 * s, jy + 6 * s, tx - 3 * s, ly, BLUE(0.5), lw(0.8)); line(tx + 3 * s, jy + 6 * s, tx + 3 * s, ly, BLUE(0.5), lw(0.8));
+  line(tx, ly, tx - 0.09 * W, ly + 18 * s, AMBER(0.6), lw(0.8)); line(tx, ly, tx + 0.09 * W, ly + 18 * s, AMBER(0.6), lw(0.8));
+  poly([[tx - 0.11 * W, ly + 18 * s], [tx + 0.11 * W, ly + 18 * s], [tx + 0.09 * W, ly + 30 * s], [tx - 0.13 * W, ly + 30 * s]], `fill="${AMBER(0.25)}" stroke="${AMBER(0.95)}" stroke-width="${lw(1.3)}" filter="url(#gl)"`);
+  circ(mx + mw / 2, apex - 4 * s, 2.6 * s, `fill="rgba(255,80,80,0.9)" filter="url(#gl)"`);
+  circ(j0 + 4 * s, jy - 2 * s, 2.2 * s, `fill="rgba(255,80,80,0.8)" filter="url(#gl)"`);
+}
+
+// ------------------------------------------------------------------ В. Слои
+function layers() {
+  // Лист: скруглённый прямоугольник в косой плоскости. O — левый верх, U — вдоль, V — вниз.
+  const sheet = (O, U, Vv, fill, stroke, sw, grid, glow) => {
+    const m = `matrix(${f(U[0])} ${f(U[1])} ${f(Vv[0])} ${f(Vv[1])} ${f(O[0])} ${f(O[1])})`;
+    add(`<g transform="${m}"${glow ? ' filter="url(#gl2)"' : ''}><rect x="0" y="0" width="1" height="1" rx="0.06" ry="0.06" fill="${fill}" stroke="${stroke}" stroke-width="${f(sw)}" vector-effect="non-scaling-stroke"/></g>`);
+    if (grid) {
+      const P = (u, v) => [O[0] + U[0] * u + Vv[0] * v, O[1] + U[1] * u + Vv[1] * v];
+      for (const u of [0.2, 0.4, 0.6, 0.8]) line(...P(u, 0.06), ...P(u, 0.94), 'rgba(220,240,255,0.22)', lw(0.8));
+      for (const v of [0.25, 0.5, 0.75]) line(...P(0.05, v), ...P(0.95, v), 'rgba(220,240,255,0.22)', lw(0.8));
+      // Стены плана
+      pline([P(0.2, 0.25), P(0.4, 0.25), P(0.4, 0.5)], `stroke="rgba(240,250,255,0.55)" stroke-width="${lw(2.2)}"`);
+      pline([P(0.6, 0.06), P(0.6, 0.25), P(0.8, 0.25)], `stroke="rgba(240,250,255,0.55)" stroke-width="${lw(2.2)}"`);
+      pline([P(0.2, 0.75), P(0.4, 0.75)], `stroke="rgba(240,250,255,0.5)" stroke-width="${lw(2.2)}"`);
+      const z = [P(0.4, 0.5), P(0.6, 0.5), P(0.6, 0.75), P(0.4, 0.75)];
+      poly(z, `fill="${AMBER(0.55)}" stroke="${AMBER(1)}" stroke-width="${lw(1.4)}" filter="url(#gl)"`);
+      for (const q of z) circ(q[0], q[1], 3.4 * s, `fill="#FFD27A" filter="url(#gl)"`);
+    }
+  };
+  // Сверху: стопка листов уходит вправо за край.
+  const k = Math.min(W, H * 0.62);
+  const topO = [0.34 * W, 0.07 * H], U1 = [0.74 * k, -0.05 * k], V1 = [-0.30 * k, 0.40 * k];
+  for (let i = 3; i >= 1; i--) sheet([topO[0] - i * 16 * s, topO[1] + i * 22 * s], U1, V1, TEAL(0.05 + 0.02 * (3 - i)), TEAL(0.35 - 0.06 * i), 1.2 * s, false, false);
+  sheet(topO, U1, V1, 'rgba(40,110,160,0.16)', 'rgba(220,245,255,0.55)', 1.4 * s, true, false);
+  // Снизу: бирюзовые полосы-слои, как у «V», уходят влево вниз.
+  const bO = [0.06 * W, bb + 0.10 * H], U2 = [0.70 * k, 0.03 * k], V2 = [0.26 * k, 0.30 * k];
+  for (let i = 0; i < 4; i++) sheet([bO[0] + i * 14 * s, bO[1] + i * 20 * s], U2, V2, i === 3 ? TEAL(0.11) : TEAL(0.035), TEAL(0.6 - 0.1 * i), 1.3 * s, false, i === 3);
+  { const O = [bO[0] + 3 * 14 * s, bO[1] + 3 * 20 * s];
+    const P = (u, v) => [O[0] + U2[0] * u + V2[0] * v, O[1] + U2[1] * u + V2[1] * v];
+    for (let u = 1; u < 10; u++) line(...P(u / 10, 0.05), ...P(u / 10, 0.95), TEAL(u % 5 ? 0.14 : 0.28), lw(0.7));
+    for (let v = 1; v < 6; v++) line(...P(0.04, v / 6), ...P(0.96, v / 6), TEAL(v % 3 ? 0.14 : 0.28), lw(0.7));
+    const z = [P(0.2, 1 / 6), P(0.5, 1 / 6), P(0.5, 0.5), P(0.2, 0.5)];
+    poly(z, `fill="${TEAL(0.25)}" stroke="${TEAL(0.9)}" stroke-width="${lw(1.3)}" filter="url(#gl)"`);
+    for (const q of z) circ(q[0], q[1], 3 * s, `fill="#7FFFEF" filter="url(#gl)"`); }
+  sheet([bO[0] + 0.52 * W, bO[1] + 0.06 * H], [0.42 * k, 0.02 * k], [0.18 * k, 0.24 * k], 'rgba(230,240,250,0.10)', 'rgba(230,240,250,0.5)', 1.2 * s, false, false);
+  // Огоньки и связи.
+  const nodes = [];
+  for (let i = 0; i < 26; i++) nodes.push([rnd() * W, rnd() < 0.5 ? rnd() * (bt - 0.06 * H) : bb + 0.06 * H + rnd() * (H - bb - 0.06 * H)]);
+  for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+    const d = Math.hypot(nodes[i][0] - nodes[j][0], nodes[i][1] - nodes[j][1]);
+    if (d < 150 * s) line(...nodes[i], ...nodes[j], TEAL(0.12 * (1 - d / (150 * s)) + 0.03), lw(0.7));
+  }
+  for (const n of nodes) circ(n[0], n[1], (1.2 + rnd() * 1.8) * s, `fill="${rnd() < 0.25 ? AMBER(0.9) : TEAL(0.8)}" filter="url(#gl)"`);
+  for (let i = 0; i < 14; i++) circ(rnd() * W, rnd() * H, (14 + rnd() * 36) * s, `fill="${TEAL(0.035 + rnd() * 0.04)}" filter="url(#blur)"`);
+}
+
+// ------------------------------------------------------------------ Г. Рельеф
+function contours() {
+  const g = W / 36;
+  add(`<pattern id="dots" width="${f(g)}" height="${f(g)}" patternUnits="userSpaceOnUse" x="${f(W / 2 % g)}" y="${f(cy % g)}"><circle cx="0" cy="0" r="${f(0.9 * s)}" fill="${BLUE(0.16)}"/></pattern>`);
+  add(`<rect width="${W}" height="${H}" fill="url(#dots)"/>`);
+  add(`<linearGradient id="cg" x1="0" y1="0" x2="${W}" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#3F86D0"/><stop offset="0.55" stop-color="#1FA9C8"/><stop offset="1" stop-color="#08C9B5"/></linearGradient>`);
+  const wave = (base, k, a1, a2, p1, p2) => {
+    const pts = [];
+    for (let x = -10 * s; x <= W + 10 * s; x += 6 * s) {
+      const u = x / W;
+      pts.push([x, base + a1 * Math.sin(u * 5.2 + p1 + k * 0.10) + a2 * Math.sin(u * 11.3 + p2 - k * 0.17) + 0.5 * a2 * Math.sin(u * 2.1 + k * 0.05)]);
+    }
+    return pts;
+  };
+  const group = (base, n, gap, a1, a2, p1, p2, dir) => {
+    let mid = null;
+    for (let k = 0; k < n; k++) {
+      const pts = wave(base + dir * k * gap, k, a1 * (1 + k * 0.035), a2, p1, p2);
+      const a = 0.42 - 0.3 * Math.abs(k - n * 0.35) / n;
+      pline(pts, `stroke="url(#cg)" stroke-opacity="${f(Math.max(0.08, a))}" stroke-width="${lw(k % 5 === 0 ? 1.4 : 0.85)}"`);
+      if (k === Math.round(n * 0.45)) mid = pts;
+    }
+    return mid;
+  };
+  const top = group(0.11 * H, 22, 11 * s, 34 * s, 12 * s, 0.4, 1.7, 1);
+  const bot = group(H * 0.66, 24, 11 * s, 38 * s, 13 * s, 2.3, 0.6, 1);
+  // Точки съёмки (геодезия) по линиям.
+  const marks = (pts, idx, labels) => {
+    const ps = idx.map(i => pts[Math.min(pts.length - 1, Math.round(i * (pts.length - 1)))]);
+    pline(ps, `stroke="${AMBER(0.75)}" stroke-width="${lw(1.2)}" stroke-dasharray="${f(6 * s)} ${f(5 * s)}"`);
+    ps.forEach((q, i) => {
+      circ(q[0], q[1], 7 * s, `fill="none" stroke="${AMBER(0.95)}" stroke-width="${lw(1.2)}"`);
+      line(q[0] - 11 * s, q[1], q[0] + 11 * s, q[1], AMBER(0.8), lw(0.9)); line(q[0], q[1] - 11 * s, q[0], q[1] + 11 * s, AMBER(0.8), lw(0.9));
+      circ(q[0], q[1], 2.4 * s, `fill="${AMBER(1)}" filter="url(#gl)"`);
+      text(q[0] + 22 * s, q[1] - 14 * s, labels[i], 9 * s, AMBER(0.85), 'font-weight="600"');
+    });
+  };
+  marks(top, [0.12, 0.38, 0.63, 0.86], ['Т1', 'Т2', 'Т3', 'Т4']);
+  marks(bot, [0.18, 0.47, 0.78], ['Т5', 'Т6', 'Т7']);
+}
+
+// ------------------------------------------------------------------ Д. Ночная стройка
+function nightSite() {
+  toFree = true;
+  // Сияние и звёзды.
+  add(`<ellipse cx="${f(0.30 * W)}" cy="${f(0.13 * H)}" rx="${f(0.62 * W)}" ry="${f(0.09 * H)}" fill="${TEAL(0.10)}" filter="url(#blurL)" transform="rotate(-8 ${f(0.3 * W)} ${f(0.13 * H)})"/>`);
+  add(`<ellipse cx="${f(0.75 * W)}" cy="${f(0.22 * H)}" rx="${f(0.55 * W)}" ry="${f(0.07 * H)}" fill="rgba(70,120,230,0.10)" filter="url(#blurL)" transform="rotate(6 ${f(0.75 * W)} ${f(0.22 * H)})"/>`);
+  for (let i = 0; i < 260; i++) {
+    const y = Math.pow(rnd(), 1.5) * (bt - 0.03 * H), x = rnd() * W, r = (0.35 + rnd() * rnd() * 1.3) * s;
+    circ(x, y, r, `fill="${rnd() < 0.12 ? TEAL(0.7) : 'rgba(215,232,255,' + f(0.15 + rnd() * 0.6) + ')'}"${r > 1.1 * s ? ' filter="url(#gl)"' : ''}`);
+  }
+  // Созвездие-разметка: точки съёмки, соединённые пунктиром.
+  const st = [[0.12, 0.10], [0.27, 0.06], [0.41, 0.12], [0.58, 0.075], [0.74, 0.14], [0.88, 0.09]].map(([u, v]) => [u * W, v * H]);
+  pline(st, `stroke="${AMBER(0.35)}" stroke-width="${lw(0.8)}" stroke-dasharray="${f(4 * s)} ${f(5 * s)}"`);
+  for (const q of st) circ(q[0], q[1], 2.2 * s, `fill="${AMBER(0.95)}" filter="url(#gl)"`);
+  // Горизонт и город.
+  const yh = H * 0.83;
+  add(`<ellipse cx="${f(W / 2)}" cy="${f(yh)}" rx="${f(W * 0.8)}" ry="${f(0.06 * H)}" fill="${TEAL(0.12)}" filter="url(#blurL)"/>`);
+  const bld = (x, w, h, lit, opts = {}) => {
+    const y = yh - h;
+    add(`<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" fill="#071A2C" stroke="${BLUE(0.42)}" stroke-width="${lw(1)}"/>`);
+    const cw = 9 * s, ch = 11 * s;
+    for (let yy = y + 8 * s; yy < yh - 10 * s; yy += ch + 6 * s) for (let xx = x + 6 * s; xx < x + w - cw; xx += cw + 6 * s) {
+      const r = rnd(); if (r < lit) add(`<rect x="${f(xx)}" y="${f(yy)}" width="${f(cw)}" height="${f(ch)}" fill="${r < lit * 0.45 ? AMBER(0.75) : 'rgba(160,205,255,0.45)'}"/>`);
+      else add(`<rect x="${f(xx)}" y="${f(yy)}" width="${f(cw)}" height="${f(ch)}" fill="none" stroke="${BLUE(0.14)}" stroke-width="${lw(0.6)}"/>`);
+    }
+    if (opts.slab) {
+      add(`<rect x="${f(x - 4 * s)}" y="${f(y - 6 * s)}" width="${f(w + 8 * s)}" height="${f(6 * s)}" fill="${AMBER(0.85)}" filter="url(#gl2)"/>`);
+      for (let xx = x; xx <= x + w; xx += w / 5) line(xx, y - 6 * s, xx, y - 26 * s, BLUE(0.6), lw(1.4));
+    }
+  };
+  const row = [[0.00, 0.10, 0.14], [0.09, 0.08, 0.22], [0.16, 0.12, 0.10], [0.27, 0.07, 0.28], [0.33, 0.11, 0.16], [0.43, 0.09, 0.12],
+    [0.51, 0.13, 0.20], [0.63, 0.07, 0.26], [0.69, 0.10, 0.13], [0.78, 0.12, 0.31], [0.89, 0.11, 0.17]];
+  row.forEach(([u, w, h], i) => bld(u * W, w * W, h * H * 0.55, 0.22, { slab: i === 6 }));
+  // Краны на горизонте.
+  const crane = (mx, top, jl, jr, hook) => {
+    const C = BLUE(0.55), w = lw(1.1);
+    line(mx, top, mx, yh, C, w); line(mx + 8 * s, top + 12 * s, mx + 8 * s, yh, C, w);
+    let z = []; for (let y = top + 12 * s, k = 0; y < yh; y += 8 * s, k++) z.push([k % 2 ? mx : mx + 8 * s, y]); pline(z, `stroke="${BLUE(0.3)}" stroke-width="${lw(0.7)}"`);
+    line(mx - jl, top + 12 * s, mx + jr, top + 12 * s, C, w); line(mx + 4 * s, top - 14 * s, mx - jl * 0.8, top + 12 * s, BLUE(0.35), lw(0.7));
+    line(mx + 4 * s, top - 14 * s, mx + jr, top + 12 * s, BLUE(0.35), lw(0.7));
+    line(mx - hook, top + 12 * s, mx - hook, top + 70 * s, BLUE(0.4), lw(0.7));
+    add(`<rect x="${f(mx + jr - 26 * s)}" y="${f(top + 12 * s)}" width="${f(22 * s)}" height="${f(10 * s)}" fill="rgba(60,120,180,0.4)"/>`);
+    circ(mx + 4 * s, top - 16 * s, 2.6 * s, `fill="rgba(255,70,70,0.95)" filter="url(#gl)"`);
+    circ(mx - jl, top + 11 * s, 2 * s, `fill="rgba(255,70,70,0.85)" filter="url(#gl)"`);
+  };
+  crane(0.22 * W, yh - 0.30 * H * 0.55 - 50 * s, 0.17 * W, 0.08 * W, 0.12 * W);
+  crane(0.70 * W, yh - 0.34 * H * 0.55 - 60 * s, 0.24 * W, 0.07 * W, 0.15 * W);
+  // Земля в перспективе.
+  add(`<linearGradient id="nG" x1="0" y1="${f(yh)}" x2="0" y2="${H}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#000"/><stop offset="0.2" stop-color="#fff"/><stop offset="1" stop-color="#fff"/></linearGradient>
+    <mask id="nM" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="url(#nG)"/></mask><g mask="url(#nM)">`);
+  add(`<rect x="0" y="${f(yh)}" width="${W}" height="${f(H - yh)}" fill="#04101D"/>`);
+  for (let i = -16; i <= 16; i++) line(W / 2, yh, W / 2 + i * W * 0.13, H, TEAL(0.22), lw(0.8));
+  for (let k = 1; k <= 9; k++) { const y = yh + (H - yh) * Math.pow(k / 9, 2); line(0, y, W, y, TEAL(0.22), lw(0.8)); }
+  add(`</g>`);
+  line(0, yh, W, yh, TEAL(0.45), lw(1.2), 'filter="url(#gl)"');
+  toFree = false;
+}
+
+// ------------------------------------------------------------------ Е. Рабочее пространство (карточки)
+function workspace() {
+  toFree = true;
+  const g = W / 40;
+  add(`<pattern id="dots2" width="${f(g)}" height="${f(g)}" patternUnits="userSpaceOnUse" x="${f(W / 2 % g)}" y="${f(cy % g)}"><circle cx="0" cy="0" r="${f(0.8 * s)}" fill="${BLUE(0.14)}"/></pattern>`);
+  add(`<rect width="${W}" height="${H}" fill="url(#dots2)"/>`);
+  const card = (x, y, w, h, rot, title, body, depth = 0) => {
+    const op = depth ? 0.55 : 1;
+    add(`<g transform="rotate(${rot} ${f(x + w / 2)} ${f(y + h / 2)})" opacity="${op}"${depth ? ' filter="url(#blurS)"' : ''}>`);
+    add(`<rect x="${f(x)}" y="${f(y + 10 * s)}" width="${f(w)}" height="${f(h)}" rx="${f(16 * s)}" fill="rgba(0,6,14,0.55)" filter="url(#blur)"/>`);
+    add(`<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" rx="${f(16 * s)}" fill="url(#cardG)" stroke="rgba(170,215,255,0.35)" stroke-width="${lw(1.2)}"/>`);
+    add(`<rect x="${f(x + 1.5 * s)}" y="${f(y + 1.5 * s)}" width="${f(w - 3 * s)}" height="${f(30 * s)}" rx="${f(14 * s)}" fill="rgba(255,255,255,0.05)"/>`);
+    text(x + 16 * s, y + 22 * s, title, 12.5 * s, 'rgba(235,245,255,0.92)', 'text-anchor="start" font-weight="600"');
+    body(x, y, w, h);
+    add(`</g>`);
+  };
+  add(`<linearGradient id="cardG" x1="0" y1="0" x2="0.6" y2="1"><stop offset="0" stop-color="#1A3F5E" stop-opacity="0.92"/><stop offset="1" stop-color="#0C2740" stop-opacity="0.92"/></linearGradient>
+    <filter id="blurS" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="${f(2.2 * s)}"/></filter>`);
+  const k = W / 800, top0 = 0.06 * H, gapTop = bt - 0.06 * H - top0;
+  // Заметки: рукописные строки и галочки.
+  card(0.06 * W, top0 + 0.08 * gapTop, 0.42 * W, 0.62 * gapTop, -4, 'Заметки', (x, y, w, h) => {
+    for (let i = 0; i < 5; i++) {
+      const yy = y + 58 * s + i * (h - 80 * s) / 5;
+      line(x + 16 * s, yy + 9 * s, x + w - 16 * s, yy + 9 * s, 'rgba(120,180,230,0.18)', lw(0.8));
+      if (i >= 3) { add(`<rect x="${f(x + 16 * s)}" y="${f(yy - 6 * s)}" width="${f(12 * s)}" height="${f(12 * s)}" rx="${f(3 * s)}" fill="none" stroke="${TEAL(0.9)}" stroke-width="${lw(1.4)}"/>`);
+        if (i === 3) add(`<path d="M${f(x + 18.5 * s)} ${f(yy)} l${f(3 * s)} ${f(3.5 * s)} l${f(5.5 * s)} ${f(-7 * s)}" fill="none" stroke="${TEAL(1)}" stroke-width="${lw(1.6)}"/>`); }
+      const x0 = x + (i >= 3 ? 36 : 16) * s, L = (w - (i >= 3 ? 60 : 40) * s) * (0.6 + 0.35 * rnd());
+      let xx = x0;
+      while (xx < x0 + L) {   // слова: петли и выносные — как беглый почерк
+        const wl = (22 + rnd() * 46) * s, pts = [];
+        for (let t = 0; t <= wl; t += 2.2 * s) {
+          const ph = t / (4.6 * s);
+          let yv = -4.2 * s * Math.abs(Math.sin(ph * 1.7 + rnd() * 0.25)) * (0.75 + 0.35 * Math.sin(ph * 0.37));
+          if (rnd() < 0.05) yv -= 6 * s;          // выносной вверх
+          if (rnd() < 0.03) yv += 5 * s;          // вниз
+          pts.push([xx + t + 1.3 * s * Math.sin(ph * 3.1), yy + yv]);
+        }
+        let d = `M${f(pts[0][0])} ${f(pts[0][1])}`;
+        for (let j = 1; j < pts.length - 1; j++) { const m = [(pts[j][0] + pts[j + 1][0]) / 2, (pts[j][1] + pts[j + 1][1]) / 2]; d += ` Q${f(pts[j][0])} ${f(pts[j][1])} ${f(m[0])} ${f(m[1])}`; }
+        add(`<path d="${d}" fill="none" stroke="rgba(232,242,255,0.82)" stroke-width="${lw(1.25)}" stroke-linecap="round" stroke-linejoin="round"/>`);
+        xx += wl + (7 + rnd() * 6) * s;
+      }
+    }
+  });
+  // Задачи: месяц.
+  card(0.55 * W, top0, 0.38 * W, 0.70 * gapTop, 3, 'Задачи · ноябрь', (x, y, w, h) => {
+    const cols = 7, rows = 5, cw = (w - 32 * s) / cols, chh = (h - 70 * s) / rows;
+    ['П', 'В', 'С', 'Ч', 'П', 'С', 'В'].forEach((d, i) => text(x + 16 * s + cw * (i + 0.5), y + 50 * s, d, 8.5 * s, 'rgba(160,190,220,0.7)'));
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const n = r * 7 + c - 5; if (n < 1 || n > 30) continue;
+      const cx = x + 16 * s + cw * (c + 0.5), cyy = y + 66 * s + chh * (r + 0.4);
+      if (n === 20) circ(cx, cyy, 10 * s, `fill="${TEAL(0.95)}" filter="url(#gl)"`);
+      text(cx, cyy, String(n), 9 * s, n === 20 ? '#05202A' : 'rgba(225,238,250,0.85)', n === 20 ? 'font-weight="700"' : '');
+      if ([3, 7, 12, 18, 20, 24, 27].includes(n)) circ(cx, cyy + 9 * s, 1.6 * s, `fill="${[7, 24].includes(n) ? AMBER(1) : TEAL(0.9)}"`);
+    }
+  });
+  // Снизу: доска с планом и таблицей.
+  const b0 = bb + 0.06 * H, gapB = H - 0.07 * H - b0;
+  card(0.05 * W, b0 + 0.06 * gapB, 0.52 * W, 0.66 * gapB, 3, 'Доски · КЖ 7.1.3', (x, y, w, h) => {
+    const px = x + 18 * s, py = y + 46 * s, pw = w - 36 * s, ph = h - 64 * s;
+    add(`<rect x="${f(px)}" y="${f(py)}" width="${f(pw)}" height="${f(ph)}" rx="${f(6 * s)}" fill="rgba(4,18,32,0.6)" stroke="rgba(120,180,230,0.25)" stroke-width="${lw(0.8)}"/>`);
+    const Z = (u0, v0, u1, v1, c, a) => add(`<rect x="${f(px + u0 * pw)}" y="${f(py + v0 * ph)}" width="${f((u1 - u0) * pw)}" height="${f((v1 - v0) * ph)}" fill="${c}${a})" stroke="${c}0.9)" stroke-width="${lw(1.2)}"/>`);
+    Z(0.06, 0.1, 0.36, 0.55, 'rgba(8,201,181,', 0.25); Z(0.36, 0.1, 0.62, 0.55, 'rgba(255,181,46,', 0.28); Z(0.62, 0.1, 0.94, 0.55, 'rgba(110,178,235,', 0.12);
+    Z(0.06, 0.55, 0.5, 0.9, 'rgba(8,201,181,', 0.25); Z(0.5, 0.55, 0.94, 0.9, 'rgba(110,178,235,', 0.12);
+    for (const [u, v] of [[0.36, 0.1], [0.62, 0.1], [0.62, 0.55], [0.36, 0.55]]) circ(px + u * pw, py + v * ph, 3 * s, `fill="${AMBER(1)}" filter="url(#gl)"`);
+    [['1', 0.21, 0.33], ['2', 0.49, 0.33], ['3', 0.78, 0.33], ['4', 0.28, 0.73], ['5', 0.72, 0.73]].forEach(([t, u, v]) => text(px + u * pw, py + v * ph, t, 12 * s, 'rgba(240,248,255,0.85)', 'font-weight="700"'));
+  });
+  card(0.60 * W, b0, 0.35 * W, 0.78 * gapB, -3, 'Ведомость З-14', (x, y, w, h) => {
+    const n = 7, rh = (h - 60 * s) / n;
+    const st = [[TEAL, 'Сдано'], [AMBER, 'На подписи'], [TEAL, 'Сдано'], [BLUE, 'Сборка'], [AMBER, 'На подписи'], [TEAL, 'Сдано'], [BLUE, 'Сборка']];
+    for (let i = 0; i < n; i++) {
+      const yy = y + 46 * s + i * rh;
+      line(x + 14 * s, yy + rh, x + w - 14 * s, yy + rh, 'rgba(120,180,230,0.15)', lw(0.8));
+      add(`<rect x="${f(x + 16 * s)}" y="${f(yy + rh * 0.35)}" width="${f(w * 0.34)}" height="${f(5 * s)}" rx="${f(2.5 * s)}" fill="rgba(220,235,250,0.4)"/>`);
+      const pw = w * 0.36, pxx = x + w - 16 * s - pw;
+      add(`<rect x="${f(pxx)}" y="${f(yy + rh * 0.18)}" width="${f(pw)}" height="${f(rh * 0.62)}" rx="${f(rh * 0.31)}" fill="${st[i][0](0.22)}" stroke="${st[i][0](0.8)}" stroke-width="${lw(0.9)}"/>`);
+      text(pxx + pw / 2, yy + rh * 0.49, st[i][1], 7.6 * s, st[i][0](1), 'font-weight="600"');
+    }
+  });
+  // Тонкие связи между карточками.
+  const ln = [[0.48 * W, top0 + 0.4 * gapTop], [0.55 * W, top0 + 0.35 * gapTop]];
+  pline(ln, `stroke="${TEAL(0.4)}" stroke-width="${lw(1)}" stroke-dasharray="${f(3 * s)} ${f(4 * s)}"`);
+  for (let i = 0; i < 30; i++) circ(rnd() * W, rnd() * H, (0.6 + rnd()) * s, `fill="${rnd() < 0.3 ? AMBER(0.7) : TEAL(0.5)}"`);
+  toFree = false;
+}
+
+// ------------------------------------------------------------------ Ж. Изометрия: дом и плита-захватка над ним
+function isometric() {
+  toFree = true;
+  const iso = (x, y, a, b, z) => [x + (a - b) * 0.866, y + (a + b) * 0.5 - z];
+  // Изометрическая сетка на полу.
+  const ox = W * 0.5, oy = H * 0.80, n = 14, st = W * 0.065;
+  add(`<radialGradient id="isoF" cx="${f(ox)}" cy="${f(oy)}" r="${f(W * 0.75)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></radialGradient>
+    <mask id="isoM" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="url(#isoF)"/></mask><g mask="url(#isoM)">`);
+  for (let i = -n; i <= n; i++) {
+    line(...iso(ox, oy, i * st, -n * st, 0), ...iso(ox, oy, i * st, n * st, 0), TEAL(0.16), lw(0.8));
+    line(...iso(ox, oy, -n * st, i * st, 0), ...iso(ox, oy, n * st, i * st, 0), TEAL(0.16), lw(0.8));
+  }
+  add(`</g>`);
+  // Дом: перекрытия и колонны, верхнее — бетонируется.
+  const A = 0.30 * W, B = 0.22 * W, fh = 0.032 * H, floors = 7, bx = ox - 0.02 * W, by = oy + 0.01 * H;
+  const slab = (z, fill, stroke, th = 5 * s) => {
+    const p = [iso(bx, by, 0, 0, z), iso(bx, by, A, 0, z), iso(bx, by, A, B, z), iso(bx, by, 0, B, z)];
+    poly([iso(bx, by, 0, B, z), iso(bx, by, A, B, z), iso(bx, by, A, B, z - th), iso(bx, by, 0, B, z - th)], `fill="rgba(30,70,115,0.6)" stroke="${stroke}" stroke-width="${lw(0.8)}"`);
+    poly([iso(bx, by, A, 0, z), iso(bx, by, A, B, z), iso(bx, by, A, B, z - th), iso(bx, by, A, 0, z - th)], `fill="rgba(20,55,95,0.6)" stroke="${stroke}" stroke-width="${lw(0.8)}"`);
+    poly(p, `fill="${fill}" stroke="${stroke}" stroke-width="${lw(1.1)}"`);
+  };
+  for (let k = 0; k <= floors; k++) {
+    const z = k * fh;
+    if (k > 0) for (let i = 0; i <= 4; i++) for (let j = 0; j <= 3; j++) {
+      if (i > 0 && i < 4 && j > 0 && j < 3 && k < floors) continue;
+      line(...iso(bx, by, i * A / 4, j * B / 3, z - fh + 5 * s), ...iso(bx, by, i * A / 4, j * B / 3, z - 5 * s), BLUE(0.5), lw(1.3));
+    }
+    if (k === floors) {
+      slab(z, 'rgba(40,90,140,0.25)', BLUE(0.55));
+      const zz = [iso(bx, by, 0, 0, z + 1), iso(bx, by, A * 0.5, 0, z + 1), iso(bx, by, A * 0.5, B, z + 1), iso(bx, by, 0, B, z + 1)];
+      poly(zz, `fill="${AMBER(0.35)}" stroke="${AMBER(1)}" stroke-width="${lw(1.6)}" filter="url(#gl)"`);
+      for (const q of zz) circ(q[0], q[1], 3.4 * s, `fill="#FFE08A" filter="url(#gl)"`);
+    } else slab(z, k === floors - 1 ? TEAL(0.14) : 'rgba(40,90,140,0.18)', k === floors - 1 ? TEAL(0.7) : BLUE(0.45));
+  }
+  // Сверху: «взорванная» плита этажа с захватками и выносными линиями.
+  const tx = ox - 0.03 * W, ty = 0.10 * H, A2 = 0.36 * W, B2 = 0.26 * W;
+  const P2 = (u, v) => iso(tx, ty, u * A2, v * B2, 0);
+  add(`<g filter="url(#gl)">`);
+  poly([P2(0, 0), P2(1, 0), P2(1, 1), P2(0, 1)], `fill="rgba(30,80,130,0.22)" stroke="${BLUE(0.7)}" stroke-width="${lw(1.4)}"`);
+  const zone = (u0, v0, u1, v1, c) => poly([P2(u0, v0), P2(u1, v0), P2(u1, v1), P2(u0, v1)], `fill="${c(0.24)}" stroke="${c(0.95)}" stroke-width="${lw(1.3)}"`);
+  zone(0.03, 0.05, 0.36, 0.95, TEAL); zone(0.36, 0.05, 0.66, 0.95, AMBER); zone(0.66, 0.05, 0.97, 0.95, BLUE);
+  add(`</g>`);
+  for (const u of [0.25, 0.5, 0.75]) line(...P2(u, 0.05), ...P2(u, 0.95), 'rgba(220,240,255,0.25)', lw(0.7));
+  for (const v of [0.33, 0.66]) line(...P2(0.03, v), ...P2(0.97, v), 'rgba(220,240,255,0.25)', lw(0.7));
+  [['1', 0.195, TEAL], ['2', 0.51, AMBER], ['3', 0.815, BLUE]].forEach(([t, u, c]) => { const q = P2(u, 0.5); circ(q[0], q[1], 12 * s, `fill="rgba(5,20,36,0.85)" stroke="${c(1)}" stroke-width="${lw(1.4)}"`); text(q[0], q[1], t, 11 * s, c(1), 'font-weight="700"'); });
+  // Выносные линии вниз к дому (гаснут у картинки).
+  for (const [u, v] of [[0, 1], [1, 1], [1, 0]]) { const q = P2(u, v); line(q[0], q[1], q[0], q[1] + 0.12 * H, TEAL(0.35), lw(0.8), `stroke-dasharray="${f(4 * s)} ${f(4 * s)}"`); }
+  // Размерная линия.
+  const d0 = iso(tx, ty, 0, B2 + 22 * s, 0), d1 = iso(tx, ty, A2, B2 + 22 * s, 0);
+  line(...d0, ...d1, BLUE(0.5), lw(0.9));
+  for (const d of [d0, d1]) line(d[0] - 4 * s, d[1] + 4 * s, d[0] + 4 * s, d[1] - 4 * s, BLUE(0.7), lw(1));
+  text((d0[0] + d1[0]) / 2 - 10 * s, (d0[1] + d1[1]) / 2 + 12 * s, '36 000', 9 * s, BLUE(0.7), `transform="rotate(30 ${f((d0[0] + d1[0]) / 2)} ${f((d0[1] + d1[1]) / 2)})"`);
+  toFree = false;
+}
+
+const draw = { A: blueprint, B: construction, C: layers, D: contours, E: nightSite, F: workspace, G: isometric }[V];
+draw();
+if (P.get('ext') && V !== 'A') { toFree = true; extend(); toFree = false; }
+// Без крана и дома знак с надписью стоят точно посередине: их место в картинке — 90…1320 из 1536.
+const HX = P.get('nobld') ? (W - 1230 * W / 1536) / 2 - 90 * W / 1536 : 0;
+const heroG = P.get('hero') ? `<g transform="translate(${f(HX)} ${f(bt)}) scale(${W / 1536})">${heroSvg({ noBuilding: !!P.get('rasterBld') || !!P.get('nobld') })}</g>` : '';
+document.fonts.load('700 100px VMontserrat').then(() => {
+document.body.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs>${defs}</defs>
+  <rect width="${W}" height="${H}" fill="url(#base)"/><rect width="${W}" height="${H}" fill="url(#glow)"/>
+  ${free.join('')}<g mask="url(#fade)">${out.join('')}</g><rect width="${W}" height="${H}" fill="url(#vign)"/>${heroG}</svg>`;
+document.title = 'ok';
+});
+</script>
+</body></html>
