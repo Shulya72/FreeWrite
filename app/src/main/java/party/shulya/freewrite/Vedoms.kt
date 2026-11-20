@@ -412,6 +412,9 @@ object Vedoms {
         }
     }
 
+    /** Запись в истории «вернули в сборку» ([ungive]). */
+    const val AGAIN_NOTE = "снова в сборке"
+
     /** Можно ли вернуть переданную ведомость в сборку: ответов ещё нет (ПТО — всегда). */
     fun canUngive(b: Board, v: BoardVedom) = !v.isDraft && v.kind != LIST && (v.kind == PTO || items(b, v).none { it.res.isNotEmpty() })
 
@@ -422,9 +425,9 @@ object Vedoms {
         for (i in items(b, v)) {
             val r = rec(b, i)
             if (r != null) {
-                if (r.igs == st) set(b, r, TableCol.IGS, IdTables.IGS_ASSEMBLY, who, v.num, "снова в сборке", now)
-                if (v.kind == CUST && r.dcust == v.given) set(b, r, TableCol.DCUST, "", who, v.num, "снова в сборке", now)
-                if (v.kind == PTO && r.dpto == v.given) set(b, r, TableCol.DPTO, "", who, v.num, "снова в сборке", now)
+                if (r.igs == st) set(b, r, TableCol.IGS, IdTables.IGS_ASSEMBLY, who, v.num, AGAIN_NOTE, now)
+                if (v.kind == CUST && r.dcust == v.given) set(b, r, TableCol.DCUST, "", who, v.num, AGAIN_NOTE, now)
+                if (v.kind == PTO && r.dpto == v.given) set(b, r, TableCol.DPTO, "", who, v.num, AGAIN_NOTE, now)
             }
             if (v.kind == PTO) { i.res = ""; i.rd = "" }
         }
