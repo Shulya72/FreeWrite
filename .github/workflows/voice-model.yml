@@ -1,0 +1,97 @@
+name: Voice model
+
+# Готовит модель распознавания речи для заметок ViaDesk (GigaAM v3 e2e CTC, Сбер, лицензия MIT)
+# и кладёт её в выпуск «voice-model-1». Оттуда приложение скачивает её один раз (тот же адрес github.com,
+# что и у APK). Сам APK модель не содержит.
+#
+# Запускается при изменении tools/voice или этого файла (на любой ветке) и вручную.
+# Если модель поменялась — новый номер выпуска (MODEL_TAG) и новые отпечатки SHA-256 в VoiceModel.kt:
+# приложение принимает только файлы с известными отпечатками. Готовый выпуск сценарий не трогает
+# (файлы не заменяются — иначе отпечатки в приложении перестали бы совпадать).
+on:
+  push:
+    paths:
+      - 'tools/voice/export_gigaam.py'
+      - '.github/workflows/voice-model.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: voice-model
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MODEL_TAG: voice-model-1
+      # Код GigaAM, по которому готовится модель (чтобы результат не менялся сам).
+      GIGAAM_REF: 7447938d791c4f3e643386ee22c33777004293a5
+    steps:
+      - name: Release exists?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$MODEL_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx 'gigaam-v3-e2e-ctc-int8.onnx'; then
+            echo "Выпуск $MODEL_TAG с моделью уже есть — файлы не заменяются. Новая модель — новый MODEL_TAG."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.check.outputs.exists != 'true'
+        uses: actions/checkout@v6
+
+      - name: Python
+        if: steps.check.outputs.exists != 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: GigaAM
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+          git clone -q https://github.com/salute-developers/GigaAM.git gigaam-src
+          git -C gigaam-src checkout -q "$GIGAAM_REF"
+          git -C gigaam-src log -1 --format='GigaAM %H %cd'
+          pip install -q torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q -e ./gigaam-src
+          pip list 2>/dev/null | grep -i -E "^(torch|torchaudio|onnx|onnxruntime|numpy|sentencepiece) "
+
+      - name: Model files
+        if: steps.check.outputs.exists != 'true'
+        # У сервера Сбера (cdn.chatwm.opensmodel.sberdevices.ru) 21.11.2026 просрочен сертификат, поэтому файлы
+        # скачиваются без проверки сертификата, а модель сверяется с контрольной суммой из кода GigaAM на GitHub
+        # (load_model сам проверяет MD5 и останавливается, если файл другой).
+        run: |
+          CDN=https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM
+          mkdir -p ~/.cache/gigaam
+          for f in v3_e2e_ctc.ckpt v3_e2e_ctc_tokenizer.model example.wav long_example.wav; do
+            curl -fsSL --retry 3 --insecure -o "$f.part" "$CDN/$f" && mv "$f.part" "$f"
+          done
+          mv v3_e2e_ctc.ckpt v3_e2e_ctc_tokenizer.model ~/.cache/gigaam/
+          sha256sum ~/.cache/gigaam/* *.wav
+          grep -o '"v3_e2e_ctc": "[0-9a-f]*"' gigaam-src/gigaam/__init__.py
+          md5sum ~/.cache/gigaam/v3_e2e_ctc.ckpt
+
+      - name: Export
+        if: steps.check.outputs.exists != 'true'
+        run: python tools/voice/export_gigaam.py --out out --audio example.wav long_example.wav
+
+      - name: Release
+        if: steps.check.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp gigaam-src/LICENSE out/LICENSE-GigaAM.txt
+          ls -l out
+          if ! gh release view "$MODEL_TAG" >/dev/null 2>&1; then
+            gh release create "$MODEL_TAG" --prerelease --target "$GITHUB_SHA" \
+              --title "Модель распознавания речи (GigaAM v3, Сбер)" --notes-file tools/voice/RELEASE.md
+          fi
+          gh release upload "$MODEL_TAG" out/gigaam-v3-e2e-ctc-int8.onnx out/tokens.txt out/manifest.json \
+            out/LICENSE-GigaAM.txt

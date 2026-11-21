@@ -1,0 +1,13 @@
+# Модель распознавания речи для ViaDesk
+
+Голосовой ввод в заметках (с 0.32) работает на самом планшете на модели **GigaAM v3 e2e CTC** (Сбер,
+https://github.com/salute-developers/GigaAM, лицензия MIT): текст сразу со знаками препинания и заглавными.
+
+- `export_gigaam.py` — готовит модель: один граф ONNX «звук 16 кГц → номера знаков» (лог-мел внутри графа), веса
+  умножений матриц — 8 бит, таблица знаков `tokens.txt`, сверка текста с оригиналом GigaAM на образцах.
+- Запускается сборкой GitHub `.github/workflows/voice-model.yml` (при изменении этой папки или вручную), результат — выпуск
+  `voice-model-1` (`gigaam-v3-e2e-ctc-int8.onnx`, `tokens.txt`, `manifest.json`, `LICENSE-GigaAM.txt`).
+- Приложение (`Voice.kt`, `VoiceModel`) скачивает файлы оттуда и принимает только файлы с отпечатками SHA-256, записанными в коде.
+  Поменялась модель — новый номер выпуска (`MODEL_TAG` в сценарии, `TAG` в `VoiceModel`) и новые отпечатки/размеры из `manifest.json`.
+- Проверка настоящей модели на компьютере: скачать файлы выпуска в папку и запустить
+  `VOICE_MODEL_DIR=<папка> ./gradlew testDebugUnitTest --tests '*VoiceTest.realGigaAm'`.
