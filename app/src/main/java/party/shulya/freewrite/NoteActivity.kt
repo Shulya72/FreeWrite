@@ -161,14 +161,18 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         buildUi()
         setContentView(rootView)
         engine.start(this)
+        // Разлиновки больше нет (Владимир: «пусть будет максимально похоже на айфоновские заметки»): все заметки — чистый лист.
+        // Записи до 0.30 и записи без рисунков — сразу; в линейку и в клетку с рисунками — после первой раскладки (рисунки
+        // сдвигаются вслед за своими строками, `migratePaper`).
+        if (note.paper != NotePaper.NONE && (note.layoutV < 2 || note.drawings.isEmpty())) { note.paper = NotePaper.NONE; saveSoon() }
         render(titleCaret = keys)
         updateBanner()
         setTool(tool, focus = keys, force = true)
-        if (note.layoutV < 2) sheet.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+        if (note.layoutV < 2 || note.paper != NotePaper.NONE) sheet.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
             override fun onGlobalLayout() {
                 if (sheet.width == 0) return
                 sheet.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                migrateLayout()
+                if (note.layoutV < 2) migrateLayout() else migratePaper()
             }
         })
     }
@@ -1840,14 +1844,12 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         runAfterCommit {
             val m = PopupMenu(this, anchor)
             m.menu.add(0, 1, 0, if (note.pinned) "Открепить" else "Закрепить")
-            m.menu.add(0, 2, 1, "Разлиновка: " + NotePaper.label(note.paper))
             m.menu.add(0, 3, 2, "Итоги записи")
             m.menu.add(0, 4, 3, if (fingerWrites) "Палец пишет: да" else "Палец пишет: нет")
             m.menu.add(0, 5, 4, "Удалить заметку")
             m.setOnMenuItemClickListener {
                 when (it.itemId) {
                     1 -> { note.pinned = !note.pinned; saveSoon(); hint(if (note.pinned) "Заметка закреплена" else "Заметка откреплена") }
-                    2 -> paperDialog()
                     3 -> showSummary()
                     4 -> { fingerWrites = !fingerWrites; hint(if (fingerWrites) "Палец пишет, как перо" else "Палец — листать и ставить курсор") }
                     5 -> deleteDialog()
@@ -1860,47 +1862,6 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
     }
 
     internal var lastMenu: PopupMenu? = null
-    internal var paperDlg: AlertDialog? = null
-
-    /** «Разлиновка»: без разметки, в линейку, в клетку — для этой заметки или для всех новых. */
-    internal fun paperDialog() {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0) }
-        val row = Ui.FlowRow(this).apply { hGap = dp(8f); vGap = dp(8f) }
-        val pills = HashMap<String, TextView>()
-        fun paint() { for ((p, v) in pills) { val on = p == note.paper; v.background = Ui.rounded(this, if (on) Ui.INK else Ui.DESK, null, 999f); v.setTextColor(if (on) Color.WHITE else Ui.INK) } }
-        val all = CheckBox(this).apply {
-            text = "Для всех новых заметок"
-            tag = "paper_all"
-            isChecked = NotePaper.default(this@NoteActivity) == note.paper && note.paper != NotePaper.NONE
-            buttonTintList = ColorStateList.valueOf(Ui.ACCENT)
-            setOnCheckedChangeListener { _, on -> NotePaper.setDefault(this@NoteActivity, if (on) note.paper else NotePaper.NONE) }
-        }
-        for (p in NotePaper.ALL) row.addView(Ui.pill(this, NotePaper.label(p), Ui.INK, Ui.DESK).apply {
-            tag = "paper_$p"
-            setOnClickListener {
-                if (note.paper != p) setPaper(p)
-                if (all.isChecked) NotePaper.setDefault(this@NoteActivity, p)
-                paint()
-            }
-        }.also { pills[p] = it })
-        paint()
-        box.addView(row)
-        box.addView(all)
-        box.addView(Ui.text(this, "В линейку и в клетку каждая строка ложится на линию, название — на две.", 13f, Ui.MUTED).apply {
-            setPadding(0, dp(6f), 0, 0)
-        })
-        paperDlg = AlertDialog.Builder(this).setTitle("Разлиновка").setView(box).setPositiveButton("Готово", null).show()
-    }
-
-    private fun setPaper(p: String) {
-        note.paper = p
-        applyPaper()
-        for (e in edits) e.relayout()
-        sheet.requestLayout()
-        sheet.invalidate()
-        changed()
-    }
-
     private fun deleteDialog() {
         AlertDialog.Builder(this)
             .setMessage("Удалить заметку «${note.title.ifBlank { "Новая заметка" }}»?")
@@ -1986,7 +1947,9 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         if (note.layoutV >= 2) return
         syncModel(maps = true)
         if (note.drawings.isEmpty() || sheet.width == 0) { note.layoutV = 2; saveSoon(); return }
-        val w = sheet.width - sheet.paddingLeft - sheet.paddingRight
+        // Лист до 0.30: поля 56 и 36 dp, сверху 18 dp. Теперь лист чистый, поля другие — рисунки сдвигаются и вбок.
+        val w = sheet.width - dp(56f) - dp(36f)
+        val dx = (sheet.paddingLeft - dp(56f)).toFloat()
         fun measure(v: View): Int {
             v.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
             return v.measuredHeight
@@ -2010,7 +1973,7 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
                 if (bi >= 0) { newTops[bi] = v.top; imageH[bi] = v.height }
             }
         }
-        var y = sheet.paddingTop + measure(Ui.text(this, note.title, 26f, Ui.INK, bold = true).apply { setPadding(0, 0, 0, dp(2f)) }) +
+        var y = dp(18f) + measure(Ui.text(this, note.title, 26f, Ui.INK, bold = true).apply { setPadding(0, 0, 0, dp(2f)) }) +
             measure(Ui.mono(this, Ui.noteMeta(note.created), 12f).apply { setPadding(0, 0, 0, dp(10f)) })
         val oldTops = IntArray(note.blocks.size)
         for ((i, b) in note.blocks.withIndex()) {
@@ -2027,15 +1990,70 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
             var k = 0
             while (k + 1 < oldTops.size && oldTops[k + 1] <= y0) k++
             val dy = (newTops[k] - oldTops[k]).toFloat()
-            if (dy == 0f) continue
-            val pts = d.pts.copyOf()
-            var j = 1
-            while (j < pts.size) { pts[j] += dy; j += 3 }
-            note.drawings[n] = Drawing(d.kind, d.color, d.width, pts).also { it.id = d.id }
+            if (dy == 0f && dx == 0f) continue
+            note.drawings[n] = moved(d, dx, dy)
         }
         note.layoutV = 2
         saveSoon() // не правка: время заметки в списке не меняется
         ink.invalidate()
+    }
+
+    private fun moved(d: Drawing, dx: Float, dy: Float): Drawing {
+        val pts = d.pts.copyOf()
+        var j = 0
+        while (j + 1 < pts.size) { pts[j] += dx; pts[j + 1] += dy; j += 3 }
+        return Drawing(d.kind, d.color, d.width, pts).also { it.id = d.id }
+    }
+
+    /**
+     * Разлиновку убрали (0.31): заметка в линейку или в клетку становится чистым листом. Рисунки (схемы у строк) сдвигаются
+     * вслед за своей строкой — с места строки на листе в клетку (как открыли) на её место на чистом листе. Один раз, без «Отменить».
+     */
+    private fun migratePaper() {
+        val oldTops = anchorTops()
+        val oldLeft = sheet.paddingLeft
+        note.paper = NotePaper.NONE
+        applyPaper()
+        for (e in edits) e.relayout()
+        sheet.requestLayout()
+        sheet.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                sheet.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                val newTops = anchorTops()
+                val dx = (sheet.paddingLeft - oldLeft).toFloat()
+                for ((n, d) in note.drawings.withIndex()) {
+                    if (d.pts.size < 2) continue
+                    val y0 = d.pts[1]
+                    var k = 0
+                    while (k + 1 < oldTops.size && oldTops[k + 1] <= y0) k++
+                    val dy = (newTops[k] - oldTops[k]).toFloat()
+                    if (dy != 0f || dx != 0f) note.drawings[n] = moved(d, dx, dy)
+                }
+                saveSoon() // не правка: время заметки в списке не меняется
+                ink.invalidate()
+            }
+        })
+    }
+
+    /** Верх названия и каждого блока записи на листе (координаты листа): [0] — название, [i + 1] — блок i. */
+    private fun anchorTops(): IntArray {
+        syncModel(maps = true)
+        val out = IntArray(note.blocks.size + 1)
+        val f = firstEdit()
+        out[0] = f.top + f.totalPaddingTop
+        for (v in segs) when (v) {
+            is NoteEdit -> {
+                val map = paraBlock[v] ?: continue
+                val l = v.layout ?: continue
+                val st = v.starts()
+                for (i in map.indices) if (map[i] >= 0 && i < st.size) out[map[i] + 1] = v.top + v.totalPaddingTop + l.getLineTop(l.getLineForOffset(st[i]))
+            }
+            else -> blockOfView(v)?.let { b ->
+                val bi = note.blocks.indexOfFirst { it === b }
+                if (bi >= 0) out[bi + 1] = v.top
+            }
+        }
+        return out
     }
 
     // ---------------------------------------------------------------- отмена и сохранение

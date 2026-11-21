@@ -168,15 +168,6 @@ class NoteEditorTest {
         click(a, "bar_up")
         assertEquals(listOf("Первое [num]", "Третье [num]", "Второе [num]"), lines(a.editors().single()).takeLast(3))
         shot(root, "note-iphone-lists.png")
-        // Та же заметка в линейку: каждая строка — на линии.
-        a.paperDialog(); idle()
-        a.paperDlg!!.findViewById<View>(android.R.id.custom).findViewWithTag<View>("paper_lines").performClick(); idle()
-        a.paperDlg!!.dismiss(); idle()
-        shot(root, "note-iphone-lined.png")
-        val ed = a.editors().single()
-        val cell = Ui.dp(ctx, 36f)
-        val ll = ed.layout
-        for (k in 0 until ll.lineCount) assertEquals("строка $k — в клетку", if (k == 0) 2 * cell else cell, ll.getLineBottom(k) - ll.getLineTop(k))
 
         // Ушли и вернулись — всё на месте.
         val saved = note(a)
@@ -185,6 +176,38 @@ class NoteEditorTest {
         assertEquals("Привет", back.title)
         assertTrue(back.blocks.any { it is Block.Task && it.text == "Купить молоко" && it.done })
         assertTrue(back.blocks.any { it is Block.Para && it.text == "Третье" && it.style == ParaStyle.NUM })
+    }
+
+    /** Разлиновки больше нет: заметка в линейку открывается чистым листом, рисунок у строки остаётся у неё. */
+    @Test
+    fun linedNoteBecomesPlainAndDrawingFollowsItsLine() {
+        val n = Note.create("Планёрка")
+        n.paper = NotePaper.LINES
+        n.blocks.clear()
+        for (i in 1..6) n.blocks += Block.Para("Строка $i")
+        // Как была открыта в 0.30 (в линейку): лист с полями 56 / 18 dp, дата — клетка, название — две, строки — по клетке.
+        val cell = Ui.dp(ctx, 36f)
+        val oldTop5 = Ui.dp(ctx, 18f) + cell + 2 * cell + 4 * cell // верх строки 5 (блок 4)
+        val y0 = (oldTop5 + Ui.dp(ctx, 8f)).toFloat()
+        val x0 = (Ui.dp(ctx, 56f) + 300).toFloat()
+        n.drawings += Drawing("pen", Ui.PEN_INK, 3f, floatArrayOf(x0, y0, 0.5f, x0 + 120f, y0 + 10f, 0.5f))
+        val a = open(n)
+        idle()
+        val m = a.model()
+        assertEquals(NotePaper.NONE, m.paper)
+        val e = a.editors().single()
+        val top5 = e.top + e.totalPaddingTop + e.layout.getLineTop(e.layout.getLineForOffset(e.paraStart(5)))
+        val d = m.drawings[0]
+        assertEquals("рисунок — на том же месте у своей строки", y0 - oldTop5, d.pts[1] - top5, 1.5f)
+        assertEquals("и вбок — на разницу полей", x0 - Ui.dp(ctx, 56f), d.pts[0] - Ui.dp(ctx, 22f), 1.5f)
+        val sheet = NoteActivity::class.java.getDeclaredField("sheet").apply { isAccessible = true }.get(a) as RuledSheet
+        assertEquals(NotePaper.NONE, sheet.paper)
+        shot(a.window.decorView, "note-iphone-from-lined.png")
+        // Второй раз — не сдвигается.
+        NoteActivity::class.java.getDeclaredMethod("saveNow", Boolean::class.javaPrimitiveType).apply { isAccessible = true }.invoke(a, true)
+        val again = Robolectric.buildActivity(NoteActivity::class.java, Intent(ctx, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, n.id)).setup().get()
+        idle()
+        assertEquals(d.pts[1], again.model().drawings[0].pts[1], 0.11f)
     }
 
     @Test

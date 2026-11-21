@@ -129,11 +129,10 @@ class NoteSheetTest {
         val a = ctl.get()
         idle()
         val root = a.window.decorView
-        // Название — первой строкой листа, в две клетки.
+        // Название — первой строкой листа; разлиновки нет (как на айфоне).
         val title = a.editors()[0]
         assertEquals("Планёрка на объекте", title.paraText(0))
-        val cell = Ui.dp(a, 36f)
-        assertEquals(2 * cell, title.layout.getLineBottom(0) - title.layout.getLineTop(0))
+        assertEquals(NotePaper.NONE, note(a).paper)
         assertEquals(View.VISIBLE, root.findViewWithTag<View>("pen_bar").visibility)
         assertEquals(View.GONE, root.findViewWithTag<View>("keys_bar").visibility)
 
@@ -194,27 +193,10 @@ class NoteSheetTest {
         assertTrue(txt, txt.startsWith("Планёрка на объекте\n\nПовестка"))
         assertTrue(txt, "• Опалубка" in txt && "    • Бетон" in txt && "1. Первое" in txt && "☐ Второе" in txt)
 
-        // Лист — по клеткам: каждый кусок и каждая строка в нём начинаются на линии клетки.
-        val sh = sheet(a)
-        for (i in 0 until sh.childCount) {
-            val c = sh.getChildAt(i)
-            if (c.visibility != View.GONE) assertEquals("кусок $i на линии клетки", 0, (c.top - sh.paddingTop) % cell)
-        }
-        for (k in 0 until edit.layout.lineCount) assertEquals("строка $k на линии клетки", 0, edit.layout.getLineTop(k) % cell)
+        assertEquals("лист без линеек", NotePaper.NONE, sheet(a).paper)
         shot(root, "note-sheet-format.png")
         root.findViewWithTag<View>("fmt_close").performClick(); idle()
-
-        // Разлиновка: в клетку, для всех новых.
-        a.paperDialog(); idle()
-        val dlg = a.paperDlg!!
-        dlg.window!!.decorView.findViewWithTag<View>("paper_grid").performClick(); idle()
-        dlg.window!!.decorView.findViewWithTag<android.widget.CheckBox>("paper_all").isChecked = true
-        dlg.dismiss(); idle()
-        assertEquals(NotePaper.GRID, note(a).paper)
-        assertEquals(NotePaper.GRID, sh.paper)
-        assertEquals(NotePaper.GRID, NotePaper.default(ctx))
         root.findViewWithTag<View>("keys_hide").performClick(); idle()
-        shot(root, "note-sheet-grid.png")
 
         // «Отменить» — оформление тоже.
         val undo = NoteActivity::class.java.getDeclaredMethod("undo").apply { isAccessible = true }
@@ -235,7 +217,7 @@ class NoteSheetTest {
         assertEquals(View.GONE, root.findViewWithTag<View>("keys_bar").visibility)
         ctl.pause()
         val saved = NoteStore(ctx).load(n.id)!!
-        assertEquals(NotePaper.GRID, saved.paper)
+        assertEquals(NotePaper.NONE, saved.paper)
         assertEquals(ParaStyle.H1, (saved.blocks[0] as Block.Para).style)
     }
 
