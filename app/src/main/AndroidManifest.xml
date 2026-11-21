@@ -3,6 +3,8 @@
 
     <!-- Интернет: один раз скачать языковую модель (~20 МБ) и проверять обновления FreeWrite. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Голосовой ввод в заметках: звук распознаётся на самом планшете и никуда не отправляется. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Ставить скачанное обновление FreeWrite (Android всё равно спросит подтверждение). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />

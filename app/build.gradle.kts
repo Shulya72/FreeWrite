@@ -18,6 +18,9 @@ android {
         // Actions из облака (в репозитории его нет); пусто — синхронизация недоступна в этой сборке.
         val syncUrl = System.getenv("FREEWRITE_SYNC_URL").orEmpty().trim()
         buildConfigField("String", "SYNC_URL", "\"" + syncUrl.replace("\"", "") + "\"")
+        // Только ARM — планшеты и телефоны (распознавание речи тянет свою библиотеку под каждую систему команд;
+        // x86 нужен лишь эмуляторам).
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
     signingConfigs {
@@ -79,8 +82,17 @@ dependencies {
     implementation("com.google.mlkit:digital-ink-recognition:19.0.0")
     // FileProvider: передать скачанное обновление системному установщику.
     implementation("androidx.core:core:1.13.1")
+    // ONNX Runtime: распознавание речи (модель GigaAM от Сбера) и поиск пауз (Silero VAD) на самом устройстве.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.1")
 
     // Только для проверок на компьютере (в APK не попадает).
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
+    // Тот же ONNX Runtime для компьютера: проверки голоса запускают настоящие модели.
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:1.31.1")
+}
+
+// В проверках на компьютере — сборка ONNX Runtime для компьютера (у Android-сборки нет библиотек под x86-64 Linux).
+configurations.matching { it.name.contains("UnitTest") }.configureEach {
+    exclude(group = "com.microsoft.onnxruntime", module = "onnxruntime-android")
 }
