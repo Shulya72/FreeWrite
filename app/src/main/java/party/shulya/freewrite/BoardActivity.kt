@@ -264,6 +264,7 @@ class BoardActivity : Activity(), BoardView.Host {
         Trail.startWatch("доска")
         if (BoardStore.importCount(board.id) != loadedImports) reloadAfterImport()
         remote?.start()
+        TemplateSync.kick(this) // шаблоны таблиц команды — свежие к выбору таблиц (0.32.2)
     }
 
     /** Пока экран был свёрнут, в доску влили файл коллеги — перечитать (камера остаётся своя). */
@@ -915,7 +916,7 @@ class BoardActivity : Activity(), BoardView.Host {
         restore(undoStack.removeLast())
     }
 
-    private fun redo() {
+    internal fun redo() {
         if (redoStack.isEmpty() || committing.isNotEmpty() || current != null) return
         undoStack.addLast(board.snapshot())
         restore(redoStack.removeLast())

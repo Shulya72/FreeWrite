@@ -273,6 +273,8 @@ class Board(
     val events = ArrayList<BoardEvent>()
     /** Области захваток на листах плана таблиц (0.23). */
     val zones = ArrayList<BoardZone>()
+    /** Свои виды таблиц «только для этой доски» (0.32.2). */
+    val kinds = ArrayList<BoardKind>()
     val statuses = ArrayList<BoardStatus>()
     var camX = 0f
     var camY = 0f
@@ -431,6 +433,7 @@ class Board(
         if (vitems.isNotEmpty()) list("vitems", vitems, { it.id }) { Vedoms.itemJson(it) }
         if (events.isNotEmpty()) list("events", events, { it.id }) { it.json() }
         if (zones.isNotEmpty()) list("zones", zones, { it.id }) { TablePlan.zoneJson(it) }
+        if (kinds.isNotEmpty()) list("tkinds", kinds, { it.id }) { BoardKind.json(it) }
         st?.finish()
         val tail = StringBuilder(sync.objs.size * 48 + 64)
         tail.append(",\"sync\":")
@@ -462,6 +465,7 @@ class Board(
         for (i in vitems) f(i.id, fingerprint(Vedoms.itemJson(i)))
         for (e in events) f(e.id, fingerprint(e.json()))
         for (z in zones) f(z.id, fingerprint(TablePlan.zoneJson(z)))
+        for (k in kinds) f(k.id, fingerprint(BoardKind.json(k)))
     }
 
     fun entryHashes(): HashMap<String, Long> {
@@ -471,7 +475,7 @@ class Board(
     }
 
     fun objectCount() = strokes.size + texts.size + images.size + stickers.size + fills.size + callouts.size + frames.size + rows.size + tables.size + recs.size +
-        vedoms.size + vitems.size + events.size + zones.size + statuses.size
+        vedoms.size + vitems.size + events.size + zones.size + kinds.size + statuses.size
 
     /**
      * Отметить правки перед сохранением: у изменённых и новых предметов — новая отметка времени,
@@ -543,6 +547,7 @@ class Board(
         for (i in vitems) fix(i.id) { Vedoms.itemJson(i) }?.let { i.id = it }
         for (e in events) fix(e.id) { e.json() }?.let { e.id = it }
         for (z in zones) fix(z.id) { TablePlan.zoneJson(z) }?.let { z.id = it }
+        for (k in kinds) fix(k.id) { BoardKind.json(k) }?.let { k.id = it }
     }
 
     fun toJson(withCamera: Boolean = true): JSONObject = JSONObject(toJsonString(withCamera))
@@ -582,6 +587,7 @@ class Board(
         Array(vitems.size) { Vedoms.itemJson(vitems[it]) },
         Array(events.size) { events[it].json() },
         Array(zones.size) { TablePlan.zoneJson(zones[it]) },
+        Array(kinds.size) { BoardKind.json(kinds[it]) },
     )
 
     /** Вернуть доску к снимку. Неизменённые рисунки и заливки берутся как есть, без разбора JSON. */
@@ -613,6 +619,7 @@ class Board(
         for (e in events) es[e.json()] = e
         for (j in snap.events) b.events += es[j] ?: Vedoms.parseEvent(JSONObject(j))
         for (j in snap.zones) TablePlan.parseZone(JSONObject(j))?.let { b.zones += it }
+        for (j in snap.kinds) BoardKind.parse(JSONObject(j))?.let { b.kinds += it }
         return b
     }
 
@@ -786,6 +793,7 @@ class Board(
             o.optJSONArray("vitems")?.let { a -> for (i in 0 until a.length()) b.vitems += Vedoms.parseItem(a.getJSONObject(i)) }
             o.optJSONArray("events")?.let { a -> for (i in 0 until a.length()) b.events += Vedoms.parseEvent(a.getJSONObject(i)) }
             o.optJSONArray("zones")?.let { a -> for (i in 0 until a.length()) TablePlan.parseZone(a.getJSONObject(i))?.let { b.zones += it } }
+            o.optJSONArray("tkinds")?.let { a -> for (i in 0 until a.length()) BoardKind.parse(a.getJSONObject(i))?.let { b.kinds += it } }
             b.upgradeStatuses()
             IdTables.upgrade(b)
             b.sync = BoardSync.parse(o.optJSONObject("sync"))
@@ -826,6 +834,7 @@ class BoardSnapshot(
     val vitems: Array<String> = emptyArray(),
     val events: Array<String> = emptyArray(),
     val zones: Array<String> = emptyArray(),
+    val kinds: Array<String> = emptyArray(),
 )
 
 /** Сводка доски для Ежедневника: название, даты, сколько предметов, счётчики статусов. */

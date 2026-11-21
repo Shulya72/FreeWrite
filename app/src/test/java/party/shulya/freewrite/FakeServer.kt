@@ -27,6 +27,14 @@ class FakeServer : SyncTransport {
     val parts = HashMap<String, ByteArray>()
     var calls = 0
     var offline = false
+    /** Шаблоны таблиц команды (0.32.2): номер → (rev, данные, удалён, автор). */
+    class Tpl(val id: String, val rev: String, val body: String, val deleted: Boolean, val author: String)
+    val templates = LinkedHashMap<String, Tpl>()
+
+    private fun tplJson(t: Tpl): JSONObject = JSONObject().put("id", t.id).put("rev", t.rev).put("deleted", t.deleted).apply {
+        if (!t.deleted) put("body", t.body)
+        if (t.author.isNotEmpty()) put("a", t.author)
+    }
 
     private fun err(status: Int, code: String, msg: String): Nothing = throw SyncException(status, code, msg)
 
@@ -42,6 +50,19 @@ class FakeServer : SyncTransport {
         val r = JSONObject(req.toString()) // как по сети: только JSON
         return when (r.getString("op")) {
             "ping" -> JSONObject().put("ok", true).put("api", 1)
+            "tpl_list" -> JSONObject().put("templates", JSONArray().apply { templates.values.forEach { put(tplJson(it)) } })
+            "tpl_put" -> {
+                val id = r.getString("id")
+                if (!id.startsWith("u:")) err(400, "bad_id", "Неверное поле id")
+                val rev = r.getString("rev")
+                val old = templates[id]
+                if (old != null && old.rev >= rev) return JSONObject().put("ok", false).put("current", tplJson(old))
+                val deleted = r.optBoolean("deleted")
+                val body = if (deleted) "" else r.getString("body")
+                if (!deleted && JSONObject(body).optString("id") != id) err(400, "bad_body", "Шаблон повреждён")
+                templates[id] = Tpl(id, rev, body, deleted, r.optString("author"))
+                JSONObject().put("ok", true)
+            }
             "create" -> {
                 val id = r.getString("board")
                 val dev = r.optString("device")

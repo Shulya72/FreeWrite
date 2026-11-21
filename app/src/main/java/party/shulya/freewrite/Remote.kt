@@ -116,6 +116,7 @@ object Remote {
         for (i in board.vitems) add(i.id, "vitem") { Vedoms.itemJson(i) }
         for (e in board.events) add(e.id, "event") { e.json() }
         for (z in board.zones) add(z.id, "zone") { TablePlan.zoneJson(z) }
+        for (k in board.kinds) add(k.id, "tkind") { BoardKind.json(k) }
         for ((id, r) in s.tomb) {
             if (r.isNotEmpty() && r > after && s.seenRemote[id] != r) out += Change(id, r, "", null)
         }
@@ -219,6 +220,7 @@ object Remote {
         board.vitems.removeAll { it.id == id }
         board.events.removeAll { it.id == id }
         board.zones.removeAll { it.id == id }
+        board.kinds.removeAll { it.id == id }
         if (board.statuses.size > 1) board.statuses.removeAll { it.id == id }
     }
 
@@ -269,6 +271,7 @@ object Remote {
             "vitem" -> put(board.vitems, Vedoms.parseItem(j).also { it.id = r.id }) { it.id }
             "event" -> put(board.events, Vedoms.parseEvent(j).also { it.id = r.id }) { it.id }
             "zone" -> TablePlan.parseZone(j)?.also { it.id = r.id }?.let { z -> put(board.zones, z) { it.id } }
+            "tkind" -> BoardKind.parse(j)?.also { it.id = r.id }?.let { k -> put(board.kinds, k) { it.id } }
             else -> {} // вид из будущей версии — пропускаем
         }
     }

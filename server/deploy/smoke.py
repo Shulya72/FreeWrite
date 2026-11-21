@@ -146,6 +146,19 @@ try:
     check(status == 403 and body.get("error") == "view_only", "кодом просмотра в приложение не войти")
     status, body = call("history", board=board, key=v["key"])
     check(status == 403, "журнал по ключу просмотра не читается")
+    # Шаблоны таблиц команды (0.32.2): список читается; проверочный шаблон сохраняется и тут же удаляется
+    # (остаётся только отметка удаления под одним и тем же номером — в приложении её не видно).
+    tpls = ok("tpl_list")["templates"]
+    print("OK шаблонов таблиц команды: %d" % sum(1 for t in tpls if not t["deleted"]))
+    tid = "u:smoketest"
+    body = json.dumps({"id": tid, "kd": {"n": "Проверка сервера", "s": "Проверка", "p": [], "w": []}, "cols": []})
+    now = int(time.time() * 1000)
+    check(ok("tpl_put", id=tid, rev=rev(now, 1), body=body, device="smoke1")["ok"], "шаблон сохраняется")
+    check(any(t["id"] == tid and not t["deleted"] for t in ok("tpl_list")["templates"]), "шаблон в списке")
+    check(ok("tpl_put", id=tid, rev=rev(now, 2), deleted=True, device="smoke1")["ok"], "шаблон удаляется")
+    check(any(t["id"] == tid and t["deleted"] for t in ok("tpl_list")["templates"]), "удаление — отметкой")
+    late = ok("tpl_put", id=tid, rev=rev(now - 1000), body=body, device="smoke1")
+    check(not late["ok"] and late["current"]["deleted"], "старая правка шаблона не принимается")
 finally:
     r = ok("delete", board=board, key=key)
     print("OK временная доска удалена (картинок: %s)" % r.get("images"))

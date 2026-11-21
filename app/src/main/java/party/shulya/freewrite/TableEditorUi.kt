@@ -18,6 +18,10 @@ import kotlin.math.min
  * составлял свою и сохранял; при создании таблицы выбирал бы её»). Окно шаблона: название, раздел проводника, «на основе»,
  * столбцы (показать / скрыть, переименовать, порядок; свои — текст, число, дата, отметка ✓, список с цветами), виды работ,
  * части объёма. Сохранили — шаблон в проводнике «Таблица ИД».
+ *
+ * Где хранится (0.32.2, Владимир): новый вид при сохранении — выбор «Сохранить как шаблон» (общий список команды на сервере,
+ * есть в выборе таблиц на всех досках) или «Только для этой доски» (хранится в доске, список шаблонов не засоряется).
+ * Шаблон правится и сохраняется как шаблон; вид доски при сохранении можно сделать шаблоном.
  */
 class TableEditor(private val a: BoardActivity) {
     private fun dp(x: Float) = Ui.dp(a, x)
@@ -26,6 +30,7 @@ class TableEditor(private val a: BoardActivity) {
     /** Открытое окно (для проверок). */
     internal var dialog: AlertDialog? = null
     internal var colDialog: AlertDialog? = null
+    internal var scopeDialog: AlertDialog? = null
 
     /**
      * Открыть шаблон [tpl] на правку. [fresh] — новый (есть «На основе»). [onSaved] — после «Сохранить» (шаблон уже в
@@ -36,10 +41,14 @@ class TableEditor(private val a: BoardActivity) {
         last = this
         val t = tpl.copy()
         val library = TableTemplates(a)
+        val inLibrary = library.get(t.id) != null
+        val boardOnly = !inLibrary && b.kinds.any { it.tpl.id == t.id }
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(16f), dp(20f), dp(8f)); tag = "tpl_editor" }
         box.addView(Ui.text(a, if (fresh) "Своя таблица" else "Таблица «${t.name}»", 20f, Ui.INK, bold = true))
         box.addView(Ui.text(a, "Столбцы, виды работ и объём — как нужно для этой конструкции. Сохраните — таблица появится в «Таблица ИД».",
             13f, Ui.MUTED).apply { setPadding(0, dp(4f), 0, dp(6f)) })
+        if (inLibrary || boardOnly) box.addView(Ui.chip(a, if (inLibrary) "Шаблон — в выборе таблиц на всех досках, у всей команды"
+            else "Только для этой доски", Ui.ACCENT, Ui.ACCENT_SOFT).apply { tag = "tpl_where" })
         fun label(s: String) = box.addView(Ui.text(a, s, 13f, Ui.MUTED, bold = true).apply { setPadding(0, dp(14f), 0, dp(4f)) })
         fun field(value: String, hint0: String, tag0: String) = EditText(a).apply {
             setText(value); setSelection(text.length); isSingleLine = true; hint = hint0; tag = tag0; textSize = 16f
@@ -70,7 +79,7 @@ class TableEditor(private val a: BoardActivity) {
             val base = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(6f) }
             val bases = ArrayList<Pair<String, () -> TableTemplate>>()
             for (k in TableKinds.ALL) bases += k.name to { TableTemplate.fromKind(k, t.id) }
-            for (o in library.list()) if (o.id != t.id) bases += o.name to { o.copy(t.id) }
+            for (o in library.list() + b.kinds.map { it.tpl }) if (o.id != t.id) bases += o.name to { o.copy(t.id) }
             bases += "Пустая" to { TableTemplate(t.id, "", "", TableTemplate.defaultCols(setOf(TableCol.CON, TableCol.UCH)), ArrayList(), ArrayList()) }
             for ((i, p) in bases.withIndex()) base.addView(Ui.pill(a, p.first, Ui.INK, Ui.DESK).apply {
                 tag = "tpl_base_$i"
@@ -181,19 +190,87 @@ class TableEditor(private val a: BoardActivity) {
             if (n.isEmpty()) { name.error = "Впишите название"; name.requestFocus(); return@setOnClickListener }
             t.name = n
             t.section = section.text.toString().trim().ifEmpty { "Мои таблицы" }
-            library.save(t)
-            if (apply.isChecked && onBoard > 0) applyToBoard(t)
-            d.dismiss()
-            a.hint("Таблица «${t.name}» сохранена — она в «Таблица ИД», раздел «${t.section}»", 2600)
-            onSaved(t)
+            val update = apply.isChecked && onBoard > 0
+            fun saved(asTemplate: Boolean) {
+                d.dismiss()
+                a.hint(if (asTemplate) "«${t.name}» — шаблон: она в выборе таблиц на всех досках, у всей команды (раздел «${t.section}»)"
+                    else "«${t.name}» сохранена только для этой доски — раздел «${t.section}» в «Таблица ИД»", 3200)
+                onSaved(t)
+            }
+            if (inLibrary) { saveTemplate(t, library, update); saved(true); return@setOnClickListener }
+            askScope(t) { asTemplate ->
+                if (asTemplate) saveTemplate(t, library, update) else saveForBoard(t, update)
+                saved(asTemplate)
+            }
         }
         if (!fresh) d.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
             AlertDialog.Builder(a)
-                .setMessage("Убрать «${t.name}» из проводника? Таблицы этого вида на досках останутся как есть.")
-                .setPositiveButton("Убрать") { _, _ -> library.delete(t.id); d.dismiss(); onSaved(t) }
+                .setMessage(if (boardOnly) "Убрать «${t.name}» из видов таблиц этой доски? Таблицы этого вида останутся как есть."
+                    else "Убрать шаблон «${t.name}»? Он пропадёт из выбора таблиц у всей команды. Таблицы этого вида на досках останутся как есть.")
+                .setPositiveButton("Убрать") { _, _ ->
+                    if (boardOnly) {
+                        a.pushUndo()
+                        b.kinds.removeAll { it.tpl.id == t.id }
+                        a.changed()
+                    } else library.delete(t.id)
+                    d.dismiss()
+                    onSaved(t)
+                }
                 .setNegativeButton("Отмена", null)
                 .show()
         }
+    }
+
+    /**
+     * Новый вид (или вид этой доски) — куда сохранить: шаблон для всех досок или только эта доска (Владимир: «чтобы база
+     * шаблонов не забивалась»). [done] — true: шаблон.
+     */
+    private fun askScope(t: TableTemplate, done: (Boolean) -> Unit) {
+        val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(6f), dp(20f), dp(4f)) }
+        lateinit var d: AlertDialog
+        fun option(tag0: String, title: String, sub: String, fg: Int, bg: Int, asTemplate: Boolean) {
+            box.addView(LinearLayout(a).apply {
+                orientation = LinearLayout.VERTICAL; tag = tag0; isClickable = true
+                background = Ui.rounded(a, bg, null, 14f)
+                setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
+                addView(Ui.text(a, title, 16.5f, fg, bold = true))
+                addView(Ui.text(a, sub, 13f, if (fg == Color.WHITE) Color.WHITE else Ui.INK2).apply { setPadding(0, dp(3f), 0, 0) })
+                setOnClickListener { d.dismiss(); done(asTemplate) }
+            }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8f) })
+        }
+        option("tpl_scope_lib", "Сохранить как шаблон",
+            "Будет в выборе таблиц на всех досках — и на новых, у вас и у коллег.", Color.WHITE, Ui.ACCENT, true)
+        option("tpl_scope_board", "Только для этой доски",
+            "Будет только здесь — список шаблонов не забивается. На общей доске её увидят и коллеги.", Ui.INK, Ui.DESK, false)
+        d = AlertDialog.Builder(a)
+            .setTitle("Где сохранить «${t.name}»?")
+            .setView(box)
+            .setNegativeButton("Отмена", null)
+            .create()
+        scopeDialog = d
+        d.show()
+    }
+
+    /** В общий список шаблонов (на сервер); был видом этой доски — оттуда убирается (теперь он шаблон). */
+    private fun saveTemplate(t: TableTemplate, library: TableTemplates, update: Boolean) {
+        library.save(t)
+        val wasBoard = b.kinds.any { it.tpl.id == t.id }
+        if (wasBoard || update) {
+            a.pushUndo()
+            b.kinds.removeAll { it.tpl.id == t.id }
+            if (update) applyToBoard(t, undo = false)
+            a.changed()
+        }
+    }
+
+    /** Вид только этой доски: хранится в доске (едет к коллегам вместе с ней). Один шаг «Отменить». */
+    private fun saveForBoard(t: TableTemplate, update: Boolean) {
+        a.pushUndo()
+        val k = b.kinds.firstOrNull { it.tpl.id == t.id }
+        if (k != null) k.tpl = t.copy() else b.kinds += BoardKind(BoardKind.idFor(t.id), t.copy())
+        TableKinds.register(t.toKind())
+        if (update) applyToBoard(t, undo = false)
+        a.changed()
     }
 
     /** Свой столбец встаёт после «Вида работ» (как раньше в «Столбцах»), нет его — в конец. */
@@ -275,15 +352,15 @@ class TableEditor(private val a: BoardActivity) {
     }
 
     /** Таблицы этого вида на доске — по шаблону: устройство вида и столбцы (данные строк не трогаются). Один шаг «Отменить». */
-    private fun applyToBoard(t: TableTemplate) {
-        a.pushUndo()
+    private fun applyToBoard(t: TableTemplate, undo: Boolean = true) {
+        if (undo) a.pushUndo()
         val k = t.toKind()
         for (tb in b.tables) if (tb.kind == t.id) {
             tb.ownKind = k
             tb.cols.clear(); tb.cols.addAll(t.tableCols())
             tb.lay = null
         }
-        a.changed()
+        if (undo) a.changed()
     }
 
     companion object {

@@ -143,8 +143,9 @@ class BoardHistory(private val a: BoardActivity) {
             "frame" to arrayOf("раздел", "раздела", "разделов"),
             "row" to arrayOf("строка ИД", "строки ИД", "строк ИД"),
             "status" to arrayOf("статус", "статуса", "статусов"),
+            "tkind" to arrayOf("вид таблицы доски", "вида таблиц доски", "видов таблиц доски"),
         )
-        internal val ORDER = listOf("vedom", "table", "rec", "vitem", "frame", "callout", "text", "zone", "fill", "image", "sticker", "row", "status", "event", "stroke")
+        internal val ORDER = listOf("vedom", "table", "rec", "vitem", "tkind", "frame", "callout", "text", "zone", "fill", "image", "sticker", "row", "status", "event", "stroke")
 
         /** «удалено: ведомость «З-14» (На подписи у заказчика от 18.11.26), 25 схем в ведомостях; изменено: 3 строки таблиц». */
         fun summary(b: Board, g: Group): String {
@@ -194,6 +195,7 @@ class BoardHistory(private val a: BoardActivity) {
                 "frame" -> "Раздел «${Board.parseFrame(j).title}»"
                 "row" -> "Строка ИД «${j.optString("title").take(40)}»"
                 "status" -> "Статус «${j.optString("name")}»"
+                "tkind" -> "Вид таблицы этой доски «${BoardKind.parse(j)?.tpl?.name.orEmpty()}»"
                 else -> when (e.id) { Board.TITLE_ID -> "Название доски «${j.optString("title")}»"; Board.ORDER_ID -> "Порядок статусов"; else -> "Предмет" }
             }
         }.getOrDefault("Предмет")

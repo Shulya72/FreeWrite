@@ -171,36 +171,99 @@ class TableTemplate(
     }
 }
 
-/** Библиотека своих шаблонов на этом планшете: файл `table_templates.json`. */
+/**
+ * Шаблоны таблиц команды (0.32.2, Владимир: «сохранил как шаблон — при создании новой доски он есть в выборе таблиц;
+ * только для этой доски — список шаблонов не забивается»). Общий список — на сервере (tpl_list / tpl_put, видят все, кто
+ * работает в приложении); здесь — его копия с правками, которые ещё не ушли: без сети шаблон сохраняется сразу и уходит
+ * потом ([TemplateSync]). Файл `table_templates.json`: [{"t": шаблон, "r": отметка правки, "d": 1 — удалён, "p": 1 — не
+ * отправлен}]. Файл до 0.32.2 — просто список шаблонов этого планшета: все они становятся неотправленными и уходят в общий
+ * список (это и были шаблоны).
+ */
 class TableTemplates(ctx: Context) {
+    class Entry(val id: String, val tpl: TableTemplate?, val rev: String, val deleted: Boolean, val pending: Boolean)
+
+    private val app = ctx.applicationContext ?: ctx
     private val file = File(ctx.filesDir, "table_templates.json")
 
-    fun list(): List<TableTemplate> = runCatching {
-        val a = JSONArray(file.readText())
-        (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let { o -> TableTemplate.parse(o) } }
-    }.getOrDefault(emptyList())
+    fun entries(): List<Entry> = synchronized(LOCK) { read() }
+
+    fun list(): List<TableTemplate> = entries().filter { !it.deleted }.mapNotNull { it.tpl }
 
     fun get(id: String): TableTemplate? = list().firstOrNull { it.id == id }
 
+    /** Сохранить (новый или правка) — сразу здесь, на сервер — следом. */
     fun save(t: TableTemplate) {
-        val all = list().filter { it.id != t.id } + t
-        write(all)
+        synchronized(LOCK) {
+            val all = read().filter { it.id != t.id } + Entry(t.id, t.copy(), newRev(), deleted = false, pending = true)
+            write(all)
+        }
         TableKinds.register(t.toKind())
+        TemplateSync.kick(app)
     }
 
-    fun delete(id: String) = write(list().filter { it.id != id })
+    /** Убрать из общего списка (у всех). Отметка удаления уходит на сервер. */
+    fun delete(id: String) {
+        synchronized(LOCK) {
+            write(read().filter { it.id != id } + Entry(id, null, newRev(), deleted = true, pending = true))
+        }
+        TemplateSync.kick(app)
+    }
 
-    private fun write(all: List<TableTemplate>) {
-        val text = all.joinToString(",", "[", "]") { it.json() }
+    private fun newRev(): String {
+        val ms = System.currentTimeMillis()
+        val n = if (ms == lastMs) ++seq else { lastMs = ms; seq = 0; 0 }
+        return BoardSync.rev(ms, n, BoardSync.device(app))
+    }
+
+    internal fun read(): List<Entry> = runCatching {
+        if (!file.exists()) return emptyList()
+        val a = JSONArray(file.readText())
+        val out = ArrayList<Entry>()
+        for (i in 0 until a.length()) {
+            val o = a.optJSONObject(i) ?: continue
+            if (o.has("t") || o.has("d")) {
+                val tpl = o.optJSONObject("t")?.let { TableTemplate.parse(it) }
+                val id = tpl?.id ?: o.optString("id")
+                if (!TableKinds.isUser(id)) continue
+                out += Entry(id, tpl, o.optString("r"), o.optInt("d") == 1, o.optInt("p") == 1)
+            } else {
+                // Файл до 0.32.2: шаблон этого планшета — в общий список.
+                TableTemplate.parse(o)?.let { out += Entry(it.id, it, BoardSync.rev(0, i, "old"), deleted = false, pending = true) }
+            }
+        }
+        out.forEach { e -> e.tpl?.let { TableKinds.register(it.toKind()) } }
+        out
+    }.getOrDefault(emptyList())
+
+    internal fun write(all: List<Entry>) {
+        val sb = StringBuilder("[")
+        for ((i, e) in all.withIndex()) {
+            if (i > 0) sb.append(',')
+            sb.append("{\"id\":").append(JSONObject.quote(e.id)).append(",\"r\":").append(JSONObject.quote(e.rev))
+            if (e.tpl != null && !e.deleted) sb.append(",\"t\":").append(e.tpl.json())
+            if (e.deleted) sb.append(",\"d\":1")
+            if (e.pending) sb.append(",\"p\":1")
+            sb.append('}')
+        }
+        sb.append(']')
+        val text = sb.toString()
         val tmp = File(file.path + ".tmp")
         tmp.writeText(text)
         if (!tmp.renameTo(file)) { file.writeText(text); tmp.delete() }
     }
 
     companion object {
-        /** Свои виды таблиц на доске, которых нет в библиотеке (поставил коллега) — «На этой доске» в проводнике. */
+        internal val LOCK = Any()
+        private var lastMs = 0L
+        private var seq = 0
+
+        /**
+         * Свои виды таблиц на доске, которых нет ни в общем списке, ни среди видов этой доски (поставил коллега до того, как
+         * вид стал шаблоном) — «На этой доске» в проводнике.
+         */
         fun onBoard(b: Board, library: List<TableTemplate>): List<TableTemplate> {
             val have = library.mapTo(HashSet()) { it.id }
+            b.kinds.forEach { have += it.tpl.id }
             val out = LinkedHashMap<String, TableTemplate>()
             for (t in b.tables) if (TableKinds.isUser(t.kind) && t.kind !in have && t.kind !in out && t.ownKind != null) out[t.kind] = TableTemplate.fromTable(b, t, t.kind)
             return out.values.toList()
@@ -208,3 +271,108 @@ class TableTemplates(ctx: Context) {
     }
 }
 
+/**
+ * Обмен шаблонами с сервером: неотправленные — tpl_put, потом весь список — tpl_list (новее у сервера — берём, удалённые —
+ * убираем). В фоне, по одному обмену за раз; без сервера в сборке и без сети — молча, до следующего раза.
+ */
+object TemplateSync {
+    private val running = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** Когда последний раз удалось обменяться (для проверок и подсказок). */
+    @Volatile var lastOk = 0L
+        private set
+
+    /** Обменяться в фоне. [done] — на главном потоке: поменялся ли список (null — обмена не было или не вышло). */
+    fun kick(ctx: Context, done: ((Boolean?) -> Unit)? = null) {
+        val tr = RemoteSync.transport()
+        if (tr == null || !running.compareAndSet(false, true)) { done?.let { main.post { it(null) } }; return }
+        val app = ctx.applicationContext ?: ctx
+        Thread({
+            var changed: Boolean? = null
+            try {
+                changed = syncNow(app, tr)
+            } catch (t: Throwable) {
+                Trail.add("Шаблоны таблиц: обмен не вышел — ${t.javaClass.simpleName}: ${t.message}")
+            } finally {
+                running.set(false)
+                done?.let { cb -> main.post { cb(changed) } }
+            }
+        }, "templates-sync").start()
+    }
+
+    /** Обмен целиком (на текущем потоке). Вернуть, поменялся ли список. */
+    fun syncNow(ctx: Context, tr: SyncTransport): Boolean {
+        val lib = TableTemplates(ctx)
+        val author = Profile.name(ctx)
+        val device = BoardSync.device(ctx)
+        var changed = false
+        // 1. Неотправленные.
+        for (e in lib.entries().filter { it.pending }) {
+            val req = JSONObject().put("op", "tpl_put").put("id", e.id).put("rev", e.rev).put("device", device)
+            if (author.isNotEmpty()) req.put("author", author)
+            if (e.deleted || e.tpl == null) req.put("deleted", true) else req.put("body", e.tpl.json())
+            val r = tr.call(req)
+            val cur = r.optJSONObject("current")
+            synchronized(TableTemplates.LOCK) {
+                val all = lib.read()
+                val now = all.firstOrNull { it.id == e.id }
+                if (now == null || now.rev != e.rev) return@synchronized // пока отправляли, поправили ещё раз — уйдёт следом
+                val next = if (r.optBoolean("ok")) Entry(e, pending = false) else cur?.let { fromServer(it) } ?: Entry(e, pending = false)
+                if (!r.optBoolean("ok")) changed = true
+                lib.write(all.map { if (it.id == e.id) next else it })
+            }
+        }
+        // 2. Весь список с сервера.
+        val arr = tr.call(JSONObject().put("op", "tpl_list")).optJSONArray("templates") ?: JSONArray()
+        synchronized(TableTemplates.LOCK) {
+            val all = LinkedHashMap<String, TableTemplates.Entry>()
+            lib.read().forEach { all[it.id] = it }
+            val seen = HashSet<String>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id")
+                seen += id
+                val local = all[id]
+                if (local != null && (local.pending || local.rev >= o.optString("rev"))) continue
+                if (local == null && o.optBoolean("deleted")) continue
+                fromServer(o)?.let { all[id] = it; changed = true }
+            }
+            // Нет на сервере, а у нас отправлено (сервер начали заново) — отправим снова.
+            for ((id, e) in all) if (id !in seen && !e.pending && !e.deleted) all[id] = Entry(e, pending = true)
+            lib.write(all.values.toList())
+        }
+        lastOk = System.currentTimeMillis()
+        return changed
+    }
+
+    private fun Entry(e: TableTemplates.Entry, pending: Boolean) = TableTemplates.Entry(e.id, e.tpl, e.rev, e.deleted, pending)
+
+    private fun fromServer(o: JSONObject): TableTemplates.Entry? {
+        val id = o.optString("id")
+        if (!TableKinds.isUser(id)) return null
+        if (o.optBoolean("deleted")) return TableTemplates.Entry(id, null, o.optString("rev"), deleted = true, pending = false)
+        val tpl = runCatching { TableTemplate.parse(JSONObject(o.optString("body"))) }.getOrNull() ?: return null
+        TableKinds.register(tpl.toKind())
+        return TableTemplates.Entry(id, tpl, o.optString("rev"), deleted = false, pending = false)
+    }
+}
+
+/**
+ * Вид таблицы «только для этой доски» (0.32.2): хранится в самой доске (вид предмета `tkind`), едет к коллегам вместе с
+ * общей доской, в выборе таблиц других досок его нет. Номер предмета — «tk…» (номер вида «u:…» с двоеточием сервер в номерах
+ * предметов не принимает).
+ */
+class BoardKind(var id: String, var tpl: TableTemplate) {
+    companion object {
+        fun idFor(kindId: String) = "tk" + kindId.removePrefix(TableKinds.USER).filter { it.isLetterOrDigit() || it == '_' || it == '-' }
+
+        fun json(k: BoardKind): String = "{\"id\":" + JSONObject.quote(k.id) + ",\"tpl\":" + k.tpl.json() + "}"
+
+        fun parse(j: JSONObject): BoardKind? {
+            val t = TableTemplate.parse(j.optJSONObject("tpl") ?: return null) ?: return null
+            TableKinds.register(t.toKind())
+            return BoardKind(j.optString("id").ifEmpty { idFor(t.id) }, t)
+        }
+    }
+}

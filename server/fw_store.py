@@ -6,6 +6,7 @@ invites  — код-приглашение → доска;
 objects  — предметы досок (доска, id) → rev, вид, данные, удалён ли, seq; индекс по (доска, seq)
            для «что нового после seq»;
 images   — готовые картинки: имя → доска, число частей, размер;
+templates — шаблоны таблиц команды (0.32.2): номер → rev, данные, удалён ли; общий список для всех (отдельно от досок).
 history  — журнал (0.28.3, Владимир: «журнал на сервере делай»): каждая версия предмета, которую заменила более поздняя
            правка или удаление, — с тем, кто и когда её заменил. Хранится 30 дней (TTL YDB), потом удаляется сама.
            Ключ (доска, время замены, id, rev) — свежие записи читаются подряд от конца.
@@ -52,6 +53,11 @@ TABLES = [
         CREATE TABLE images (
             name Utf8, board_id Utf8, parts Uint32, bytes Uint64, created Uint64,
             PRIMARY KEY (name)
+        )"""),
+    ("templates", """
+        CREATE TABLE templates (
+            id Utf8, rev Utf8, body Utf8, deleted Bool, device Utf8, author Utf8, updated Uint64,
+            PRIMARY KEY (id)
         )"""),
 ]
 
@@ -138,6 +144,18 @@ DECLARE $names AS List<Utf8>;
 SELECT name, parts, bytes FROM images WHERE name IN $names;
 """
 Q_IMAGES_TOTAL = "SELECT SUM(bytes) AS total FROM images;"
+Q_TEMPLATES = "SELECT id, rev, body, deleted, author, updated FROM templates;"
+Q_TEMPLATE = """
+DECLARE $id AS Utf8;
+SELECT id, rev, body, deleted, author, updated FROM templates WHERE id = $id;
+"""
+Q_TEMPLATES_COUNT = "SELECT COUNT(*) AS n FROM templates;"
+Q_TEMPLATE_PUT = """
+DECLARE $id AS Utf8; DECLARE $rev AS Utf8; DECLARE $body AS Utf8; DECLARE $deleted AS Bool;
+DECLARE $device AS Utf8; DECLARE $author AS Utf8; DECLARE $now AS Uint64;
+UPSERT INTO templates (id, rev, body, deleted, device, author, updated)
+VALUES ($id, $rev, $body, $deleted, $device, $author, $now);
+"""
 Q_IMAGE_PUT = """
 DECLARE $name AS Utf8; DECLARE $b AS Utf8; DECLARE $parts AS Uint32; DECLARE $bytes AS Uint64;
 DECLARE $now AS Uint64;
@@ -417,6 +435,36 @@ class YdbStore:
                      "device": r.device or "", "author": r.author or "", "by_rev": r.by_rev or "",
                      "by_device": r.by_device or "", "by_author": r.by_author or "",
                      "by_deleted": bool(r.by_deleted)} for r in rs[0].rows]
+        return self._run(fn)
+
+    # ------------------------------------------------------------ шаблоны таблиц команды
+
+    @staticmethod
+    def _tpl(r):
+        return {"id": r.id, "rev": r.rev or "", "body": r.body or "", "deleted": bool(r.deleted),
+                "author": r.author or "", "updated": r.updated or 0}
+
+    def templates(self):
+        """Все шаблоны (их немного — сотни; ответ YDB до 1000 строк)."""
+        return [self._tpl(r) for r in self._read(Q_TEMPLATES, {})[0].rows]
+
+    def put_template(self, tid, rev, body, deleted, device, author, now, max_templates):
+        """Записать, если rev новее того, что на сервере. Вернуть (принято, что на сервере, если не принято)."""
+        def fn(session):
+            tx = session.transaction(ydb.SerializableReadWrite())
+            rows = tx.execute(session.prepare(Q_TEMPLATE), {"$id": tid})[0].rows
+            if rows and (rows[0].rev or "") >= rev:
+                tx.commit()
+                return False, self._tpl(rows[0])
+            if not rows:
+                n = tx.execute(session.prepare(Q_TEMPLATES_COUNT), {})[0].rows[0].n
+                if n >= max_templates:
+                    tx.rollback()
+                    raise ApiError(507, "full", "Шаблонов слишком много")
+            tx.execute(session.prepare(Q_TEMPLATE_PUT), {
+                "$id": tid, "$rev": rev, "$body": body, "$deleted": deleted, "$device": device,
+                "$author": author, "$now": now}, commit_tx=True)
+            return True, None
         return self._run(fn)
 
     # ------------------------------------------------------------ картинки

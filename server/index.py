@@ -18,6 +18,11 @@
 
 Сайт для руководства (FW-003): GET без op — страница просмотра (viewer.html). Код «только смотреть»
 (view_link → view) даёт ключ, которым можно только читать доску и картинки (pull, info, img_has, img_get).
+
+Шаблоны таблиц команды (0.32.2, Владимир: «сохранил как шаблон — при создании новой доски он есть в выборе таблиц»):
+один общий список для всех, кто работает в приложении (tpl_list / tpl_put). Шаблон — номер «u:…», отметка правки rev
+(как у предметов досок, побеждает более поздняя), данные (строка JSON шаблона, как в приложении), удалён ли. Удалённые
+остаются отметкой — чтобы удаление дошло до всех устройств.
 """
 import base64
 import hmac
@@ -52,6 +57,9 @@ FILE_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}$")
 # Вид предмета — латиница до 16 букв: новые виды из будущих версий приложения (раздел «frame» с 0.14,
 # дальше — другие) проходят без обновления сервера; сервер их не разбирает, только хранит.
 KIND_RE = re.compile(r"^[a-z]{0,16}$")
+TPL_ID_RE = re.compile(r"^u:[A-Za-z0-9_-]{1,40}$")
+MAX_TEMPLATES = int(os.environ.get("MAX_TEMPLATES", "500"))  # шаблонов вместе с удалёнными
+MAX_TPL_BODY = 64 * 1024                                      # данные одного шаблона
 INVITE_ABC = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 _store = None
@@ -434,6 +442,43 @@ def op_delete(req, ctx):
     return {"ok": True, "images": len(removed)}
 
 
+def _tpl_row(r: dict) -> dict:
+    e = {"id": r["id"], "rev": r["rev"], "deleted": bool(r["deleted"]), "updated": r.get("updated") or 0}
+    if not r["deleted"]:
+        e["body"] = r["body"]
+    if r.get("author"):
+        e["a"] = r["author"]
+    return e
+
+
+def op_tpl_list(req, ctx):
+    """Шаблоны таблиц команды — все, вместе с отметками удалённых."""
+    return {"templates": [_tpl_row(r) for r in store().templates()]}
+
+
+def op_tpl_put(req, ctx):
+    """Сохранить или удалить шаблон. Более ранняя правка не принимается — в ответе то, что на сервере."""
+    tid = _str(req, "id", TPL_ID_RE, limit=48)
+    rev = _str(req, "rev", REV_RE, limit=40)
+    device = _device(req)
+    author = _str(req, "author", required=False, limit=80).strip()
+    deleted = req.get("deleted") is True
+    body = ""
+    if not deleted:
+        body = _str(req, "body", limit=MAX_TPL_BODY)
+        try:
+            j = json.loads(body)
+        except ValueError:
+            raise ApiError(400, "bad_body", "Шаблон повреждён")
+        if not isinstance(j, dict) or j.get("id") != tid:
+            raise ApiError(400, "bad_body", "Шаблон повреждён")
+    ok, cur = store().put_template(tid, rev, body, deleted, device, author, now_ms(), MAX_TEMPLATES)
+    out = {"ok": ok}
+    if cur is not None:
+        out["current"] = _tpl_row(cur)
+    return out
+
+
 OPS = {
     "ping": op_ping,
     "create": op_create,
@@ -448,6 +493,8 @@ OPS = {
     "view_link": op_view_link,
     "view": op_view,
     "history": op_history,
+    "tpl_list": op_tpl_list,
+    "tpl_put": op_tpl_put,
 }
 
 _PAGE = None
