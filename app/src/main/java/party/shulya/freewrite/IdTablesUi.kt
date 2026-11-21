@@ -1485,10 +1485,10 @@ class TableUi(private val a: BoardActivity) {
             out += pill("Столбцы", "sel_cols") { columnsDialog(t) }
             out += pill(if (TableKinds.isUser(t.kind)) "Вид таблицы ✎" else "Сохранить как свою", "sel_tsave") { saveAsTemplate(t) }
             out += pill(if (t.sheets.isEmpty()) "+ план" else "План", "sel_plan") { if (t.sheets.isEmpty()) a.planUi.addSheet(t) else a.planUi.sheetMenu(t) }
-            // Склейка (0.26.3): приклеенную — отклеить (останется на месте, дальше двигается сама по себе).
-            if (t.dock.isNotEmpty()) out += pill("Отклеить", "sel_undock") {
-                a.pushUndo(); t.dock = ""; a.changed(); a.buildSelectionBar()
-                a.hint("Таблица отклеена. Приклеить снова — поставить вплотную справа к другой", 2500)
+            // Блок таблиц (0.26.3, 0.32.3): вынуть таблицу из блока — дальше двигается сама по себе.
+            if (TableDock.inBlock(t)) out += pill("Отклеить", "sel_undock") {
+                a.pushUndo(); undock(t); a.changed(); a.buildSelectionBar()
+                a.hint("Таблица вынута из блока. Приклеить снова — поставить вплотную к любой стороне другой таблицы", 2800)
             }
             out += pill(if (t.locked) "Открепить" else "Закрепить", "sel_tpin") {
                 a.pushUndo(); t.locked = !t.locked; a.changed(); a.buildSelectionBar()
@@ -1828,6 +1828,22 @@ class TableUi(private val a: BoardActivity) {
      * «Сохранить как свою» (0.30.1): таблицу на доске — в свои шаблоны (столбцы, виды работ, части объёма). Сама таблица
      * становится этого вида (данные строк те же). У своей таблицы — «Вид таблицы ✎»: правка шаблона.
      */
+    /**
+     * Вынуть таблицу из блока. Блок без неё сразу раскладывается заново — если он наехал на вынутую таблицу, она отходит
+     * вправо от блока (на той же высоте), чтобы не оказаться под соседями.
+     */
+    fun undock(t: BoardTable) {
+        val rest = TableDock.mates(b, t)
+        TableDock.detach(b, t)
+        if (rest.isEmpty()) return
+        val draw = v.tableDraw
+        TableDock.arrange(b, draw)
+        val rt = draw.bounds(b, t, RectF())
+        val rb = RectF(); val tb = RectF()
+        for (m in rest) { draw.bounds(b, m, tb); if (rb.isEmpty) rb.set(tb) else rb.union(tb) }
+        if (rest.any { draw.bounds(b, it, tb); RectF.intersects(tb, rt) }) t.x = rb.right + 2 * TableDock.GAP * t.scale
+    }
+
     fun saveAsTemplate(t: BoardTable) {
         val lib = TableTemplates(a)
         val known = if (TableKinds.isUser(t.kind)) lib.get(t.kind) ?: b.kinds.firstOrNull { it.tpl.id == t.kind }?.tpl else null
