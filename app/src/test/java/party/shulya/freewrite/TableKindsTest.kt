@@ -278,6 +278,7 @@ class TableKindsTest {
         var d = latest()
         assertNull(d.window!!.decorView.findViewWithTag<View>("add_con"))
         d.window!!.decorView.findViewWithTag<EditText>("add_zah").setText("1")
+        d.window!!.decorView.findViewWithTag<View>("add_works_kind").performClick()
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick(); idle()
         assertEquals("опалубка и бетон, без армирования", listOf("1 Опалубка", "1 Бетон"), IdTables.allRows(s.b, t).map { it.zah + " " + it.work })
 

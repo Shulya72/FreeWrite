@@ -254,16 +254,18 @@ class TablesTest {
         dlg = latest()
         dlg.window!!.decorView.findViewWithTag<EditText>("add_zah").setText("1")
         dlg.window!!.decorView.findViewWithTag<EditText>("add_who").setText("Монолит-Строй")
+        dlg.window!!.decorView.findViewWithTag<View>("add_works_kind").performClick()
         dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()
         assertEquals("опалубка и бетон — две строки", listOf("1 Опалубка", "1 Бетон"), IdTables.allRows(s.b, t).map { it.zah + " " + it.work })
         assertEquals(IdTables.IGS_NONE, s.b.recs[0].igs)
 
-        // «+ следующая захватка»: номер +1, те же виды работ; «Добавить и следующую» — сразу ещё форма.
+        // «+ следующая захватка»: номер +1, виды работ — «Как в прошлой строке» (0.32.5); «Добавить и следующую» — сразу ещё форма.
         s.a.tableUi.onTap(t, TableHit(TableHit.ADD_NEXT, null, null), pen = true)
         idle()
         dlg = latest()
         assertEquals("2", dlg.window!!.decorView.findViewWithTag<EditText>("add_zah").text.toString())
+        dlg.window!!.decorView.findViewWithTag<View>("add_works_last").performClick()
         dlg.getButton(android.app.AlertDialog.BUTTON_NEUTRAL).performClick()
         idle()
         assertEquals(4, s.b.recs.size)

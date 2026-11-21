@@ -59,6 +59,8 @@ class UchastokTest {
         b.frames += BoardFrame(0f, 0f, 4200f, 2600f, "КЖ8")
         b.fills += BoardFill(floatArrayOf(200f, 200f, 900f, 200f, 900f, 700f, 200f, 700f), Color.rgb(255, 152, 0))
         val t = BoardTable(200f, 1000f, 1.5f, "Лестничные марши")
+        // У лестниц отмечен «Тип конструкции» (марш, площадка) — в форме строки он есть (0.32.5: форма — по отмеченным столбцам).
+        t.cols.addAll(TableCol.defaultsFor(t)); t.cols.first { it.k == TableCol.CON }.hidden = false
         b.tables += t
         var o = 1.0
         for (u in listOf("LM1", "LM2")) for (con in listOf("Марш", "Площадка межэтажная")) for (w in listOf("Опалубка", "Бетон"))
@@ -216,13 +218,14 @@ class UchastokTest {
         pause(1000)
         val t = s.b.tables[0]
 
-        // «+ следующая захватка»: участок — как у последней строки (LM2), этаж +1, те же виды работ.
+        // «+ следующая захватка»: участок — как у последней строки (LM2), этаж +1, виды работ — «Как в прошлой строке».
         s.a.tableUi.onTap(t, TableHit(TableHit.ADD_NEXT, null, null), pen = true)
         idle()
         var d = latest()
         assertEquals("LM2", d.window!!.decorView.findViewWithTag<EditText>("add_uch").text.toString())
         assertEquals("4 этаж", d.window!!.decorView.findViewWithTag<EditText>("add_zah").text.toString())
         d.window!!.decorView.findViewWithTag<EditText>("add_con").setText("Марш")
+        d.window!!.decorView.findViewWithTag<View>("add_works_last").performClick()
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()
         val added = IdTables.zahRows(s.b, t, "LM2", "4 этаж")
@@ -235,6 +238,7 @@ class UchastokTest {
         d.window!!.decorView.findViewWithTag<EditText>("add_uch").setText("LM3")
         d.window!!.decorView.findViewWithTag<EditText>("add_zah").setText("4 этаж")
         d.window!!.decorView.findViewWithTag<EditText>("add_con").setText("Марш")
+        d.window!!.decorView.findViewWithTag<View>("add_works_last").performClick()
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
         idle()
         assertEquals(2, IdTables.zahRows(s.b, t, "LM3", "4 этаж").size)

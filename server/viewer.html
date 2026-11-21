@@ -500,7 +500,31 @@ function secTitle(t) { const f = sectionOf(t, "table"); return f ? String(f.titl
 function fullTitle(t) { const s = secTitle(t), n = String(t.title || "").trim(); return !s ? n : (!n || normW(n) === normW(s)) ? s : s + " · " + n; }
 function secPrefix(t) { const s = secTitle(t); return (!s || !String(t.title || "").trim() || normW(t.title) === normW(s)) ? "" : s; }
 function recDone(r) { return !!stIn("id", r.sid || "i0").done; }
-function tRows(t) { return B.recs.filter((r) => r.t === t.id).sort((a, b) => ((a.o || 0) - (b.o || 0)) || (a.id < b.id ? -1 : 1)); }
+// Порядок строк (0.32.5, t.srt — как в приложении IdTables.rowOrder): по столбцу «по-человечески», пустые — в конце; дальше участок,
+// захватка, тип конструкции, виды работ по порядку из вида таблицы, потом как добавляли. Без t.srt — как добавляли.
+function rowOrder(t) {
+  const key = t.srt || "";
+  const added = (a, b) => ((a.o || 0) - (b.o || 0)) || (a.id < b.id ? -1 : 1);
+  if (!key) return added;
+  const c = (t.cols || []).find((x) => x.k === key);
+  const num = (c && c.ty === "num") || isVolK(key);
+  const works = ((tKind(t) || {}).works || []).map((w) => String(w).toLowerCase());
+  const wi = (w) => { const i = works.indexOf(String(w || "").toLowerCase()); return i < 0 ? 1e9 : i; };
+  const ties = ["uch", "zah", "con"].filter((k) => k !== key);
+  const cmpVal = (a, b, number) => {
+    const x = String(a || "").trim(), y = String(b || "").trim();
+    if (!x !== !y) return x ? -1 : 1;
+    if (number) { const p = parseFloat(x.replace(",", ".")), q = parseFloat(y.replace(",", ".")); if (!isNaN(p) && !isNaN(q) && p !== q) return p < q ? -1 : 1; }
+    return natCmp(x, y);
+  };
+  return (p, q) => {
+    let r = cmpVal(recVal(p, key), recVal(q, key), num); if (r) return r;
+    for (const k of ties) { r = cmpVal(recVal(p, k), recVal(q, k), false); if (r) return r; }
+    if (key !== "work") { r = wi(p.w) - wi(q.w); if (r) return r; r = natCmp(p.w || "", q.w || ""); if (r) return r; }
+    return added(p, q);
+  };
+}
+function tRows(t) { return B.recs.filter((r) => r.t === t.id).sort(rowOrder(t)); }
 function plural(n, one, few, many) { const m10 = n % 10, m100 = n % 100; return n + " " + (m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many); }
 function tLayout(t) {
   if (t._lay) return t._lay;
@@ -893,12 +917,18 @@ function vItems(v) {
   const tabs = new Map(); for (const t of B.tables) if (!tabs.has(t.id)) tabs.set(t.id, t);
   const want = new Set(list.map((i) => i.r));
   const recs = new Map(); for (const r of B.recs) if (want.has(r.id) && !recs.has(r.id)) recs.set(r.id, r);
-  const titles = new Map();
+  const titles = new Map(), ranks = new Map();
+  // Таблица со своим порядком строк (0.32.5) — схемы в ведомости в том же порядке.
+  const rowPos = (t, r) => {
+    if (!t.srt) return r.o || 0;
+    if (!ranks.has(t.id)) { const m = new Map(); tRows(t).forEach((x, n) => m.set(x.id, n)); ranks.set(t.id, m); }
+    const v = ranks.get(t.id).get(r.id); return v === undefined ? (r.o || 0) : v;
+  };
   const keys = list.map((i) => {
     const r = recs.get(i.r), t = r && tabs.get(r.t);
     if (r && t) {
       if (!titles.has(t.id)) titles.set(t.id, fullTitle(t).trim());
-      return { i, title: titles.get(t.id), live: 1, t: t.id, ro: r.o || 0, uch: r.u || "", zah: r.z || "" };
+      return { i, title: titles.get(t.id), live: 1, t: t.id, ro: rowPos(t, r), uch: r.u || "", zah: r.z || "" };
     }
     return { i, title: String(i.lt || "").trim(), live: 0, t: "", ro: 0, uch: i.lu || "", zah: i.lz || "" };
   });

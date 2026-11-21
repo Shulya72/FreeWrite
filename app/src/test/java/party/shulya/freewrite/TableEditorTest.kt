@@ -224,7 +224,7 @@ class TableEditorTest {
         assertNotNull(er2.findViewWithTag<View>("kind_edit_${tpl.id}"))
         shotDialog(ex, "table-editor-explorer.png")
         er2.findViewWithTag<View>("kind_${tpl.id}").performClick(); idle()
-        // Раздела нет — шифр; потом форма строки: месяц, захватка, виды работ — свои, все отмечены.
+        // Раздела нет — шифр; потом форма строки: месяц, захватка, виды работ — свои; ничего не отмечено (0.32.5) — «Все работы таблицы».
         latest().window!!.decorView.findViewWithTag<EditText>("table_title").setText("НВК 3.1")
         latest().getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick(); idle()
         val form = latest()
@@ -232,6 +232,7 @@ class TableEditorTest {
         assertTrue(texts(fr).joinToString().contains("Месяц"))
         fr.findViewWithTag<EditText>("add_uch").setText("Ноябрь")
         fr.findViewWithTag<EditText>("add_zah").setText("Уч. 1")
+        fr.findViewWithTag<View>("add_works_kind").performClick()
         form.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick(); idle()
         val t = s.b.tables.single()
         assertEquals(tpl.id, t.kind)
