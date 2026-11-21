@@ -212,6 +212,8 @@ class TableEditorTest {
         assertTrue(texts(root).contains("Список: Нет, Есть, Проверен"))
         shotDialog(d, "table-editor.png")
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick(); idle()
+        // Новый вид — куда сохранить (0.32.2): шаблон для всех досок.
+        ed.scopeDialog!!.window!!.decorView.findViewWithTag<View>("tpl_scope_lib").performClick(); idle()
 
         // В проводнике — раздел «Сети» со своей таблицей.
         val tpl = TableTemplates(ctx).list().single()
@@ -278,6 +280,7 @@ class TableEditorTest {
         val d = TableEditor.last!!.dialog!!
         assertEquals("Обратная засыпка", d.window!!.decorView.findViewWithTag<EditText>("tpl_name").text.toString())
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick(); idle()
+        TableEditor.last!!.scopeDialog!!.window!!.decorView.findViewWithTag<View>("tpl_scope_lib").performClick(); idle()
         val tpl = TableTemplates(ctx).list().single()
         val now = s.a.board().tables.single()
         assertEquals("таблица стала своего вида", tpl.id, now.kind)

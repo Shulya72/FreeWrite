@@ -142,22 +142,31 @@ class TableUi(private val a: BoardActivity) {
         fun chip(textS: String, fg: Int, bg: Int) = Ui.text(a, textS, 12.5f, fg, bold = fg == blue).apply {
             background = Ui.rounded(a, bg, null, 999f); setPadding(dp(9f), dp(3f), dp(9f), dp(3f))
         }
-        // Свои таблицы (0.30.1): из библиотеки — в разделах по их названию раздела (раздел «КЖ» — вместе со встроенными),
-        // поставленные коллегой на эту доску — «На этой доске». У своих — ✎ (правка в «Редакторе таблиц»).
-        val library = TableTemplates(a).list()
+        // Свои таблицы (0.30.1): шаблоны команды (0.32.2 — общий список на сервере) и виды «только для этой доски» — в
+        // разделах по их названию раздела (раздел «КЖ» — вместе со встроенными); поставленные коллегой на эту доску до того, как
+        // вид стал шаблоном, — «На этой доске». У своих — ✎ (правка в «Редакторе таблиц»).
+        var library: List<TableTemplate> = emptyList()
         val tpls = HashMap<String, TableTemplate>()
-        library.forEach { tpls[it.id] = it }
-        val foreign = TableTemplates.onBoard(b, library)
-        foreign.forEach { tpls[it.id] = it }
+        val boardOnly = HashSet<String>()
         val sections = ArrayList<TableKinds.Section>()
-        for (sct in TableKinds.SECTIONS) {
-            val mine = library.filter { it.section.equals(sct.code, true) || it.section.equals(sct.name, true) }.map { it.toKind() }
-            sections += TableKinds.Section(sct.code, sct.name, sct.kinds + mine)
+        fun rebuild() {
+            library = TableTemplates(a).list()
+            val mineAll = library + b.kinds.map { it.tpl }.filter { k -> library.none { it.id == k.id } }
+            tpls.clear(); boardOnly.clear(); sections.clear()
+            mineAll.forEach { tpls[it.id] = it }
+            b.kinds.forEach { if (library.none { l -> l.id == it.tpl.id }) boardOnly += it.tpl.id }
+            val foreign = TableTemplates.onBoard(b, library)
+            foreign.forEach { tpls[it.id] = it }
+            for (sct in TableKinds.SECTIONS) {
+                val mine = mineAll.filter { it.section.equals(sct.code, true) || it.section.equals(sct.name, true) }.map { it.toKind() }
+                sections += TableKinds.Section(sct.code, sct.name, sct.kinds + mine)
+            }
+            mineAll.filter { tp -> TableKinds.SECTIONS.none { tp.section.equals(it.code, true) || tp.section.equals(it.name, true) } }
+                .groupBy { it.section.ifBlank { "Мои таблицы" } }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
+                .forEach { (name, list) -> sections += TableKinds.Section(name, "Свои таблицы", list.map { it.toKind() }) }
+            if (foreign.isNotEmpty()) sections += TableKinds.Section(ON_BOARD, "Поставил коллега — можно взять себе (✎)", foreign.map { it.toKind() })
         }
-        library.filter { tp -> TableKinds.SECTIONS.none { tp.section.equals(it.code, true) || tp.section.equals(it.name, true) } }
-            .groupBy { it.section.ifBlank { "Мои таблицы" } }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
-            .forEach { (name, list) -> sections += TableKinds.Section(name, "Свои таблицы", list.map { it.toKind() }) }
-        if (foreign.isNotEmpty()) sections += TableKinds.Section(ON_BOARD, "Поставил коллега — можно взять себе (✎)", foreign.map { it.toKind() })
+        rebuild()
         fun render() {
             list.removeAllViews()
             val q = search.text.toString().trim().lowercase()
@@ -206,6 +215,7 @@ class TableUi(private val a: BoardActivity) {
                     val chips = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(4f); setPadding(0, dp(5f), 0, 0) }
                     chips.addView(chip("объём: " + (if (k.parts.isEmpty()) "одной цифрой" else k.parts.joinToString(" · ") { it.name }), blue, blueBg))
                     if (k.works.isNotEmpty()) chips.addView(chip(k.works.joinToString(" · "), Ui.INK2, Ui.DESK))
+                    if (k.id in boardOnly) chips.addView(chip("только эта доска", Ui.ACCENT, Ui.ACCENT_SOFT).apply { tag = "kind_board_${k.id}" })
                     mid.addView(chips)
                     row.addView(mid, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
                     val tp = tpls[k.id]
@@ -213,7 +223,7 @@ class TableUi(private val a: BoardActivity) {
                         tag = "kind_edit_${k.id}"; contentDescription = "Изменить таблицу"; setPadding(dp(10f), dp(4f), dp(6f), dp(4f))
                         setOnClickListener {
                             dlg?.dismiss()
-                            TableEditor(a).open(tp, fresh = tp.id !in library.map { it.id }) { chooseKind(at) }
+                            TableEditor(a).open(tp, fresh = tp.id !in library.map { it.id } && tp.id !in boardOnly) { chooseKind(at) }
                         }
                     })
                     row.addView(Ui.text(a, "Поставить ›", 14.5f, Ui.ACCENT, bold = true).apply { setPadding(dp(10f), 0, dp(4f), 0) })
@@ -272,6 +282,8 @@ class TableUi(private val a: BoardActivity) {
         d.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN)
         d.show()
         d.window?.setLayout(min(dp(640f), (a.resources.displayMetrics.widthPixels * 0.94f).toInt()), Ui.WRAP)
+        // Шаблоны команды — свежие с сервера (коллега мог сохранить новый); пришло новое — список обновляется.
+        TemplateSync.kick(a) { changed -> if (changed == true && explorer === d && d.isShowing) { rebuild(); render() } }
     }
 
     /**
@@ -1818,10 +1830,10 @@ class TableUi(private val a: BoardActivity) {
      */
     fun saveAsTemplate(t: BoardTable) {
         val lib = TableTemplates(a)
-        val known = if (TableKinds.isUser(t.kind)) lib.get(t.kind) else null
+        val known = if (TableKinds.isUser(t.kind)) lib.get(t.kind) ?: b.kinds.firstOrNull { it.tpl.id == t.kind }?.tpl else null
         val tpl = known ?: TableTemplate.fromTable(b, t)
         TableEditor(a).open(tpl, fresh = known == null && !TableKinds.isUser(t.kind)) { saved ->
-            if (t.kind == saved.id || b.tables.none { it === t } || lib.get(saved.id) == null) return@open
+            if (t.kind == saved.id || b.tables.none { it === t } || (lib.get(saved.id) == null && b.kinds.none { it.tpl.id == saved.id })) return@open
             a.pushUndo()
             t.kind = saved.id
             t.ownKind = saved.toKind()

@@ -26,6 +26,7 @@ class MemoryStore:
         self.imgs = {}
         self.views = {}
         self.hist = []  # строки журнала, как в YDB (history)
+        self.tpls = {}  # шаблоны таблиц команды: id -> строка
 
     def _auth(self, board_id, key):
         b = self.boards.get(board_id)
@@ -133,6 +134,20 @@ class MemoryStore:
         return gone
 
 
+    def templates(self):
+        return [dict(r) for r in self.tpls.values()]
+
+    def put_template(self, tid, rev, body, deleted, device, author, now, max_templates):
+        old = self.tpls.get(tid)
+        if old is not None and old["rev"] >= rev:
+            return False, dict(old)
+        if old is None and len(self.tpls) >= max_templates:
+            raise ApiError(507, "full", "Шаблонов слишком много")
+        self.tpls[tid] = {"id": tid, "rev": rev, "body": body, "deleted": deleted, "device": device,
+                          "author": author, "updated": now}
+        return True, None
+
+
 class MemoryBlob:
     def __init__(self):
         self.data = {}
@@ -184,6 +199,56 @@ class ApiTest(unittest.TestCase):
 
     def create(self, title="Захватки"):
         return self.ok("create", board=BOARD, title=title, device="vlad01")
+
+    def tpl(self, tid="u:ab12cd34", name="Наружные сети К1"):
+        return json.dumps({"id": tid, "kd": {"n": name, "s": "Сети", "p": [], "w": ["Монтаж трубопровода"]}, "cols": []},
+                          ensure_ascii=False)
+
+    def test_templates_shared_by_team(self):
+        # Шаблонов пока нет.
+        self.assertEqual([], self.ok("tpl_list")["templates"])
+        # Владимир сохранил «Сети» — список общий, его видит любое устройство (ключ доски не нужен).
+        r = self.ok("tpl_put", id="u:ab12cd34", rev=rev(1000), body=self.tpl(), device="vlad01", author="Владимир Шульмин")
+        self.assertTrue(r["ok"])
+        lst = self.ok("tpl_list")["templates"]
+        self.assertEqual(1, len(lst))
+        self.assertEqual("u:ab12cd34", lst[0]["id"])
+        self.assertFalse(lst[0]["deleted"])
+        self.assertEqual("Владимир Шульмин", lst[0]["a"])
+        self.assertIn("Наружные сети", lst[0]["body"])
+        # Коллега поправил позже — принято; старая правка (раньше по времени) — нет, в ответе то, что на сервере.
+        self.assertTrue(self.ok("tpl_put", id="u:ab12cd34", rev=rev(2000, dev="kolya1"), body=self.tpl(name="Сети К2"),
+                                device="kolya1")["ok"])
+        late = self.ok("tpl_put", id="u:ab12cd34", rev=rev(1500), body=self.tpl(name="Старое"), device="vlad01")
+        self.assertFalse(late["ok"])
+        self.assertIn("Сети К2", late["current"]["body"])
+        # Удаление — отметка без данных, остаётся в списке (до всех устройств дойдёт).
+        self.assertTrue(self.ok("tpl_put", id="u:ab12cd34", rev=rev(3000), deleted=True, device="vlad01")["ok"])
+        lst = self.ok("tpl_list")["templates"]
+        self.assertTrue(lst[0]["deleted"])
+        self.assertNotIn("body", lst[0])
+
+    def test_template_checks(self):
+        st, e = self.call("tpl_put", id="ab12", rev=rev(1), body=self.tpl(), device="vlad01")
+        self.assertEqual((400, "bad_id"), (st, e["error"]))
+        st, e = self.call("tpl_put", id="u:ab12cd34", rev="1", body=self.tpl(), device="vlad01")
+        self.assertEqual((400, "bad_rev"), (st, e["error"]))
+        st, e = self.call("tpl_put", id="u:ab12cd34", rev=rev(1), body="{не json", device="vlad01")
+        self.assertEqual((400, "bad_body"), (st, e["error"]))
+        st, e = self.call("tpl_put", id="u:ab12cd34", rev=rev(1), body=self.tpl("u:other"), device="vlad01")
+        self.assertEqual((400, "bad_body"), (st, e["error"]))
+        st, e = self.call("tpl_put", id="u:ab12cd34", rev=rev(1), body="x" * (main.MAX_TPL_BODY + 1), device="vlad01")
+        self.assertEqual((400, "bad_body"), (st, e["error"]))
+        old = main.MAX_TEMPLATES
+        main.MAX_TEMPLATES = 1
+        try:
+            self.ok("tpl_put", id="u:one", rev=rev(1), body=self.tpl("u:one"), device="vlad01")
+            st, e = self.call("tpl_put", id="u:two", rev=rev(1), body=self.tpl("u:two"), device="vlad01")
+            self.assertEqual((507, "full"), (st, e["error"]))
+            # Уже существующий — править можно.
+            self.ok("tpl_put", id="u:one", rev=rev(2), body=self.tpl("u:one"), device="vlad01")
+        finally:
+            main.MAX_TEMPLATES = old
 
     def test_ping_get_and_raw(self):
         res = main.handler({"httpMethod": "GET", "queryStringParameters": {"op": "ping"}}, Ctx())
