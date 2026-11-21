@@ -696,15 +696,31 @@ class NoteEdit(context: Context, private val host: Host, val first: Boolean) : E
             }
         }
 
+        /**
+         * Размеры шрифта абзаца. Высота строки считается от них, а не от пришедших [Paint.FontMetricsInt]: Android
+         * передаёт следующей строке абзаца уже изменённые прошлой строкой числа, и «+20 %» складывалось бы от строки к
+         * строке — в длинном абзаце (голосом) строки разъезжались всё сильнее (0.32.1).
+         */
+        private val base: Paint.FontMetricsInt by lazy {
+            val tp = TextPaint(paint)
+            if (style != ParaStyle.BODY && style != ParaStyle.QUOTE) tp.textSize = spPx(style)
+            val bold = style == ParaStyle.TITLE || style == ParaStyle.H1 || style == ParaStyle.H2
+            val old = tp.typeface
+            tp.typeface = Typeface.create(if (style == ParaStyle.MONO) Typeface.MONOSPACE else (old ?: Typeface.DEFAULT),
+                (old?.style ?: 0) or (if (bold) Typeface.BOLD else 0))
+            tp.fontMetricsInt
+        }
+
         override fun chooseHeight(text: CharSequence, start: Int, end: Int, spanstartv: Int, lineHeight: Int, fm: Paint.FontMetricsInt) {
             val cell = host.cellPx()
+            val b = base
             if (cell > 0) {
-                val d = fm.descent
-                fm.descent = d + under
+                fm.descent = b.descent + under
                 fm.ascent = fm.descent - cell * ParaStyle.cells(style)
             } else {
                 // Без разметки: немного воздуха между строками, как на айфоне.
-                fm.descent += ((fm.descent - fm.ascent) * 0.2f).toInt()
+                fm.ascent = b.ascent
+                fm.descent = b.descent + ((b.descent - b.ascent) * 0.2f).toInt()
             }
             fm.bottom = fm.descent
             fm.top = fm.ascent
