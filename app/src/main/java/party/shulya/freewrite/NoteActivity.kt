@@ -69,7 +69,6 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
     private lateinit var scroll: ScrollView
     private lateinit var sheet: RuledSheet
     private lateinit var ink: NoteInkView
-    private lateinit var mini: LinearLayout
     private lateinit var imageBar: LinearLayout
     private lateinit var hintView: TextView
     private lateinit var banner: LinearLayout
@@ -328,35 +327,7 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
             }
         }
 
-        mini = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = Ui.rounded(this@NoteActivity, Ui.PAPER, Ui.RULE, 14f)
-            elevation = dp(6f).toFloat()
-            setPadding(dp(4f), dp(4f), dp(4f), dp(4f))
-        }
-        fun miniButton(icon: Int, label: String, action: () -> Unit): Ui.ToolButton {
-            val b = Ui.ToolButton(this, icon, label).apply {
-                minimumWidth = dp(48f)
-                setOnClickListener { action() }
-            }
-            mini.addView(b)
-            return b
-        }
-        miniButton(R.drawable.ic_space, "пробел") { runAfterCommit { insertAtCaret(" ", raw = true) } }
-        // «буква»: одно нажатие — одна буква; если держать — стирает подряд, как клавиатура.
-        miniButton(R.drawable.ic_backspace, "буква") {}.apply {
-            tag = "mini_letter"
-            setOnTouchListener(repeatOnHold { runAfterCommit { deleteChar() } })
-        }
-        miniButton(R.drawable.ic_backspace_word, "слово") { runAfterCommit { deleteWord() } }
-        miniButton(R.drawable.ic_enter, "строка") { runAfterCommit { newLine(task = false) } }
-        miniButton(R.drawable.ic_task, "задача") { runAfterCommit { newLine(task = true) } }
-        miniButton(R.drawable.ic_edit, "править") { runAfterCommit { editCaretDialog() } }
-        area.addView(mini, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
-            gravity = Gravity.TOP or Gravity.END
-            setMargins(0, dp(10f), dp(14f), 0)
-        })
-        // Панель выбранной картинки (на месте мини-панели).
+        // Панель выбранной картинки.
         imageBar = Ui.floatingBar(
             this, "Уголок — размер, картинку — сдвинуть",
             Ui.pill(this, "Удалить", Ui.BAD, Ui.BAD_SOFT).apply { setOnClickListener { deleteSelectedImage() } },
@@ -364,6 +335,8 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         ).apply {
             tag = "image_bar"
             visibility = View.GONE
+            background = Ui.rounded(this@NoteActivity, Ui.BAR, Ui.BAR_LINE, 26f)
+            elevation = dp(8f).toFloat()
         }
         area.addView(imageBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.TOP or Gravity.END
@@ -374,8 +347,8 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         selBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = Ui.rounded(this@NoteActivity, Ui.PAPER, Ui.RULE, 14f)
-            elevation = dp(6f).toFloat()
+            background = Ui.rounded(this@NoteActivity, Ui.BAR, Ui.BAR_LINE, 26f)
+            elevation = dp(8f).toFloat()
             setPadding(dp(14f), dp(6f), dp(6f), dp(6f))
             tag = "sel_bar"
             visibility = View.GONE
@@ -512,7 +485,9 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         keysBar = kb
         keysStrip = ks
 
-        // При пере: «Aa», В текст, Ручка, Маркер, Фигуры, Ластик, Указка, Выделить, три цвета, «Цвет», «Вложить», клавиатура.
+        // При пере — та же панель значков, что при клавиатуре (Владимир: «во всех режимах чтоб было как на айфоне»): «Aa»,
+        // В текст, Ручка, Маркер, Фигуры, Ластик, Указка, Выделить | три цвета, «Цвет» | пробел, буква (держать — подряд),
+        // слово, строка, чек-лист, исправить строку | «Вложить», клавиатура.
         val penRow = LinearLayout(this)
         penRow.addView(aaButton("fmt_open_pen"))
         penRow.addView(Ui.separator(this))
@@ -523,21 +498,31 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         addTool(penRow, Tool.ERASER, R.drawable.ic_eraser, "Ластик")
         addTool(penRow, Tool.HAND, R.drawable.ic_hand, "Указка")
         addTool(penRow, Tool.SELECT, R.drawable.ic_lasso, "Выделить")
+        penRow.addView(Ui.separator(this))
         for (i in 0 until 3) {
             val v = View(this).apply {
                 contentDescription = "Цвет"
                 tag = "quick_color_$i"
                 setOnClickListener { setColor(ColorKit.recent(this@NoteActivity)[i], remember = false) }
             }
-            penRow.addView(v, LinearLayout.LayoutParams(dp(24f), dp(24f)).apply { setMargins(dp(5f), 0, dp(5f), 0) })
+            penRow.addView(v, LinearLayout.LayoutParams(dp(22f), dp(22f)).apply { setMargins(dp(6f), 0, dp(6f), 0) })
             quickColors += v
         }
-        penRow.addView(Ui.ToolButton(this, R.drawable.ic_palette, "Цвет").apply {
-            tag = "tool_palette"
-            setOnClickListener { ColorKit.showPalette(this@NoteActivity, penColor, { setColor(it) }, { startPipette() }) }
+        penRow.addView(barIcon(R.drawable.ic_palette, "Цвет", "tool_palette") {
+            ColorKit.showPalette(this@NoteActivity, penColor, { setColor(it) }, { startPipette() })
         })
         penRow.addView(Ui.separator(this))
-        penRow.addView(Ui.ToolButton(this, R.drawable.ic_attach, "Вложить").apply { tag = "note_image"; setOnClickListener { attachMenu(it) } })
+        penRow.addView(barIcon(R.drawable.ic_space, "Пробел", "mini_space") { runAfterCommit { insertAtCaret(" ", raw = true) } })
+        // «Стереть букву»: одно нажатие — одна буква; если держать — стирает подряд, как клавиатура.
+        penRow.addView(barIcon(R.drawable.ic_backspace, "Стереть букву", "mini_letter") {}.apply {
+            setOnTouchListener(repeatOnHold { runAfterCommit { deleteChar() } })
+        })
+        penRow.addView(barIcon(R.drawable.ic_backspace_word, "Стереть слово", "mini_word") { runAfterCommit { deleteWord() } })
+        penRow.addView(barIcon(R.drawable.ic_enter, "Новая строка", "mini_line") { runAfterCommit { newLine(task = false) } })
+        penRow.addView(barIcon(R.drawable.ic_checklist, "Чек-лист", "pen_task") { toggleTaskLines() })
+        penRow.addView(barIcon(R.drawable.ic_edit, "Исправить строку", "mini_edit") { runAfterCommit { editCaretDialog() } })
+        penRow.addView(Ui.separator(this))
+        penRow.addView(barIcon(R.drawable.ic_attach, "Вложить", "note_image") { attachMenu(it) })
         addTool(penRow, Tool.KEYS, R.drawable.ic_keyboard, "Клавиатура")
         penBar = capsule(penRow, "pen_bar").first
 
@@ -558,9 +543,9 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         setOnClickListener { toggleFormat() }
     }
 
+    /** Инструмент пера — значком, как остальные кнопки панели (подпись — в подсказке). */
     private fun addTool(row: LinearLayout, t: Tool, icon: Int, label: String) {
-        val b = Ui.ToolButton(this, icon, label).apply { setOnClickListener { setTool(t) } }
-        b.tag = "tool_" + t.name.lowercase()
+        val b = barIcon(icon, label, "tool_" + t.name.lowercase()) { setTool(t) }
         toolButtons[t] = b
         row.addView(b)
     }
@@ -1530,7 +1515,6 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
     private fun updateImageBar() {
         if (!::imageBar.isInitialized) return
         imageBar.visibility = if (selectedImage != null) View.VISIBLE else View.GONE
-        mini.visibility = if (selectedImage == null && tool == Tool.WRITE) View.VISIBLE else View.GONE
         if (::selBar.isInitialized) {
             pruneSelection()
             val on = selection.isNotEmpty() && selectedImage == null
