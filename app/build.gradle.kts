@@ -56,6 +56,12 @@ android {
         buildConfig = true
     }
 
+    // Библиотеки распознавания (ONNX Runtime, ~58 МБ) — сжатыми внутри APK: скачивать вдвое меньше, при установке
+    // Android их распаковывает.
+    packaging {
+        jniLibs { useLegacyPackaging = true }
+    }
+
     testOptions {
         unitTests {
             // Robolectric: экран приложения запускается на компьютере, без планшета и эмулятора.
