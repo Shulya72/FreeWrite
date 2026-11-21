@@ -283,9 +283,16 @@ object TemplateSync {
     @Volatile var lastOk = 0L
         private set
 
+    /**
+     * С кем обмениваться. В проверках (Robolectric) — только с подставным сервером ([RemoteSync.testTransport]), никогда с
+     * настоящим: в сборке GitHub адрес настоящего сервера вшит, и 21.11.2026 проверки записали туда свои шаблоны.
+     */
+    internal fun transport(): SyncTransport? =
+        RemoteSync.testTransport ?: if (android.os.Build.FINGERPRINT == "robolectric") null else RemoteSync.transport()
+
     /** Обменяться в фоне. [done] — на главном потоке: поменялся ли список (null — обмена не было или не вышло). */
     fun kick(ctx: Context, done: ((Boolean?) -> Unit)? = null) {
-        val tr = RemoteSync.transport()
+        val tr = transport()
         if (tr == null || !running.compareAndSet(false, true)) { done?.let { main.post { it(null) } }; return }
         val app = ctx.applicationContext ?: ctx
         Thread({

@@ -56,6 +56,16 @@ class TableTemplatesTest {
     // ------------------------------------------------------------ общий список на сервере
 
     @Test
+    fun checksNeverTalkToRealServer() {
+        // В сборке GitHub адрес настоящего сервера вшит: без подставного сервера обмен шаблонами в проверках не идёт никуда
+        // (21.11.2026 проверки записали туда свои шаблоны).
+        assertNull(TemplateSync.transport())
+        val srv = FakeServer()
+        RemoteSync.testTransport = srv
+        assertTrue(TemplateSync.transport() === srv)
+    }
+
+    @Test
     fun templateGoesToServerAndToOtherDevices() {
         val srv = FakeServer()
         val lib = TableTemplates(ctx)
