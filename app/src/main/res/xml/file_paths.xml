@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   updates — скачанное обновление FreeWrite для системного установщика;
-  shares  — файлы досок (.freewrite) для отправки коллегам (Telegram, WhatsApp, почта).
+  shares  — файлы досок (.freewrite) для отправки коллегам (Telegram, WhatsApp, почта);
+  camera  — снимок с камеры для заметки (0.31).
 -->
 <paths>
     <cache-path name="updates" path="updates/" />
     <cache-path name="shares" path="shares/" />
+    <cache-path name="camera" path="camera/" />
 </paths>

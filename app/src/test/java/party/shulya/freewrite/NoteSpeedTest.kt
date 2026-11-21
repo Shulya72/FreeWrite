@@ -67,11 +67,11 @@ class NoteSpeedTest {
         idle()
         val cls = NoteActivity::class.java
         val ink = cls.getDeclaredField("ink").apply { isAccessible = true }.get(a) as NoteInkView
-        val note = cls.getDeclaredField("note").apply { isAccessible = true }.get(a) as Note
+        val note = a.model()
         val pushUndo = cls.getDeclaredMethod("pushUndo").apply { isAccessible = true }
         val saveNow = cls.getDeclaredMethod("saveNow", Boolean::class.javaPrimitiveType).apply { isAccessible = true }
         val insert = cls.getDeclaredMethod("insertAtCaret", String::class.java, Boolean::class.javaPrimitiveType).apply { isAccessible = true }
-        val renderBlocks = cls.getDeclaredMethod("renderBlocks").apply { isAccessible = true }
+        val render = cls.getDeclaredMethod("render", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType).apply { isAccessible = true }
         val points = note.drawings.sumOf { it.pts.size / 3 }
         println("BENCH note drawings=${note.drawings.size} points=$points blocks=${note.blocks.size}")
 
@@ -97,17 +97,23 @@ class NoteSpeedTest {
         idle() // отложенное сохранение
         val savedLater = ms(t)
         val word = avg(10) { insert.invoke(a, "слово", false) }
-        val render = avg(10) { renderBlocks.invoke(a) }
+        val renderMs = avg(10) { render.invoke(a, note.caret, -1, false) }
+        // Буква с клавиатуры в конце длинной заметки (сплошной текст, 0.31).
+        val e = a.editors().last()
+        e.setSelection(e.text.length)
+        val key = avg(30) { e.text.insert(e.text.length, "ы") }
         println(
             "BENCH note undo-snapshot ms=${"%.2f".format(undo)} save ms=${"%.2f".format(save)} ink-frame ms=${"%.2f".format(frame)} " +
                 "layer-frame ms=${"%.2f".format(layerFrame)} pen-stroke-end ms=${"%.2f".format(end)} save-after-pause ms=${"%.1f".format(savedLater)} " +
-                "word-in-text ms=${"%.2f".format(word)} render-sheet ms=${"%.2f".format(render)}",
+                "word-in-text ms=${"%.2f".format(word)} render-sheet ms=${"%.2f".format(renderMs)} key ms=${"%.2f".format(key)}",
         )
         // Сохранилось всё.
         saveNow.invoke(a, true)
         val back = NoteStore(ctx).load(n.id)!!
-        assertEquals(note.drawings.size, back.drawings.size)
-        assertEquals(note.blocks.size, back.blocks.size)
+        val m = a.model()
+        assertEquals(m.drawings.size, back.drawings.size)
+        assertEquals(m.blocks.size, back.blocks.size)
+        assertTrue("буква в мс — не тормозит: $key", key < 40.0)
     }
 
     @Test
@@ -123,11 +129,8 @@ class NoteSpeedTest {
         idle()
         val cls = NoteActivity::class.java
         val ink = cls.getDeclaredField("ink").apply { isAccessible = true }.get(a) as NoteInkView
-        fun note() = cls.getDeclaredField("note").apply { isAccessible = true }.get(a) as Note
-        @Suppress("UNCHECKED_CAST")
-        fun lines() = ArrayList(cls.getDeclaredField("lineViews").apply { isAccessible = true }.get(a) as List<android.widget.TextView?>)
+        fun note() = a.model()
         val insert = cls.getDeclaredMethod("insertAtCaret", String::class.java, Boolean::class.javaPrimitiveType).apply { isAccessible = true }
-        val setCaret = cls.getDeclaredMethod("setCaret", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType).apply { isAccessible = true }
         val undo = cls.getDeclaredMethod("undo").apply { isAccessible = true }
 
         // Штрих ручкой: готовый рисунок — на слое под пером, сам вид пера пустой (живого штриха нет).
@@ -144,20 +147,12 @@ class NoteSpeedTest {
         assertTrue("рисунок на слое", inked(ink.layer!!) > 20)
         assertEquals("вид пера без живого штриха пуст", 0, inked(ink))
 
-        // Слово в строку: строки не пересоздаются, текст — на месте.
-        val before = lines()
+        // Слово в строку (0.31: лист — сплошной текст, поле то же — не пересоздаётся).
+        val e0 = a.editors().single()
+        e0.setSelection(e0.text.length)
         insert.invoke(a, "слово", false); idle()
-        val after = lines()
-        for (i in before.indices) assertTrue("строка $i — та же", before[i] === after[i])
-        assertTrue(after[2]!!.text.toString().startsWith("Третья слово"))
-        // Курсор в первую строку: у прежней строки курсора — чистый текст.
-        setCaret.invoke(a, 0, -1); idle()
-        assertEquals("Третья слово", lines()[2]!!.text.toString())
-        assertTrue(lines()[0]!!.text.toString().contains("▏"))
-        // Галочка задачи — лист собирается заново (другой вид строки).
-        (note().blocks[1] as Block.Task).done = true
-        cls.getDeclaredMethod("renderBlocks").apply { isAccessible = true }.invoke(a)
-        assertTrue("задача — новая строка", lines()[1] !== after[1])
+        assertTrue("поле то же", e0 === a.editors().single())
+        assertEquals("Третья слово", (note().blocks[2] as Block.Para).text)
 
         // «Отменить»: слово, потом штрих.
         undo.invoke(a); idle()

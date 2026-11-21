@@ -303,7 +303,9 @@ class Note(
     companion object {
         fun create(title: String): Note {
             val now = System.currentTimeMillis()
+            // Новая заметка — чистый лист (0.31: разлиновки больше нет). Файлы без поля «paper» — старые, в линейку.
             return Note(UUID.randomUUID().toString(), title, now, now, mutableListOf(Block.Para("")), mutableListOf(), 0)
+                .apply { paper = NotePaper.NONE }
         }
 
         fun fromJson(o: JSONObject): Note {
@@ -361,12 +363,6 @@ object NotePaper {
     const val LINES = "lines"
     const val GRID = "grid"
     val ALL = listOf(NONE, LINES, GRID)
-
-    /** Для новых заметок («Для всех новых заметок» в окне «Разлиновка»); пока не выбирали — в линейку, как было. */
-    fun default(ctx: Context): String =
-        ctx.getSharedPreferences("notes", Context.MODE_PRIVATE).getString("paper", LINES)?.takeIf { it in ALL } ?: LINES
-
-    fun setDefault(ctx: Context, p: String) = ctx.getSharedPreferences("notes", Context.MODE_PRIVATE).edit().putString("paper", p).apply()
 
     fun label(p: String) = when (p) { NONE -> "Без разметки"; GRID -> "В клетку"; else -> "В линейку" }
 }

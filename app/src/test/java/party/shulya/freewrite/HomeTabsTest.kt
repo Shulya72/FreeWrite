@@ -235,7 +235,7 @@ class HomeTabsTest {
         idle()
         val root = a.window.decorView
         root.findViewWithTag<View>("tool_keys").performClick(); idle()
-        root.findViewWithTag<KeysEdit>("keys_edit").append(" и ещё"); idle()
+        a.editors()[0].let { it.text.insert(it.text.length, " и ещё") }; idle()
         NoteActivity::class.java.getDeclaredMethod("undo").apply { isAccessible = true }.invoke(a); idle()
         ctl.pause()
         val back = store.load(n.id)!!

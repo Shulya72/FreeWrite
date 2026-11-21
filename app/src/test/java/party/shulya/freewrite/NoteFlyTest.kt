@@ -74,7 +74,7 @@ class NoteFlyTest {
         val a = Robolectric.buildActivity(NoteActivity::class.java, Intent(ctx, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, n.id)).setup().get()
         idle()
         val ink = NoteActivity::class.java.getDeclaredField("ink").apply { isAccessible = true }.get(a) as NoteInkView
-        fun note() = NoteActivity::class.java.getDeclaredField("note").apply { isAccessible = true }.get(a) as Note
+        fun note() = a.model()
         val style = NoteInkView.StrokeStyle("write", Ui.INK, 5f)
         fun write(s: InkStroke) { a.onStrokeStart(s.points[0].x, s.points[0].y); a.onStrokeEnd(s, style, false) }
         // Слово крупно, ниже строки текста.

@@ -1,54 +1,61 @@
 package party.shulya.freewrite
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PointF
-import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.text.Editable
+import android.os.SystemClock
+import android.provider.MediaStore
 import android.text.InputType
 import android.text.SpannableStringBuilder
 import android.text.Spanned
-import android.text.TextWatcher
-import android.text.style.ForegroundColorSpan
+import android.text.TextPaint
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.KeyEvent
 import android.view.View
-import android.view.inputmethod.EditorInfo
+import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import org.json.JSONObject
+import androidx.core.content.FileProvider
+import java.io.File
 import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Экран «Запись» (этап 2).
+ * Экран заметки (0.31 — как Заметки на айфоне, Владимир прислал видео с экрана айфона).
  *
- * Пишете пером в любом месте листа. После паузы (или когда начинаете писать в другом месте)
- * надпись распознаётся: слово серым появляется у курсора, затем становится текстом,
- * а рукопись исчезает. Ручка и маркер оставляют рисунок рисунком, «Фигуры» делают из рисунка
- * ровную фигуру. Пальцем — прокрутка, галочки задач, перенос курсора, выбор картинки
- * (уголки — размер, сама картинка — сдвинуть или перенести по тексту).
+ * Лист — сплошной текст ([NoteEdit]): курсор куда угодно, выделение через строки, «Вырезать / Скопировать / Вставить».
+ * Картинки стоят между кусками текста. Сверху — «‹», «Отменить», «Вернуть», «Поделиться», «⋯» и «✓» (готово, убрать
+ * клавиатуру). Снизу — плавающая панель: при клавиатуре — «Aa», чек-лист, «Вложить», перо и (выделили текст) Ж, К, Ч, З,
+ * цвет, списки, отступы, строку выше/ниже, цитата; при пере — В текст, Ручка, Маркер, Фигуры, Ластик, Указка, Выделить, цвета.
+ *
+ * Пером пишут в любом месте листа: после паузы (или когда начали следующее слово) надпись распознаётся — слово серым у
+ * курсора, затем текстом, буквы улетают в строку. Ручка и маркер оставляют рисунок рисунком (рисунки едут вместе с текстом,
+ * когда выше дописали строки), «Фигуры» делают ровную фигуру. Пальцем — прокрутка, курсор, выделение, галочки.
  */
-class NoteActivity : Activity(), NoteInkView.Host {
+class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
 
     enum class Tool { WRITE, KEYS, PEN, MARKER, SHAPE, ERASER, HAND, SELECT, PIPETTE }
 
@@ -58,21 +65,24 @@ class NoteActivity : Activity(), NoteInkView.Host {
     private val handler = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
 
+    private lateinit var rootView: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var sheet: RuledSheet
     private lateinit var ink: NoteInkView
-    private lateinit var mini: LinearLayout
     private lateinit var imageBar: LinearLayout
-    private var selectedImage: Block.Image? = null
-    // Пока палец тянет картинку, лист не перерисовываем (иначе жест оборвётся) — откладываем.
-    private var imageEditing = false
-    private var renderPending = false
     private lateinit var hintView: TextView
     private lateinit var banner: LinearLayout
     private lateinit var bannerText: TextView
     private lateinit var bannerButton: TextView
-    private lateinit var titleView: TextView
+    private lateinit var dateView: TextView
+    private lateinit var spacer: View
+    private lateinit var doneButton: View
+    private lateinit var keysBar: View
+    private lateinit var keysStrip: HorizontalScrollView
+    private lateinit var formatStart: View
+    private lateinit var penBar: View
     private val toolButtons = HashMap<Tool, Ui.ToolButton>()
+    private val barButtons = HashMap<String, View>()
     private val quickColors = ArrayList<View>()
     private var toolBeforePipette = Tool.PEN
     private var pipetteSnap: ColorKit.Snapshot? = null
@@ -80,33 +90,30 @@ class NoteActivity : Activity(), NoteInkView.Host {
     private var tool = Tool.WRITE
     private var penColor = Ui.PEN_INK
     private var fingerWrites = false
-
-    private val blockViews = ArrayList<View>()
-    private var caretTextView: TextView? = null
-    private var interim = ""
-    private var caretOn = true
-    private val bitmapCache = HashMap<String, Bitmap>()
-
-    // Снимки для «Отменить» (0.27.6): строки копируются, рисунки — те же (в записи рисунки не меняют, только добавляют, стирают
-    // и заменяют новыми). Раньше снимок был всей записью в JSON — после каждого штриха, и чем больше написано, тем дольше.
-    private class Snap(val title: String, val blocks: List<Block>, val drawings: List<Drawing>, val caret: Int, val caretOffset: Int)
-    private val undoStack = ArrayDeque<Snap>()
-    private val redoStack = ArrayDeque<Snap>()
-
     private var lineHeightPx = 0
 
-    // «Клавиатура» (0.27.9): строка с курсором на листе — поле ввода [keysEdit]. Нижние панели (0.30): при клавиатуре —
-    // [keysBarBottom], при пере — [penBar].
-    private lateinit var keysBarBottom: View
-    private lateinit var keysRow: LinearLayout
-    private lateinit var penBar: View
-    private lateinit var penRow: LinearLayout
-    private lateinit var keysEdit: KeysEdit
-    private lateinit var keysTask: Ui.ToolButton
-    private var keysLoading = false   // строку ввода заполняем сами — не считать это вводом
-    private var keysTyping = false    // идёт ввод — лист не переписывает строку ввода
-    private var keysEditAt = 0L       // последний ввод (серия нажатий — один шаг «Отменить»)
-    private var keysBlock: Block? = null
+    /** Куски листа по порядку: поле текста ([NoteEdit]) или картинка; первый — всегда поле (в нём название). */
+    private val segs = ArrayList<View>()
+    private val edits: List<NoteEdit> get() = segs.filterIsInstance<NoteEdit>()
+    /** Поле с курсором. */
+    private var cur: NoteEdit? = null
+    /** Номер блока записи у каждой строки поля (-1 — название или пустая строка между картинками). */
+    private val paraBlock = java.util.IdentityHashMap<NoteEdit, IntArray>()
+    private var titleCaret = false
+    private var selectedImage: Block.Image? = null
+    private var imageEditing = false
+    private val bitmapCache = HashMap<String, Bitmap>()
+    private var interim = ""
+
+    // Снимки для «Отменить»: блоки копируются, рисунки — те же (рисунки не меняют на месте, только добавляют, стирают и
+    // заменяют новыми).
+    private class Snap(val title: String, val blocks: List<Block>, val drawings: List<Drawing>, val caret: Int, val caretOffset: Int, val titleCaret: Boolean)
+    private val undoStack = ArrayDeque<Snap>()
+    private val redoStack = ArrayDeque<Snap>()
+    /** Правка идёт из кода (перо, «Aa», картинка): шаг «Отменить» уже записан. */
+    private var programmatic = 0
+    private var burstEdit: NoteEdit? = null
+    private var lastEditAt = 0L
     private var pauseMs = 1000L
     private val shapeTool = ShapeTool()
     private var shapeHintShown = false
@@ -128,13 +135,6 @@ class NoteActivity : Activity(), NoteInkView.Host {
     private val wordHeights = ArrayList<Float>()
     private val interimRunnable = Runnable { current?.let { recognize(it) } }
     private val commitRunnable = Runnable { current?.let { commit(it) } }
-    private val caretBlink = object : Runnable {
-        override fun run() {
-            caretOn = !caretOn
-            refreshCaretText()
-            handler.postDelayed(this, 530)
-        }
-    }
     private val saveRunnable = Runnable { saveNow() }
     private val bannerTicker = object : Runnable {
         override fun run() {
@@ -153,35 +153,30 @@ class NoteActivity : Activity(), NoteInkView.Host {
         lineHeightPx = Ui.dp(this, 36f)
         engine = HandwritingEngine { android.util.Log.i("ViaDesk", it) }
         engine.onChanged = { updateBanner() }
+        val keys = intent.getBooleanExtra(EXTRA_KEYS, false)
+        // Без пера (телефон) — как на айфоне: клавиатура; с пером — письмо от руки.
+        stylusKnown = Input.stylusSeen(this)
+        tool = if (keys || !stylusKnown) Tool.KEYS else Tool.WRITE
         buildUi()
         setContentView(rootView)
-        rootView.requestFocus()
         engine.start(this)
-        renderBlocks()
+        // Разлиновки больше нет (Владимир: «пусть будет максимально похоже на айфоновские заметки»): все заметки — чистый лист.
+        // Записи до 0.30 и записи без рисунков — сразу; в линейку и в клетку с рисунками — после первой раскладки (рисунки
+        // сдвигаются вслед за своими строками, `migratePaper`).
+        if (note.paper != NotePaper.NONE && (note.layoutV < 2 || note.drawings.isEmpty())) { note.paper = NotePaper.NONE; saveSoon() }
+        render(titleCaret = keys)
         updateBanner()
-        if (intent.getBooleanExtra(EXTRA_KEYS, false)) {
-            // Новая заметка (0.30): сразу клавиатура, курсор — в названии.
-            setTool(Tool.KEYS, focusLine = false)
-            titleEdit.requestFocus()
-            titleEdit.post { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(titleEdit, InputMethodManager.SHOW_IMPLICIT) }
-        } else setTool(Tool.WRITE)
-        if (note.layoutV < 2) sheet.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+        setTool(tool, focus = keys, force = true)
+        if (note.layoutV < 2 || note.paper != NotePaper.NONE) sheet.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
             override fun onGlobalLayout() {
                 if (sheet.width == 0) return
                 sheet.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                migrateLayout()
+                if (note.layoutV < 2) migrateLayout() else migratePaper()
             }
         })
     }
 
-    override fun onResume() {
-        super.onResume()
-        handler.removeCallbacks(caretBlink)
-        handler.postDelayed(caretBlink, 530)
-    }
-
     override fun onPause() {
-        handler.removeCallbacks(caretBlink)
         current?.let { commit(it) }
         saveNow(wait = true)
         super.onPause()
@@ -210,94 +205,63 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     // ---------------------------------------------------------------- интерфейс
 
-    private lateinit var rootView: LinearLayout
-
     private fun dp(v: Float) = Ui.dp(this, v)
+
+    private fun roundButton(icon: Int, desc: String, tag: String, fill: Int = Ui.PAPER, tint: Int = Ui.INK, f: (View) -> Unit): ImageView =
+        ImageView(this).apply {
+            this.tag = tag
+            contentDescription = desc
+            setImageResource(icon)
+            imageTintList = ColorStateList.valueOf(tint)
+            background = Ui.rounded(this@NoteActivity, fill, if (fill == Ui.PAPER) Ui.BAR_LINE else null, 999f)
+            elevation = dp(2f).toFloat()
+            setPadding(dp(10f), dp(10f), dp(10f), dp(10f))
+            layoutParams = LinearLayout.LayoutParams(dp(44f), dp(44f))
+            setOnClickListener { f(it) }
+        }
+
+    private fun capsuleIcon(icon: Int, desc: String, tag: String, f: (View) -> Unit): ImageView = ImageView(this).apply {
+        this.tag = tag
+        contentDescription = desc
+        setImageResource(icon)
+        imageTintList = ColorStateList.valueOf(Ui.INK)
+        setPadding(dp(11f), dp(10f), dp(11f), dp(10f))
+        layoutParams = LinearLayout.LayoutParams(dp(46f), dp(44f))
+        setOnClickListener { f(it) }
+    }
 
     private fun buildUi() {
         rootView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Ui.BG)
-            // Курсор не уходит сам в поле названия (ни при открытии, ни когда строку-поле пересобирают) — только по касанию.
+            setBackgroundColor(Ui.PAPER)
+            // Курсор не уходит сам в поле при открытии экрана — только по касанию или по команде.
             isFocusableInTouchMode = true
             isFocusable = true
-            descendantFocusability = android.view.ViewGroup.FOCUS_BEFORE_DESCENDANTS
+            descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
         }
 
-        // Сверху (0.30, как в макете): «‹ Заметки», справа — Отменить, Вернуть, Поделиться, «⋯». Название — первой строкой листа.
+        // Сверху, как на айфоне: «‹» слева; справа — «Отменить», «Вернуть», «Поделиться», «⋯» в одной капсуле и «✓».
         val top = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Ui.BAR)
-            setPadding(dp(4f), dp(2f), dp(6f), dp(2f))
+            setBackgroundColor(Ui.PAPER)
+            setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
         }
-        titleView = Ui.text(this, "Заметки", 17f, Ui.ACCENT, bold = true).apply {
-            tag = "note_back"
-            setPadding(dp(2f), dp(10f), dp(10f), dp(10f))
-            setOnClickListener { onBackPressed() }
-        }
-        top.addView(ImageView(this).apply {
-            setImageResource(R.drawable.ic_back); imageTintList = ColorStateList.valueOf(Ui.ACCENT)
-            setPadding(dp(8f), dp(8f), dp(2f), dp(8f))
-            contentDescription = "Назад"
-            setOnClickListener { onBackPressed() }
-        }, LinearLayout.LayoutParams(dp(36f), dp(44f)))
-        top.addView(titleView)
+        top.addView(roundButton(R.drawable.ic_back, "Назад", "note_back") { onBackPressed() })
         top.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        fun topIcon(icon: Int, desc: String, tag: String, f: (View) -> Unit) = Ui.ToolButton(this, icon, "", compact = true).apply {
-            this.tag = tag; contentDescription = desc; setOnClickListener { f(it) }
-        }.also { top.addView(it, LinearLayout.LayoutParams(dp(46f), Ui.WRAP)) }
-        topIcon(R.drawable.ic_undo, "Отменить", "note_undo") { undo() }
-        topIcon(R.drawable.ic_redo, "Вернуть", "note_redo") { redo() }
-        topIcon(R.drawable.ic_share, "Поделиться", "note_share") { shareNote() }
-        topIcon(R.drawable.ic_more, "Ещё", "note_more") { noteMenu(it) }
+        val group = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ui.rounded(this@NoteActivity, Ui.PAPER, Ui.BAR_LINE, 999f)
+            elevation = dp(2f).toFloat()
+            setPadding(dp(4f), 0, dp(4f), 0)
+        }
+        group.addView(capsuleIcon(R.drawable.ic_undo, "Отменить", "note_undo") { undo() })
+        group.addView(capsuleIcon(R.drawable.ic_redo, "Вернуть", "note_redo") { redo() })
+        group.addView(capsuleIcon(R.drawable.ic_share, "Поделиться", "note_share") { shareNote() })
+        group.addView(capsuleIcon(R.drawable.ic_more, "Ещё", "note_more") { noteMenu(it) })
+        top.addView(group, LinearLayout.LayoutParams(Ui.WRAP, dp(44f)))
+        doneButton = roundButton(R.drawable.ic_done, "Готово", "note_done", fill = Ui.ACCENT, tint = Color.WHITE) { finishTyping() }
+        top.addView(doneButton, LinearLayout.LayoutParams(dp(44f), dp(44f)).apply { marginStart = dp(10f) })
         rootView.addView(top, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        rootView.addView(Ui.barLine(this), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
-
-        // Снизу — две панели (как в макете): при клавиатуре — «Aa», чек-лист, картинка, перо, убрать клавиатуру; при пере —
-        // «Aa», В текст, Ручка, Маркер, Фигуры, Ластик, Указка, Выделить, цвета, картинка, «Клавиатура».
-        penRow = LinearLayout(this)
-        penRow.addView(aaButton("fmt_open_pen"))
-        penRow.addView(Ui.separator(this))
-        addTool(penRow, Tool.WRITE, R.drawable.ic_write, "В текст")
-        addTool(penRow, Tool.PEN, R.drawable.ic_pen, "Ручка")
-        addTool(penRow, Tool.MARKER, R.drawable.ic_marker, "Маркер")
-        addTool(penRow, Tool.SHAPE, R.drawable.ic_shapes, "Фигуры")
-        addTool(penRow, Tool.ERASER, R.drawable.ic_eraser, "Ластик")
-        addTool(penRow, Tool.HAND, R.drawable.ic_hand, "Указка")
-        addTool(penRow, Tool.SELECT, R.drawable.ic_lasso, "Выделить")
-        // Три последних цвета и «Цвет» — палитра из 24 цветов и пипетка.
-        for (i in 0 until 3) {
-            val v = View(this).apply {
-                contentDescription = "Цвет"
-                tag = "quick_color_$i"
-                setOnClickListener { setColor(ColorKit.recent(this@NoteActivity)[i], remember = false) }
-            }
-            penRow.addView(v, LinearLayout.LayoutParams(dp(24f), dp(24f)).apply { setMargins(dp(5f), 0, dp(5f), 0) })
-            quickColors += v
-        }
-        penRow.addView(Ui.ToolButton(this, R.drawable.ic_palette, "Цвет").apply {
-            tag = "tool_palette"
-            setOnClickListener { ColorKit.showPalette(this@NoteActivity, penColor, { setColor(it) }, { startPipette() }) }
-        })
-        penRow.addView(Ui.separator(this))
-        penRow.addView(Ui.ToolButton(this, R.drawable.ic_image, "Картинка").apply { tag = "note_image"; setOnClickListener { pickImage() } })
-        addTool(penRow, Tool.KEYS, R.drawable.ic_keyboard, "Клавиатура")
-        penBar = Ui.toolbar(this, penRow).apply { tag = "pen_bar" }
-
-        keysRow = LinearLayout(this)
-        keysRow.addView(aaButton("fmt_open"))
-        keysTask = Ui.ToolButton(this, R.drawable.ic_task, "Чек-лист").apply {
-            tag = "keys_task"
-            setOnClickListener { keysToggleTask() }
-        }
-        keysRow.addView(keysTask)
-        keysRow.addView(Ui.ToolButton(this, R.drawable.ic_image, "Картинка").apply { tag = "keys_image"; setOnClickListener { pickImage() } })
-        keysRow.addView(Ui.ToolButton(this, R.drawable.ic_pen, "Перо").apply { tag = "keys_pen"; setOnClickListener { setTool(Tool.WRITE) } })
-        keysRow.addView(Ui.ToolButton(this, R.drawable.ic_keyboard, "Убрать").apply {
-            tag = "keys_hide"; contentDescription = "Убрать клавиатуру"
-            setOnClickListener { hideKeyboard() }
-        })
-        keysBarBottom = Ui.toolbar(this, keysRow).apply { tag = "keys_bar"; visibility = View.GONE }
 
         // Плашка «скачайте модель»
         banner = LinearLayout(this).apply {
@@ -321,16 +285,17 @@ class NoteActivity : Activity(), NoteInkView.Host {
         rootView.addView(banner, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
 
         // Лист и слой пера
-        val area = FrameLayout(this)
+        val area = FrameLayout(this).apply { setBackgroundColor(Ui.PAPER) }
         scroll = ScrollView(this).apply {
             isFillViewport = true
             isVerticalScrollBarEnabled = true
         }
-        val pad = FrameLayout(this).apply { setPadding(dp(12f), dp(14f), dp(12f), dp(14f)) }
+        val pad = FrameLayout(this)
         sheet = RuledSheet(this).apply {
             lineGap = lineHeightPx.toFloat()
-            background = Ui.rounded(this@NoteActivity, Ui.PAPER, Ui.RULE, 6f)
-            setPadding(dp(56f), dp(18f), dp(36f), dp(24f))
+            setBackgroundColor(Ui.PAPER)
+            maxWidthPx = dp(860f)
+            tallBands = { tallBands() }
         }
         pad.addView(sheet, FrameLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { gravity = Gravity.CENTER_HORIZONTAL })
         scroll.addView(pad, FrameLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
@@ -343,35 +308,26 @@ class NoteActivity : Activity(), NoteInkView.Host {
         area.addView(ink.layer, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH)) // готовые рисунки — слоем под пером
         area.addView(ink, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
 
-        mini = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = Ui.rounded(this@NoteActivity, Ui.PAPER, Ui.RULE, 14f)
-            elevation = dp(6f).toFloat()
-            setPadding(dp(4f), dp(4f), dp(4f), dp(4f))
+        dateView = TextView(this).apply {
+            tag = "note_date"
+            textSize = 13f
+            setTextColor(Ui.MUTED)
+            gravity = Gravity.CENTER_HORIZONTAL
+            includeFontPadding = false
         }
-        fun miniButton(icon: Int, label: String, action: () -> Unit): Ui.ToolButton {
-            val b = Ui.ToolButton(this, icon, label).apply {
-                minimumWidth = dp(48f)
-                setOnClickListener { action() }
+        spacer = View(this).apply {
+            minimumHeight = max(dp(320f), (resources.displayMetrics.heightPixels * 0.4f).toInt())
+            // Пустое место ниже текста: здесь тоже можно писать пером; касание пальцем — курсор в конец.
+            setOnClickListener {
+                runAfterCommit {
+                    val e = lastEdit()
+                    setCaretIn(e, e.text.length)
+                    if (tool == Tool.KEYS) showKeyboard()
+                }
             }
-            mini.addView(b)
-            return b
         }
-        miniButton(R.drawable.ic_space, "пробел") { runAfterCommit { insertAtCaret(" ", raw = true) } }
-        // «буква»: одно нажатие — одна буква; если держать — стирает подряд, как клавиатура.
-        miniButton(R.drawable.ic_backspace, "буква") {}.apply {
-            tag = "mini_letter"
-            setOnTouchListener(repeatOnHold { runAfterCommit { deleteChar() } })
-        }
-        miniButton(R.drawable.ic_backspace_word, "слово") { runAfterCommit { deleteWord() } }
-        miniButton(R.drawable.ic_enter, "строка") { runAfterCommit { newLine(task = false) } }
-        miniButton(R.drawable.ic_task, "задача") { runAfterCommit { newLine(task = true) } }
-        miniButton(R.drawable.ic_edit, "править") { runAfterCommit { editCaretDialog() } }
-        area.addView(mini, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
-            gravity = Gravity.TOP or Gravity.END
-            setMargins(0, dp(10f), dp(14f), 0)
-        })
-        // Панель выбранной картинки (на месте мини-панели).
+
+        // Панель выбранной картинки.
         imageBar = Ui.floatingBar(
             this, "Уголок — размер, картинку — сдвинуть",
             Ui.pill(this, "Удалить", Ui.BAD, Ui.BAD_SOFT).apply { setOnClickListener { deleteSelectedImage() } },
@@ -379,6 +335,8 @@ class NoteActivity : Activity(), NoteInkView.Host {
         ).apply {
             tag = "image_bar"
             visibility = View.GONE
+            background = Ui.rounded(this@NoteActivity, Ui.BAR, Ui.BAR_LINE, 26f)
+            elevation = dp(8f).toFloat()
         }
         area.addView(imageBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
             gravity = Gravity.TOP or Gravity.END
@@ -389,8 +347,8 @@ class NoteActivity : Activity(), NoteInkView.Host {
         selBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = Ui.rounded(this@NoteActivity, Ui.PAPER, Ui.RULE, 14f)
-            elevation = dp(6f).toFloat()
+            background = Ui.rounded(this@NoteActivity, Ui.BAR, Ui.BAR_LINE, 26f)
+            elevation = dp(8f).toFloat()
             setPadding(dp(14f), dp(6f), dp(6f), dp(6f))
             tag = "sel_bar"
             visibility = View.GONE
@@ -415,17 +373,164 @@ class NoteActivity : Activity(), NoteInkView.Host {
             gravity = Gravity.CENTER
         }
         area.addView(hintView, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            bottomMargin = dp(18f)
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            topMargin = dp(64f)
         })
         rootView.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
-        buildKeysEdit()
-        buildTitleEdit()
-        buildFormatPanel(area)
-        rootView.addView(Ui.barLine(this), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
-        rootView.addView(keysBarBottom, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        rootView.addView(penBar, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        // Нижняя панель — под листом (не поверх): строка с курсором над клавиатурой не прячется под панелью.
+        val bottom = FrameLayout(this).apply {
+            setBackgroundColor(Ui.PAPER)
+            if (!thinBars) setPadding(0, dp(4f), 0, dp(8f))
+        }
+        buildBottomBars(bottom)
+        rootView.addView(bottom, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        rootView.addView(buildFormatPanel(), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        // Клавиатура выехала (коснулись текста) — «Aa» уходит, как на айфоне.
+        rootView.viewTreeObserver.addOnGlobalLayoutListener {
+            val w = rootView.width
+            val h = rootView.height
+            if (w != layoutW) { layoutW = w; fullH = h }
+            fullH = max(fullH, h)
+            val ime = h < fullH * 0.8f
+            if (ime && !imeShown && fmtScroll.visibility == View.VISIBLE) closeFormat(keyboard = false)
+            imeShown = ime
+        }
         refreshColors()
+    }
+
+    /**
+     * На телефоне — тонкая полоса во всю ширину, прижатая к клавиатуре (Владимир: капсула «будет перекрывать текст»), на
+     * планшете — капсула.
+     */
+    private val thinBars: Boolean get() = Input.isPhone(this)
+
+    /** Плавающая капсула внизу (как на айфоне): белая, со скруглением и тенью, прокручивается вбок, если не влезает. */
+    private fun capsule(row: LinearLayout, tag: String): Pair<View, HorizontalScrollView> {
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(dp(8f), if (thinBars) 0 else dp(3f), dp(8f), if (thinBars) 0 else dp(3f))
+        val hs = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(row, ViewGroup.LayoutParams(Ui.WRAP, Ui.WRAP))
+        }
+        if (thinBars) {
+            // Тонкая полоса: линия сверху, без скругления и тени.
+            val strip = LinearLayout(this).apply {
+                this.tag = tag
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Ui.BAR)
+                addView(Ui.barLine(this@NoteActivity), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+                addView(hs, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            }
+            return strip to hs
+        }
+        val box = FrameLayout(this).apply {
+            this.tag = tag
+            background = Ui.rounded(this@NoteActivity, Ui.PAPER, Ui.BAR_LINE, 26f)
+            elevation = dp(8f).toFloat()
+            addView(hs, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP))
+        }
+        return box to hs
+    }
+
+    private fun barIcon(icon: Int, desc: String, tag: String, f: (View) -> Unit): Ui.ToolButton = Ui.ToolButton(this, icon, "", compact = true).apply {
+        this.tag = tag
+        contentDescription = desc
+        minimumWidth = dp(if (thinBars) 42f else 46f)
+        val v = if (thinBars) 7f else 9f
+        setPadding(dp(9f), dp(v), dp(9f), dp(v))
+        setOnClickListener { f(it) }
+        barButtons[tag] = this
+    }
+
+    /** Ж, К, Ч, З на панели клавиатуры — буквой своего вида. */
+    private fun barLetter(text: String, desc: String, tag: String, f: () -> Unit): TextView = TextView(this).apply {
+        this.tag = tag
+        contentDescription = desc
+        this.text = text
+        textSize = 19f
+        setTextColor(Ui.INK)
+        gravity = Gravity.CENTER
+        minWidth = dp(if (thinBars) 40f else 44f)
+        minHeight = dp(if (thinBars) 38f else 42f)
+        setPadding(dp(6f), 0, dp(6f), 0)
+        isClickable = true
+        setOnClickListener { f() }
+        barButtons[tag] = this
+    }
+
+    private fun buildBottomBars(area: FrameLayout) {
+        // При клавиатуре: «Aa», чек-лист, «Вложить», перо — дальше оформление выделенного (панель сама прокручивается к нему).
+        val keysRow = LinearLayout(this)
+        keysRow.addView(aaButton("fmt_open"))
+        keysRow.addView(barIcon(R.drawable.ic_checklist, "Чек-лист", "keys_task") { toggleTaskLines() })
+        keysRow.addView(barIcon(R.drawable.ic_attach, "Вложить", "keys_image") { attachMenu(it) })
+        keysRow.addView(barIcon(R.drawable.ic_markup, "Перо", "keys_pen") { setTool(Tool.WRITE) })
+        keysRow.addView(Ui.separator(this))
+        formatStart = barLetter("B", "Жирный", "bar_b") { applyInline(Rich.B) }.apply { typeface = Typeface.DEFAULT_BOLD }
+        keysRow.addView(formatStart)
+        keysRow.addView(barLetter("I", "Курсив", "bar_i") { applyInline(Rich.I) }.apply { setTypeface(Typeface.SERIF, Typeface.ITALIC) })
+        keysRow.addView(barLetter("U", "Подчёркнутый", "bar_u") { applyInline(Rich.U) }.apply { paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG })
+        keysRow.addView(barLetter("S", "Зачёркнутый", "bar_s") { applyInline(Rich.S) }.apply { paintFlags = paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG })
+        keysRow.addView(barIcon(R.drawable.ic_highlight, "Цвет текста", "bar_color") { colorMenu(it) })
+        keysRow.addView(barIcon(R.drawable.ic_list, "Список", "bar_list") { listMenu(it) })
+        keysRow.addView(barIcon(R.drawable.ic_outdent, "Отступ меньше", "bar_outdent") { applyIndent(-1) })
+        keysRow.addView(barIcon(R.drawable.ic_indent, "Отступ больше", "bar_indent") { applyIndent(1) })
+        keysRow.addView(barIcon(R.drawable.ic_line_up, "Строку выше", "bar_up") { moveLines(-1) })
+        keysRow.addView(barIcon(R.drawable.ic_line_down, "Строку ниже", "bar_down") { moveLines(1) })
+        keysRow.addView(barIcon(R.drawable.ic_quote, "Цитата", "bar_quote") { applyList(ParaStyle.QUOTE) })
+        keysRow.addView(Ui.separator(this))
+        keysRow.addView(barIcon(R.drawable.ic_keyboard_hide, "Убрать клавиатуру", "keys_hide") { hideKeyboard() })
+        val (kb, ks) = capsule(keysRow, "keys_bar")
+        keysBar = kb
+        keysStrip = ks
+
+        // При пере — та же панель значков, что при клавиатуре (Владимир: «во всех режимах чтоб было как на айфоне»): «Aa»,
+        // В текст, Ручка, Маркер, Фигуры, Ластик, Указка, Выделить | три цвета, «Цвет» | пробел, буква (держать — подряд),
+        // слово, строка, чек-лист, исправить строку | «Вложить», клавиатура.
+        val penRow = LinearLayout(this)
+        penRow.addView(aaButton("fmt_open_pen"))
+        penRow.addView(Ui.separator(this))
+        addTool(penRow, Tool.WRITE, R.drawable.ic_write, "В текст")
+        addTool(penRow, Tool.PEN, R.drawable.ic_pen, "Ручка")
+        addTool(penRow, Tool.MARKER, R.drawable.ic_marker, "Маркер")
+        addTool(penRow, Tool.SHAPE, R.drawable.ic_shapes, "Фигуры")
+        addTool(penRow, Tool.ERASER, R.drawable.ic_eraser, "Ластик")
+        addTool(penRow, Tool.HAND, R.drawable.ic_hand, "Указка")
+        addTool(penRow, Tool.SELECT, R.drawable.ic_lasso, "Выделить")
+        penRow.addView(Ui.separator(this))
+        for (i in 0 until 3) {
+            val v = View(this).apply {
+                contentDescription = "Цвет"
+                tag = "quick_color_$i"
+                setOnClickListener { setColor(ColorKit.recent(this@NoteActivity)[i], remember = false) }
+            }
+            penRow.addView(v, LinearLayout.LayoutParams(dp(22f), dp(22f)).apply { setMargins(dp(6f), 0, dp(6f), 0) })
+            quickColors += v
+        }
+        penRow.addView(barIcon(R.drawable.ic_palette, "Цвет", "tool_palette") {
+            ColorKit.showPalette(this@NoteActivity, penColor, { setColor(it) }, { startPipette() })
+        })
+        penRow.addView(Ui.separator(this))
+        penRow.addView(barIcon(R.drawable.ic_space, "Пробел", "mini_space") { runAfterCommit { insertAtCaret(" ", raw = true) } })
+        // «Стереть букву»: одно нажатие — одна буква; если держать — стирает подряд, как клавиатура.
+        penRow.addView(barIcon(R.drawable.ic_backspace, "Стереть букву", "mini_letter") {}.apply {
+            setOnTouchListener(repeatOnHold { runAfterCommit { deleteChar() } })
+        })
+        penRow.addView(barIcon(R.drawable.ic_backspace_word, "Стереть слово", "mini_word") { runAfterCommit { deleteWord() } })
+        penRow.addView(barIcon(R.drawable.ic_enter, "Новая строка", "mini_line") { runAfterCommit { newLine(task = false) } })
+        penRow.addView(barIcon(R.drawable.ic_checklist, "Чек-лист", "pen_task") { toggleTaskLines() })
+        penRow.addView(barIcon(R.drawable.ic_edit, "Исправить строку", "mini_edit") { runAfterCommit { editCaretDialog() } })
+        penRow.addView(Ui.separator(this))
+        penRow.addView(barIcon(R.drawable.ic_attach, "Вложить", "note_image") { attachMenu(it) })
+        addTool(penRow, Tool.KEYS, R.drawable.ic_keyboard, "Клавиатура")
+        penBar = capsule(penRow, "pen_bar").first
+
+        for (b in listOf(keysBar, penBar)) area.addView(b, if (thinBars) FrameLayout.LayoutParams(Ui.MATCH, Ui.WRAP)
+            else FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                setMargins(dp(10f), dp(2f), dp(10f), dp(2f))
+            })
     }
 
     /** Кнопка «Aa» — окно «Формат». */
@@ -433,242 +538,81 @@ class NoteActivity : Activity(), NoteInkView.Host {
         this.tag = tag
         contentDescription = "Формат"
         gravity = Gravity.CENTER
-        typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
-        background = Ui.rounded(this@NoteActivity, Ui.DESK, null, 10f)
-        setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
-        layoutParams = LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { setMargins(dp(4f), dp(4f), dp(6f), dp(4f)) }
+        setPadding(dp(10f), dp(if (thinBars) 6f else 8f), dp(10f), dp(if (thinBars) 6f else 8f))
+        layoutParams = LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { setMargins(dp(2f), 0, dp(2f), 0) }
         setOnClickListener { toggleFormat() }
     }
 
-    // ---------------------------------------------------------------- «Клавиатура»
-
-    /**
-     * «Клавиатура» (0.27.9, Владимир: «нажимаю клавиатуру — пишу в нижнем окошке, а думал, печататься будет сверху, где
-     * положено»): строка с курсором на листе сама становится полем ввода ([keysEdit] — одно поле, оно переезжает в строку с
-     * курсором при каждой сборке листа). Внизу (0.30) — панель клавиатуры: «Aa», «Чек-лист», «Картинка», «Перо», «Убрать».
-     */
-    private fun buildKeysEdit() {
-        keysEdit = KeysEdit(this).apply {
-            textStyle(this)
-            tag = "keys_edit"
-            background = null
-            setPadding(0, 0, 0, 0)
-            hint = "Печатайте здесь…"
-            gravity = Gravity.TOP or Gravity.START
-            setHintTextColor(Ui.INK2 and 0x00FFFFFF or 0x80000000.toInt())
-            // Многострочное поле: длинная строка переносится, Enter — «\n», его ловим и делаем новую строку записи.
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
-            isSingleLine = false
-            setHorizontallyScrolling(false)
-            addTextChangedListener(object : TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-                override fun afterTextChanged(e: Editable?) { if (!keysLoading) onKeysText(e?.toString().orEmpty()) }
-            })
-            onSelection = { _, _ ->
-                if (!keysLoading && !keysTyping && tool == Tool.KEYS) syncKeysCaret()
-            }
-            // «Стереть» в самом начале строки — соединить со строкой выше (как в обычном редакторе).
-            setOnKeyListener { _, code, ev ->
-                if (code == KeyEvent.KEYCODE_DEL && ev.action == KeyEvent.ACTION_DOWN && selectionStart == 0 && selectionEnd == 0) {
-                    note.caretOffset = 0
-                    deleteChar()
-                    true
-                } else false
-            }
-        }
-    }
-
-    /** Поле ввода — в строку листа: отцепить от прежнего места (лист собирается заново), стиль — как у строки. */
-    private fun takeKeysEdit(b: Block?): KeysEdit {
-        (keysEdit.parent as? android.view.ViewGroup)?.removeView(keysEdit)
-        val style = (b as? Block.Para)?.style ?: ParaStyle.BODY
-        textStyle(keysEdit, style)
-        keysEdit.tag = "keys_edit"
-        if (b is Block.Task && b.done) keysEdit.setTextColor(Ui.INK2)
-        keysStyle = style
-        return keysEdit
-    }
-
-    /** Стиль строки, в которой сейчас поле ввода (оформление поля — как у строки). */
-    private var keysStyle = ParaStyle.BODY
-
-    private fun showKeysBar(on: Boolean, focus: Boolean = true) {
-        keysBarBottom.visibility = if (on) View.VISIBLE else View.GONE
-        penBar.visibility = if (on) View.GONE else View.VISIBLE
-        if (!on) hideKeyboard()
-        renderBlocks() // строка с курсором — полем ввода или снова обычной строкой
-        if (on && focus) showKeyboard()
-    }
-
-    /** Убрать клавиатуру (кнопка «Убрать» и переход к перу). */
-    private fun hideKeyboard() {
-        keysHidden = true
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.hideSoftInputFromWindow(rootView.windowToken, 0)
-        keysEdit.clearFocus()
-        if (::titleEdit.isInitialized) titleEdit.clearFocus()
-    }
-
-    private fun showKeyboard() {
-        keysHidden = false
-        keysEdit.requestFocus()
-        keysEdit.post {
-            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(keysEdit, InputMethodManager.SHOW_IMPLICIT)
-        }
-    }
-
-    /** В строку ввода — текст строки с курсором, курсор поля — на его месте (на картинке — пусто: напишут — новая строка). */
-    private fun loadKeysLine() {
-        if (!::keysEdit.isInitialized) return
-        val b = note.blocks.getOrNull(note.caret)
-        val text = b?.let { blockText(it) }
-        val value = text ?: ""
-        val sel = if (text == null) 0 else caretPos(text)
-        keysLoading = true
-        try {
-            val sig = lineSig(b)
-            if (keysEdit.text.toString() != value || sig != keysSig) {
-                val selA = keysEdit.selectionStart; val selB = keysEdit.selectionEnd
-                keysEdit.setText(if (b is TextLine) styled(b, keysStyle) else styledPlain("", keysStyle))
-                keysSig = sig
-                // Только оформление (то же содержимое) — выделение остаётся, «Aa» можно нажимать дальше.
-                if (keysEdit.text.toString() == value && selA in 0..value.length && selB in 0..value.length && selA != selB) {
-                    keysEdit.setSelection(selA, selB); return
-                }
-            }
-            val at = sel.coerceIn(0, keysEdit.length())
-            if (keysEdit.selectionStart != at || keysEdit.selectionEnd != at) keysEdit.setSelection(at)
-        } finally {
-            keysLoading = false
-            keysTask.selectedTool = b is Block.Task
-            revealCaret()
-        }
-    }
-
-    /** Что показано в поле ввода (текст и оформление): поменялось — перезаполнить. */
-    private var keysSig = 0
-
-    /** Курсор листа — там же, где курсор строки ввода. */
-    private fun syncKeysCaret() {
-        val b = note.blocks.getOrNull(note.caret) ?: return
-        val text = blockText(b) ?: return
-        val sel = keysEdit.selectionEnd
-        note.caretOffset = if (sel < 0 || sel >= text.length) -1 else sel
-    }
-
-    /** Ввели с клавиатуры: текст поля — это строка записи. Enter (или вставка с переносами) — новые строки. */
-    private fun onKeysText(s: String) {
-        if (tool != Tool.KEYS) return
-        if ('\n' in s) { keysSplit(s); return }
-        keysTyping = true
-        try {
-            val now = android.os.SystemClock.uptimeMillis()
-            val b0 = note.blocks.getOrNull(note.caret)
-            val newLine = b0 == null || blockText(b0) == null
-            if (newLine || b0 !== keysBlock || now - keysEditAt > 2000) pushUndo()
-            keysEditAt = now
-            val b = caretTextBlock()
-            keysBlock = b
-            setBlockText(b, s)
-            keysSig = lineSig(b) // поле само сдвигает своё оформление так же — перезаполнять не нужно
-            syncKeysCaret()
-            if (newLine) renderBlocks() else sheet.invalidate() // линейки — по строке (могла стать в две)
-            changed(render = false)
-        } finally {
-            keysTyping = false
-        }
-        revealCaret()
-    }
-
-    /** Enter в строке ввода: строка делится по курсору; у задачи — следующая задача, пустая задача — обычная строка. */
-    private fun keysSplit(s: String) {
-        pushUndo()
-        keysBlock = null
-        val parts = s.split('\n')
-        val b = caretTextBlock()
-        val task = b is Block.Task
-        val style = (b as? Block.Para)?.style ?: ParaStyle.BODY
-        val listy = ParaStyle.isList(style) || style == ParaStyle.QUOTE
-        if ((task || listy) && parts.size == 2 && parts[0].isBlank() && parts[1].isBlank()) {
-            // Enter в пустом пункте — выход из списка (как на айфоне): обычная строка.
-            note.blocks[note.caret] = Block.Para("", ParaStyle.BODY, (b as TextLine).indent)
-            note.caretOffset = -1
-            changed()
-            return
-        }
-        // Оформление — по новому тексту поля (с переносами), потом режем по строкам.
-        val line = b as TextLine
-        val spans = Rich.copy(line.spans)
-        Rich.adjust(spans, line.text, s)
-        var from = 0
-        val pieces = parts.map { part -> Rich.slice(spans, from, from + part.length).also { from += part.length + 1 } }
-        line.text = parts[0]
-        line.spans.clear(); line.spans += pieces[0]
-        var idx = note.caret
-        for (k in 1 until parts.size) {
-            idx += 1
-            note.blocks.add(idx, if (task) Block.Task(parts[k], false, line.indent, pieces[k])
-                else Block.Para(parts[k], ParaStyle.next(style), line.indent, pieces[k]))
-        }
-        note.caret = idx
-        // Курсор — где был в поле (после Enter — в начале новой строки).
-        val last = parts.last()
-        val off = max(0, keysEdit.selectionEnd) - (s.lastIndexOf('\n') + 1)
-        note.caretOffset = if (off < 0 || off >= last.length) -1 else off
-        changed()
-    }
-
-    /** «задача»: строка с курсором — задача с галочкой и обратно. */
-    private fun keysToggleTask() {
-        pushUndo()
-        keysBlock = null
-        val b = caretTextBlock()
-        note.blocks[note.caret] = when (b) {
-            is Block.Task -> Block.Para(b.text, ParaStyle.BODY, b.indent, b.spans)
-            is Block.Para -> Block.Task(b.text, false, b.indent, b.spans)
-            else -> b
-        }
-        changed()
-        if (tool == Tool.KEYS) showKeyboard()
-    }
-
-    /** Строку с курсором — на виду (клавиатура занимает пол-экрана). */
-    private fun revealCaret() {
-        scroll.post {
-            val v: View = (if (tool == Tool.KEYS && keysEdit.parent != null) keysEdit else caretTextView) ?: return@post
-            v.requestRectangleOnScreen(Rect(0, 0, v.width, v.height), false)
-        }
-    }
-
+    /** Инструмент пера — значком, как остальные кнопки панели (подпись — в подсказке). */
     private fun addTool(row: LinearLayout, t: Tool, icon: Int, label: String) {
-        val b = Ui.ToolButton(this, icon, label).apply { setOnClickListener { setTool(t) } }
-        b.tag = "tool_" + t.name.lowercase()
+        val b = barIcon(icon, label, "tool_" + t.name.lowercase()) { setTool(t) }
         toolButtons[t] = b
         row.addView(b)
     }
 
-    private fun setTool(t: Tool, focusLine: Boolean = true) {
+    private fun setTool(t: Tool, focus: Boolean = true, force: Boolean = false) {
         if (t != Tool.WRITE) current?.let { commit(it) }
         if (t != Tool.SELECT && t != Tool.PIPETTE) clearSelection()
-        val wasKeys = tool == Tool.KEYS
+        val was = tool
         tool = t
-        if (t == Tool.KEYS && !wasKeys) {
-            keysHidden = !focusLine
-            showKeysBar(true, focusLine)
-            if (focusLine) hint("Печатайте — текст встаёт в строку с курсором. Перо коснулось листа — снова письмо от руки", 3500)
-        } else if (t != Tool.KEYS && wasKeys) {
-            showKeysBar(false)
+        val keys = t == Tool.KEYS
+        for (e in edits) e.showSoftInputOnFocus = keys
+        if (keys && (was != Tool.KEYS || force)) {
+            if (focus) showKeyboard()
+        } else if (!keys && (was == Tool.KEYS || force)) {
+            hideKeyboard()
         }
         for ((k, v) in toolButtons) v.selectedTool = k == t
         updateImageBar()
+        updateBars()
+        updateBanner()
         if (t != Tool.SHAPE) shapeTool.reset()
         if (t == Tool.SHAPE && !shapeHintShown) {
             shapeHintShown = true
             hint("Нарисуйте линию, стрелку, квадрат, круг или треугольник — станет ровной фигурой", 3500)
         }
         refreshColors()
+    }
+
+    private var stripAtFormat = false
+    private var layoutW = 0
+    private var fullH = 0
+    private var imeShown = false
+
+    /** Нижняя панель: клавиатура (или выделили текст) — оформление, иначе — перо; «✓» — пока печатают. */
+    private fun updateBars() {
+        if (!::keysBar.isInitialized) return
+        val sel = cur?.let { it.selectionStart != it.selectionEnd } == true
+        val strip = tool == Tool.KEYS || sel
+        keysBar.visibility = if (strip) View.VISIBLE else View.GONE
+        penBar.visibility = if (strip) View.GONE else View.VISIBLE
+        doneButton.visibility = if (tool == Tool.KEYS) View.VISIBLE else View.GONE
+        if (sel != stripAtFormat) {
+            stripAtFormat = sel
+            keysStrip.post { keysStrip.smoothScrollTo(if (sel) max(0, formatStart.left - dp(8f)) else 0, 0) }
+        }
+    }
+
+    private val imm get() = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+
+    private fun showKeyboard() {
+        val e = caretEdit()
+        e.showSoftInputOnFocus = true
+        if (!e.hasFocus()) e.requestFocus()
+        e.post { imm.showSoftInput(e, InputMethodManager.SHOW_IMPLICIT) }
+    }
+
+    private fun hideKeyboard() {
+        imm.hideSoftInputFromWindow(rootView.windowToken, 0)
+    }
+
+    /** «✓» (как на айфоне): правку закончили — клавиатура уходит, выделение снимается. */
+    private fun finishTyping() {
+        runAfterCommit {
+            hideKeyboard()
+            cur?.let { if (it.selectionStart != it.selectionEnd) it.setSelection(it.selectionEnd) }
+            updateBars()
+        }
     }
 
     private fun colorTool(t: Tool) = t == Tool.PEN || t == Tool.MARKER || t == Tool.SHAPE
@@ -710,6 +654,8 @@ class NoteActivity : Activity(), NoteInkView.Host {
     private fun updateBanner() {
         if (!::banner.isInitialized) return
         val ru = engine.language("ru")
+        // Модель нужна только для письма пером в текст: печатают с клавиатуры — плашку не показываем.
+        if (tool == Tool.KEYS && ru.state != HandwritingEngine.State.DOWNLOADING) { banner.visibility = View.GONE; return }
         when (ru.state) {
             HandwritingEngine.State.READY -> banner.visibility = View.GONE
             HandwritingEngine.State.DOWNLOADING -> {
@@ -734,250 +680,741 @@ class NoteActivity : Activity(), NoteInkView.Host {
         }
     }
 
-    // ---------------------------------------------------------------- блоки на листе
+    // ---------------------------------------------------------------- лист: куски текста и картинки
 
-    /**
-     * Вид строки текста по стилю абзаца (0.30). Высота каждой строки — ровно клетка разлиновки (у «Названия» — две):
-     * её задаёт [CellHeight] в самом тексте ([styled]), низ букв — на 4 dp выше линии.
-     */
-    private fun textStyle(tv: TextView, style: String = ParaStyle.BODY) {
-        tv.textSize = ParaStyle.textSp(style)
-        tv.setTextColor(if (style == ParaStyle.QUOTE) Ui.INK2 else Ui.INK)
-        tv.typeface = when (style) {
-            ParaStyle.TITLE -> Ui.brandFont(this)
-            ParaStyle.H1, ParaStyle.H2 -> Typeface.DEFAULT_BOLD
-            ParaStyle.MONO -> Typeface.MONOSPACE
-            else -> Typeface.DEFAULT
-        }
-        tv.includeFontPadding = false
-        tv.setLineSpacing(0f, 1f)
-        tv.tag = RuledSheet.RULED
-        tv.minHeight = lineHeightPx * ParaStyle.cells(style)
+    private fun cells(h: Int): Int {
+        if (note.paper == NotePaper.NONE || lineHeightPx <= 0 || h <= 0) return h
+        return ((h + lineHeightPx - 1) / lineHeightPx) * lineHeightPx
     }
 
-    /** Текст строки с оформлением и высотой клеток. */
-    private fun styled(l: TextLine, style: String): SpannableStringBuilder {
-        val sb = SpannableStringBuilder(l.text)
-        Rich.apply(sb, l.spans)
-        cellSpan(sb, style)
-        return sb
-    }
-
-    private fun styledPlain(text: CharSequence, style: String): SpannableStringBuilder =
-        SpannableStringBuilder(text).also { cellSpan(it, style) }
-
-    private fun cellSpan(sb: SpannableStringBuilder, style: String) {
-        sb.setSpan(CellHeight(lineHeightPx * ParaStyle.cells(style), dp(4f)), 0, sb.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
-    }
-
-    /** Подпись строки: текст и оформление (поменялись — строку на листе переписать). */
-    private fun lineSig(b: Block?): Int = when (b) {
-        is TextLine -> b.text.hashCode() * 31 + b.spans.hashCode()
-        else -> 0
-    }
-
-    // Что сейчас на листе (0.27.6): строки те же и на тех же местах — меняется только текст, лист не собирается заново.
-    // Раньше после каждого распознанного слова пересоздавались все строки записи — чем длиннее запись, тем дольше.
-    private var shownKey: List<Any?> = emptyList()
-    private val lineViews = ArrayList<TextView?>()
-    private val lineSigs = ArrayList<Int>()
-    private var taskTextView: TextView? = null
-
-    /** Строки (сами строки — по ссылке), галочки задач, размер и место картинок, выбранная картинка. */
-    private fun structureKey(): List<Any?> {
-        val k = ArrayList<Any?>(note.blocks.size * 2 + 2)
-        k += selectedImage
-        k += if (tool == Tool.KEYS) note.caret else -1 // строка-поле ввода стоит на месте курсора
-        k += note.paper
-        for (b in note.blocks) {
-            k += b
-            when (b) {
-                is Block.Task -> { k += b.done; k += b.indent }
-                is Block.Para -> { k += b.style; k += b.indent }
-                is Block.Image -> { k += b.wf; k += b.xa }
-            }
-        }
-        return k
-    }
-
-    /** Лист не меняли местами — обновить только текст строк. false — надо собрать лист заново. */
-    private fun renderTextsOnly(): Boolean {
-        val key = structureKey()
-        if (key != shownKey || lineViews.size != note.blocks.size) return false
-        caretTextView = null
-        var changedText = false
-        val keys = tool == Tool.KEYS
-        for ((i, b) in note.blocks.withIndex()) {
-            val tv = lineViews[i] ?: continue
-            val t = blockText(b) ?: continue
-            if (keys && i == note.caret) continue // поле ввода: текст в нём пишет сам ввод (и loadKeysLine)
-            if (i == note.caret) { caretTextView = tv; changedText = true; continue } // строку курсора пишет refreshCaretText
-            val sig = lineSig(b)
-            if (tv.text.toString() != t || lineSigs.getOrNull(i) != sig) {
-                tv.text = styled(b as TextLine, (b as? Block.Para)?.style ?: ParaStyle.BODY)
-                if (i < lineSigs.size) lineSigs[i] = sig
-                changedText = true
-            }
-        }
-        if (::titleEdit.isInitialized && !titleTyping && titleEdit.text.toString() != note.title) loadTitle()
-        if (changedText) sheet.invalidate()
-        return true
-    }
-
-    private fun renderBlocks() {
-        if (selectedImage != null && note.blocks.none { it === selectedImage }) selectedImage = null
-        updateImageBar()
-        if (renderTextsOnly()) {
-            refreshCaretText()
-            ink.invalidate()
-            if (tool == Tool.KEYS && !keysTyping) loadKeysLine()
-            return
-        }
-        val titleFocus = ::titleEdit.isInitialized && titleEdit.hasFocus()
-        sheet.removeAllViews()
-        blockViews.clear()
-        lineViews.clear()
-        lineSigs.clear()
-        caretTextView = null
+    /** Разлиновка листа: без разметки — поля как на айфоне; в линейку и в клетку — как раньше (рисунки старых записей на месте). */
+    private fun applyPaper() {
         sheet.paper = note.paper
-        sheet.tall.clear()
-        // Дата — строкой сверху, под ней название (первая строка листа, две клетки), дальше — строки записи.
-        sheet.addView(TextView(this).apply {
-            textStyle(this)
-            textSize = 13f
+        if (note.paper == NotePaper.NONE) sheet.setPadding(dp(22f), dp(6f), dp(22f), dp(24f))
+        else sheet.setPadding(dp(56f), dp(18f), dp(36f), dp(24f))
+        val meta = Ui.noteMeta(note.created)
+        if (note.paper == NotePaper.NONE) {
+            dateView.text = meta
+            dateView.setPadding(0, dp(4f), 0, dp(10f))
+        } else {
+            dateView.setPadding(0, 0, 0, 0)
+            dateView.text = SpannableStringBuilder(meta).also {
+                it.setSpan(CellHeight(lineHeightPx, dp(4f)), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+            }
+        }
+    }
+
+    private fun tallBands(): List<FloatArray> {
+        val out = ArrayList<FloatArray>()
+        for (v in segs) if (v is NoteEdit) for (b in v.tallBands()) out += floatArrayOf(v.top + b[0], v.top + b[1])
+        return out
+    }
+
+    private fun newEdit(first: Boolean): NoteEdit = NoteEdit(this, this, first).apply {
+        tag = "note_edit"
+        showSoftInputOnFocus = tool == Tool.KEYS
+        setOnFocusChangeListener { v, has -> if (has) { cur = v as NoteEdit; updateBars(); refreshFormat() } }
+    }
+
+    private class ImgHolder(ctx: Context, val block: Block.Image) : TextView(ctx) {
+        init {
+            text = "[картинка не найдена]"
+            textSize = 14f
             setTextColor(Ui.MUTED)
-            gravity = Gravity.CENTER_HORIZONTAL
-            tag = "note_date"
-            text = styledPlain(Ui.noteMeta(note.created), ParaStyle.BODY)
-        })
-        (titleEdit.parent as? android.view.ViewGroup)?.removeView(titleEdit)
-        if (!titleTyping && titleEdit.text.toString() != note.title) loadTitle()
-        sheet.addView(titleEdit, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        sheet.tall += titleEdit
-        if (titleFocus) titleEdit.requestFocus()
-        val keys = tool == Tool.KEYS && ::keysEdit.isInitialized
-        var num = 0
-        var prev: Block? = null
-        note.blocks.forEachIndexed { i, b ->
-            val (v, tv) = when (b) {
-                is Block.Para -> {
-                    val p = prev
-                    num = if (b.style == ParaStyle.NUM && p is Block.Para && p.style == ParaStyle.NUM && p.indent == b.indent) num + 1 else 1
-                    paraView(b, i, num, keys)
-                }
-                is Block.Task -> taskView(b, i) to taskTextView
-                is Block.Image -> imageView(b, i) to null
-            }
-            prev = b
-            if (b is Block.Para && b.style == ParaStyle.TITLE) sheet.tall += v
-            blockViews += v
-            lineViews += tv
-            lineSigs += lineSig(b)
-            val lp = LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP)
-            if (v is NoteImageView) {
-                // Вид картинки чуть шире текста — уголки у края листа не обрезаются.
-                lp.leftMargin = -dp(NoteImageView.EDGE_DP)
-                lp.rightMargin = -dp(NoteImageView.EDGE_DP)
-            }
-            sheet.addView(v, lp)
-        }
-        // Пустое место ниже текста: здесь тоже можно писать; нажатие — курсор в конец.
-        val spacer = View(this).apply {
-            minimumHeight = max(dp(420f), (resources.displayMetrics.heightPixels * 0.55f).toInt())
-            setOnClickListener { setCaret(lastTextBlock()) }
-        }
-        if (keys && keysEdit.parent == null) {
-            // Курсор на картинке (или записи пусто): поле — пустой строкой после неё; напишут — станет новой строкой.
-            val at = if (note.blocks.isEmpty()) sheet.childCount else sheet.indexOfChild(blockViews[note.caret.coerceIn(0, blockViews.size - 1)]) + 1
-            sheet.addView(takeKeysEdit(null), at, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        }
-        sheet.addView(spacer, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
-        shownKey = structureKey()
-        refreshCaretText()
-        ink.invalidate()
-        if (keys) {
-            if (!keysTyping) loadKeysLine()
-            // Поле переехало в другую строку — фокус и клавиатура с ним (пока печатают название — не отбираем).
-            if (keysEdit.parent != null && !keysEdit.hasFocus() && !titleFocus && !keysHidden) showKeyboard()
         }
     }
 
-    /** Строка-абзац: текст в стиле абзаца; у списка — значок или номер слева, у цитаты — черта, отступ — пустым местом. */
-    private fun paraView(b: Block.Para, i: Int, num: Int, keys: Boolean): Pair<View, TextView> {
-        val tv: TextView = if (keys && i == note.caret) takeKeysEdit(b) else TextView(this).apply {
-            textStyle(this, b.style)
-            text = styled(b, b.style)
-            caretOnTap(this, i)
-            if (i == note.caret) caretTextView = this
-        }
-        val marker = when (b.style) {
-            ParaStyle.BULLET -> "•"
-            ParaStyle.DASH -> "–"
-            ParaStyle.NUM -> "$num."
-            else -> null
-        }
-        if (b.indent == 0 && marker == null && b.style != ParaStyle.QUOTE) return tv to tv
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        if (b.indent > 0) row.addView(View(this), LinearLayout.LayoutParams(dp(INDENT_DP) * b.indent, 1))
-        if (marker != null) row.addView(TextView(this).apply {
-            textStyle(this)
-            setTextColor(Ui.INK2)
-            text = styledPlain(marker, ParaStyle.BODY)
-            gravity = Gravity.END
-            setPadding(0, 0, dp(8f), 0)
-            tag = "list_marker"
-        }, LinearLayout.LayoutParams(dp(36f), Ui.WRAP))
-        if (b.style == ParaStyle.QUOTE) row.addView(View(this).apply { setBackgroundColor(Ui.CHIP_LINE) },
-            LinearLayout.LayoutParams(dp(3f), Ui.MATCH).apply { marginEnd = dp(12f) })
-        row.addView(tv, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        return row to tv
-    }
+    private fun blockOfView(v: View?): Block.Image? = (v as? NoteImageView)?.block ?: (v as? ImgHolder)?.block
 
-    private fun taskView(b: Block.Task, i: Int): View {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        if (b.indent > 0) row.addView(View(this), LinearLayout.LayoutParams(dp(INDENT_DP) * b.indent, 1))
-        val check = ImageView(this).apply {
-            setImageResource(R.drawable.ic_check)
-            imageTintList = ColorStateList.valueOf(if (b.done) Color.WHITE else Color.TRANSPARENT)
-            background = Ui.rounded(this@NoteActivity, if (b.done) Ui.OK else Ui.PAPER, if (b.done) Ui.OK else Ui.INK2, 6f)
-            setPadding(dp(3f), dp(3f), dp(3f), dp(3f))
-            contentDescription = if (b.done) "Сдано" else "Не сдано"
-            setOnClickListener { toggleTask(i) }
-        }
-        val box = FrameLayout(this).apply {
-            // Текст стоит в верхней части строки (запас высоты — снизу), поэтому галочку
-            // выравниваем по верху, а не по центру строки.
-            addView(check, FrameLayout.LayoutParams(dp(24f), dp(24f)).apply {
-                gravity = Gravity.TOP
-                topMargin = dp(1f)
-            })
-        }
-        row.addView(box, LinearLayout.LayoutParams(dp(34f), lineHeightPx))
-        val text: TextView = if (tool == Tool.KEYS && ::keysEdit.isInitialized && i == note.caret) takeKeysEdit(b) else TextView(this).apply {
-            textStyle(this)
-            text = styled(b, ParaStyle.BODY)
-            if (b.done) setTextColor(Ui.INK2)
-            caretOnTap(this, i)
-            if (i == note.caret) caretTextView = this
-        }
-        taskTextView = text
-        row.addView(text, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        val state = Ui.chip(this, if (b.done) "сдано" else "не сдано", if (b.done) Ui.OK else Ui.BAD, if (b.done) Ui.OK_SOFT else Ui.BAD_SOFT)
-        state.setOnClickListener { toggleTask(i) }
-        row.addView(state, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
-            topMargin = dp(2f)
-            marginStart = dp(8f)
-        })
-        return row
-    }
-
-    private fun imageView(b: Block.Image, i: Int): View {
+    private fun imageView(b: Block.Image): View {
         // Картинку можно растянуть на всю ширину листа — загружаем с запасом по размеру.
-        val bmp = bitmapCache.getOrPut(b.file) { store.loadImage(b, dp(800f)) ?: return emptyImage(i) }
+        val bmp = bitmapCache.getOrPut(b.file) { store.loadImage(b, dp(800f)) ?: return ImgHolder(this, b).apply {
+            setOnLongClickListener { removeImage(b); true }
+        } }
         return NoteImageView(this, b, bmp, imageHost)
     }
 
-    // ---------------------------------------------------------------- выбор и правка картинки
+    private fun attrOf(b: TextLine): PAttr = when (b) {
+        is Block.Task -> PAttr(true, ParaStyle.BODY, b.indent, b.done)
+        is Block.Para -> PAttr(false, b.style, b.indent, false)
+        else -> PAttr()
+    }
+
+    private fun blockOf(l: ELine): Block = if (l.attr.task) Block.Task(l.text, l.attr.done, l.attr.indent, l.spans.toMutableList())
+        else Block.Para(l.text, l.attr.style, l.attr.indent, l.spans.toMutableList())
+
+    /** Собрать лист заново из записи и поставить курсор: в блок [caretBlock] на место [caretOff] (-1 — конец) или в название. */
+    private fun render(caretBlock: Int = note.caret, caretOff: Int = note.caretOffset, titleCaret: Boolean = false) {
+        val keepScroll = if (::scroll.isInitialized) scroll.scrollY else 0
+        if (selectedImage != null && note.blocks.none { it === selectedImage }) selectedImage = null
+        sheet.removeAllViews()
+        segs.clear()
+        cur = null
+        applyPaper()
+        sheet.addView(dateView, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        var lines = ArrayList<ELine>()
+        lines += ELine(note.title, emptyList(), PAttr(style = ParaStyle.TITLE))
+        var first = true
+        fun flush() {
+            val e = newEdit(first)
+            e.load(lines)
+            segs += e
+            sheet.addView(e, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+            first = false
+            lines = ArrayList()
+        }
+        // Новая заметка (без названия, одна пустая строка): на листе только название (как на айфоне).
+        val only = note.blocks.singleOrNull() as? Block.Para
+        val blank = note.title.isEmpty() && only != null && only.text.isEmpty() && only.style == ParaStyle.BODY && only.indent == 0 && only.spans.isEmpty()
+        if (!blank) for (b in note.blocks) when (b) {
+            is Block.Image -> {
+                flush()
+                val v = imageView(b)
+                segs += v
+                sheet.addView(v, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply {
+                    if (v is NoteImageView) {
+                        // Вид картинки чуть шире текста — уголки у края листа не обрезаются.
+                        leftMargin = -dp(NoteImageView.EDGE_DP)
+                        rightMargin = -dp(NoteImageView.EDGE_DP)
+                    }
+                })
+            }
+            is Block.Para -> lines += ELine(b.text, b.spans, attrOf(b))
+            is Block.Task -> lines += ELine(b.text, b.spans, attrOf(b))
+        }
+        flush()
+        sheet.addView(spacer, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        syncModel(maps = true)
+        placeCaret(caretBlock, caretOff, titleCaret || blank)
+        updateImageBar()
+        updateBars()
+        ink.invalidate()
+        if (keepScroll > 0) scroll.post { scroll.scrollTo(0, keepScroll) }
+    }
+
+    private fun firstEdit(): NoteEdit = segs.first { it is NoteEdit } as NoteEdit
+    private fun lastEdit(): NoteEdit = segs.last { it is NoteEdit } as NoteEdit
+
+    /** Поле с курсором (его нет на листе — первое). */
+    private fun caretEdit(): NoteEdit = cur?.takeIf { it.parent === sheet } ?: firstEdit()
+
+    private fun setCaretIn(e: NoteEdit, raw: Int) {
+        cur = e
+        if (!e.hasFocus()) e.requestFocus()
+        e.setSelection(raw.coerceIn(0, e.text.length))
+        updateBars()
+    }
+
+    private fun placeCaret(block: Int, off: Int, title: Boolean) {
+        if (title) { val e = firstEdit(); setCaretIn(e, e.rawOffset(0, -1)); return }
+        for (v in segs) {
+            if (v !is NoteEdit) continue
+            val i = paraBlock[v]?.indexOf(block) ?: -1
+            if (i >= 0) { setCaretIn(v, v.rawOffset(i, off)); return }
+        }
+        // Курсор был на картинке — в начало текста под ней.
+        val img = note.blocks.getOrNull(block)
+        val at = segs.indexOfFirst { img != null && blockOfView(it) === img }
+        val next = segs.drop(max(0, at + 1)).firstOrNull { it is NoteEdit } as? NoteEdit
+        if (at >= 0 && next != null) { setCaretIn(next, next.rawOffset(0, 0)); return }
+        val e = lastEdit()
+        setCaretIn(e, e.text.length)
+    }
+
+    /**
+     * Запись — по листу: название, блоки (строки полей и картинки), курсор. [maps] — только пересчитать, какой строке какой
+     * блок соответствует. Пустой кусок между картинками (одна пустая строка) — без блоков.
+     */
+    private fun syncModel(maps: Boolean = false) {
+        val blocks = ArrayList<Block>()
+        var title = note.title
+        paraBlock.clear()
+        var caretB = -1
+        var caretO = -1
+        var inTitle = false
+        val ce = cur
+        for (v in segs) when (v) {
+            is NoteEdit -> {
+                val ls = v.lines()
+                val map = IntArray(ls.size) { -1 }
+                var from = 0
+                if (v.first) { title = ls[0].text; from = 1 }
+                val part = if (from < ls.size) ls.subList(from, ls.size) else emptyList()
+                val skip = !v.first && part.size == 1 && part[0].text.isEmpty() && part[0].attr == PAttr() && part[0].spans.isEmpty()
+                if (!skip) for (k in from until ls.size) { map[k] = blocks.size; blocks += blockOf(ls[k]) }
+                paraBlock[v] = map
+                if (v === ce) {
+                    val (i, o) = v.caretAt()
+                    if (map.getOrElse(i) { -1 } >= 0) {
+                        caretB = map[i]
+                        caretO = if (o >= ls[i].text.length) -1 else o
+                    } else if (v.first && i == 0) inTitle = true
+                    else caretB = max(0, blocks.size - 1)
+                }
+            }
+            else -> blockOfView(v)?.let { blocks += it }
+        }
+        if (blocks.isEmpty()) blocks += Block.Para("")
+        if (maps) return
+        note.title = title
+        note.blocks.clear()
+        note.blocks.addAll(blocks)
+        if (ce != null) {
+            titleCaret = inTitle
+            note.caret = if (caretB >= 0) caretB.coerceIn(0, blocks.size - 1) else 0
+            note.caretOffset = if (inTitle) 0 else caretO
+        }
+    }
+
+    // ---------------------------------------------------------------- поле текста (NoteEdit.Host)
+
+    override fun cellPx(): Int = if (note.paper == NotePaper.NONE) 0 else lineHeightPx
+
+    override fun beforeEdit(e: NoteEdit, start: Int) {
+        if (programmatic == 0) {
+            val now = SystemClock.uptimeMillis()
+            // Серия нажатий — один шаг «Отменить» (пауза больше 1,5 с или другой кусок — новый шаг).
+            if (e !== burstEdit || now - lastEditAt > 1500) pushUndo()
+            burstEdit = e
+            lastEditAt = now
+        }
+        if (shiftEdit == null) beginShift(e, start)
+    }
+
+    override fun afterEdit(e: NoteEdit) {
+        endShift(e)
+        if (programmatic == 0) lastEditAt = SystemClock.uptimeMillis()
+        cur = e
+        changed()
+        updateBars()
+    }
+
+    override fun onToggleDone(e: NoteEdit, i: Int) {
+        runAfterCommit {
+            pushUndo()
+            burstEdit = null
+            val a = e.paras.getOrNull(i) ?: return@runAfterCommit
+            a.done = !a.done
+            e.attrsChanged(i..i)
+            changed()
+            refreshFormat()
+        }
+    }
+
+    /** «Стереть» в начале куска под картинкой: первый раз — выбрать картинку, второй — удалить её. */
+    override fun onBackspaceAtStart(e: NoteEdit): Boolean {
+        val si = segs.indexOf(e)
+        val b = blockOfView(segs.getOrNull(si - 1)) ?: return false
+        if (selectedImage === b) removeImage(b) else {
+            selectImage(b)
+            hint("Ещё раз «Стереть» — удалить картинку")
+        }
+        return true
+    }
+
+    override fun newStep() { burstEdit = null }
+
+    override fun onSelection(e: NoteEdit, start: Int, end: Int) {
+        cur = e
+        if (selectedImage != null && start != end) selectImage(null)
+        updateBars()
+        refreshFormat()
+    }
+
+    // Рисунки едут вместе с текстом (0.31): выше дописали строки — рисунки ниже места правки сдвигаются на столько же.
+    private var shiftEdit: NoteEdit? = null
+    private var shiftY = 0f
+    private var shiftH0 = 0
+
+    private fun contentH(e: NoteEdit): Int {
+        val l = e.layout ?: return e.height
+        return cells(max(e.minHeight, l.height + e.totalPaddingTop + e.totalPaddingBottom))
+    }
+
+    private fun lineBottomY(e: NoteEdit, off: Int): Float {
+        val l = e.layout ?: return e.bottom.toFloat()
+        return e.top + e.totalPaddingTop + l.getLineBottom(l.getLineForOffset(off.coerceIn(0, e.text.length))).toFloat()
+    }
+
+    private fun beginShift(e: NoteEdit, start: Int) {
+        if (note.drawings.isEmpty() || e.layout == null) return
+        shiftEdit = e
+        shiftY = lineBottomY(e, start)
+        shiftH0 = contentH(e)
+    }
+
+    private fun endShift(e: NoteEdit) {
+        if (shiftEdit !== e) return
+        shiftEdit = null
+        val dy = contentH(e) - shiftH0
+        if (dy != 0) shiftDrawings(shiftY - 1f, dy.toFloat())
+    }
+
+    /** Сдвинуть рисунки, что ниже [fromY] (координаты листа), на [dy]. Рисунки — новыми (снимки «Отменить» не трогаются). */
+    private fun shiftDrawings(fromY: Float, dy: Float) {
+        var any = false
+        for ((i, d) in note.drawings.withIndex()) {
+            if (d.bounds().top < fromY) continue
+            val pts = d.pts.copyOf()
+            var j = 1
+            while (j < pts.size) { pts[j] += dy; j += 3 }
+            note.drawings[i] = Drawing(d.kind, d.color, d.width, pts).also { it.id = d.id }
+            any = true
+        }
+        if (any) ink.invalidate()
+    }
+
+    /** Правка из кода (перо, «Aa», панель): рисунки ниже сдвигаются, шаг «Отменить» записан заранее. */
+    private inline fun quietEdit(e: NoteEdit, f: () -> Unit) {
+        programmatic++
+        val y0 = lineBottomY(e, min(e.selectionStart, e.selectionEnd).coerceAtLeast(0))
+        val h0 = contentH(e)
+        try { f() } finally { programmatic-- }
+        if (shiftEdit === e) shiftEdit = null
+        val dy = contentH(e) - h0
+        if (dy != 0 && note.drawings.isNotEmpty()) shiftDrawings(y0 - 1f, dy.toFloat())
+    }
+
+    // ---------------------------------------------------------------- правка текста (перо, мини-панель)
+
+    /** Текст строки с курсором до и после курсора (без невидимых знаков) и стоит ли курсор внутри строки. */
+    private fun caretContext(e: NoteEdit): Triple<String, String, Boolean> {
+        val a = min(e.selectionStart, e.selectionEnd).coerceAtLeast(0)
+        val b = max(e.selectionStart, e.selectionEnd).coerceAtLeast(0)
+        val i = e.paraAt(a)
+        val ps = e.paraStart(i)
+        val pe = e.paraEnd(i)
+        val before = e.text.subSequence(ps, a).toString().replace(NoteEdit.ZWS, "")
+        val after = e.text.subSequence(min(b, pe), pe).toString().replace(NoteEdit.ZWS, "")
+        return Triple(before, after, after.isNotEmpty())
+    }
+
+    private fun isWordChar(c: Char) = c.isLetterOrDigit() || c == '-'
+
+    /**
+     * Что вставить у курсора с учётом пробелов. Если курсор стоит внутри строки и вставка короткая (1–2 знака) рядом со
+     * словом — без пробелов: это исправление буквы. При обычном письме в конец строки — слова через пробел.
+     */
+    private fun spacedInsert(before: String, after: String, word: String, placed: Boolean): String {
+        if (word.isEmpty()) return word
+        val touchesWord = (before.isNotEmpty() && isWordChar(before.last())) || (after.isNotEmpty() && isWordChar(after.first()))
+        if (placed && word.length <= 2 && word.all { isWordChar(it) } && touchesWord) return word
+        val lead = before.isNotEmpty() && !before.last().isWhitespace() && word.first() !in ".,!?;:)»…"
+        val trail = after.isNotEmpty() && !after.first().isWhitespace() && after.first() !in ".,!?;:)»…" && !word.last().isWhitespace()
+        return (if (lead) " " else "") + word + (if (trail) " " else "")
+    }
+
+    /** Вставить текст у курсора (выделенное заменяется). raw = true — как есть, без расстановки пробелов. */
+    private fun insertAtCaret(word: String, raw: Boolean = false) {
+        if (word.isEmpty()) return
+        val e = caretEdit()
+        pushUndo()
+        burstEdit = null
+        val a = min(e.selectionStart, e.selectionEnd).coerceAtLeast(0)
+        val b = max(e.selectionStart, e.selectionEnd).coerceAtLeast(0)
+        val (before, after, placed) = caretContext(e)
+        val ins = if (raw) word else spacedInsert(before, after, word, placed)
+        quietEdit(e) { e.text.replace(a, b, ins) }
+        e.setSelection((a + ins.length).coerceAtMost(e.text.length))
+        cur = e
+    }
+
+    private var lastCharDelete = 0L
+
+    /** Стереть букву перед курсором; в начале строки — по правилам айфона (снять список, склеить строки). */
+    private fun deleteChar() {
+        val e = caretEdit()
+        val now = SystemClock.uptimeMillis()
+        if (now - lastCharDelete > 1500) { pushUndo(); burstEdit = null } // серия нажатий — один шаг отмены
+        lastCharDelete = now
+        quietEdit(e) { e.backspace() }
+    }
+
+    /** Стереть слово перед курсором (вместе с пробелами вокруг). Строка пустая — как «Стереть». */
+    private fun deleteWord() {
+        val e = caretEdit()
+        val a = e.selectionStart.coerceAtLeast(0)
+        val ps = e.paraStart(e.paraAt(a))
+        val before = e.text.subSequence(ps, a).toString()
+        if (before.replace(NoteEdit.ZWS, "").isBlank()) { deleteChar(); return }
+        val cut = before.replace(Regex("""\s*[^\s​]+\s*$"""), "")
+        pushUndo()
+        burstEdit = null
+        quietEdit(e) { e.text.delete(ps + cut.length, a) }
+    }
+
+    /** Новая строка (или задача). Курсор внутри строки — текст после него переносится; «задача» в пустой строке — пункт. */
+    private fun newLine(task: Boolean) {
+        val e = caretEdit()
+        pushUndo()
+        burstEdit = null
+        val (i0, _) = e.caretAt()
+        if (task && e.paraText(i0).isBlank() && !(e.first && i0 == 0)) {
+            e.paras[i0].task = true
+            e.paras[i0].style = ParaStyle.BODY
+            quietEdit(e) { e.attrsChanged(i0..i0) }
+            changed()
+            return
+        }
+        val a = min(e.selectionStart, e.selectionEnd).coerceAtLeast(0)
+        val b = max(e.selectionStart, e.selectionEnd).coerceAtLeast(0)
+        quietEdit(e) { e.text.replace(a, b, "\n") }
+        if (task) {
+            val (i, _) = e.caretAt()
+            e.paras[i].task = true
+            e.paras[i].style = ParaStyle.BODY
+            quietEdit(e) { e.attrsChanged(i..i) }
+        }
+        changed()
+    }
+
+    private fun editCaretDialog() {
+        val e = caretEdit()
+        val (i, _) = e.caretAt()
+        val text = e.paraText(i)
+        val edit = EditText(this).apply {
+            setText(text)
+            setSelection(text.length)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        }
+        val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
+        AlertDialog.Builder(this)
+            .setTitle("Исправить строку")
+            .setView(box)
+            .setPositiveButton("Готово") { _, _ ->
+                pushUndo()
+                burstEdit = null
+                val t = edit.text.toString().replace('\n', ' ')
+                quietEdit(e) { e.text.replace(e.paraStart(i), e.paraEnd(i), t) }
+                e.setSelection(e.paraEnd(i))
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    /** Кнопка, которая повторяет действие, пока её держат. */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun repeatOnHold(action: () -> Unit): View.OnTouchListener {
+        var repeat: Runnable? = null
+        return View.OnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.isPressed = true
+                    action()
+                    val r = object : Runnable {
+                        override fun run() {
+                            action()
+                            handler.postDelayed(this, 70)
+                        }
+                    }
+                    repeat = r
+                    handler.postDelayed(r, 450)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.isPressed = false
+                    repeat?.let { handler.removeCallbacks(it) }
+                    repeat = null
+                }
+            }
+            true
+        }
+    }
+
+    // ---------------------------------------------------------------- оформление: панель и «Aa»
+
+    /** Правка оформления: один шаг «Отменить», рисунки ниже сдвигаются, если строки стали выше. */
+    private fun fmt(undo: Boolean = true, f: (NoteEdit) -> Unit) = runAfterCommit {
+        val e = caretEdit()
+        if (undo) { pushUndo(); burstEdit = null }
+        quietEdit(e) { f(e) }
+        changed()
+        refreshFormat()
+    }
+
+    /** Строки выделения, кроме названия. */
+    private fun bodyParas(e: NoteEdit): IntRange {
+        val r = e.selParas()
+        return if (e.first && r.first == 0) 1..r.last else r
+    }
+
+    private fun applyInline(kind: String) {
+        val e = caretEdit()
+        fmt(undo = e.selectionStart != e.selectionEnd) { it.toggleKind(kind) }
+    }
+
+    private fun applyColor(kind: String, color: Int) {
+        val e = caretEdit()
+        fmt(undo = e.selectionStart != e.selectionEnd) { it.setColorKind(kind, color) }
+    }
+
+    /** Стиль строк (пункт чек-листа станет абзацем этого стиля). */
+    private fun applyStyle(style: String) = fmt { e ->
+        val r = bodyParas(e)
+        if (r.isEmpty()) { hint("Это название заметки — оно всегда крупное"); return@fmt }
+        for (i in r) e.paras[i].apply { task = false; done = false; this.style = style }
+        e.attrsChanged(r)
+    }
+
+    /** Список / цитата: у всех строк уже этот — снять, иначе поставить. */
+    private fun applyList(style: String) = fmt { e ->
+        val r = bodyParas(e)
+        if (r.isEmpty()) return@fmt
+        val all = r.all { !e.paras[it].task && e.paras[it].style == style }
+        for (i in r) e.paras[i].apply { task = false; done = false; this.style = if (all) ParaStyle.BODY else style }
+        e.attrsChanged(r)
+    }
+
+    /** Список из меню (Нет / С маркерами / С пунктиром / С нумерацией) — ровно этот. */
+    private fun setList(style: String) = fmt { e ->
+        val r = bodyParas(e)
+        if (r.isEmpty()) return@fmt
+        for (i in r) e.paras[i].apply { task = false; done = false; this.style = style }
+        e.attrsChanged(r)
+    }
+
+    /** Чек-лист: строки выделения — пунктами (уже все пункты — обычными строками). */
+    private fun toggleTaskLines() = fmt { e ->
+        val r = bodyParas(e)
+        if (r.isEmpty()) {
+            // Курсор в названии: чек-лист — с новой строки под ним.
+            e.setSelection(e.rawOffset(0, -1))
+            e.text.insert(e.selectionEnd, "\n")
+            val i = e.caretAt().first
+            e.paras[i].apply { task = true; style = ParaStyle.BODY }
+            e.attrsChanged(i..i)
+            return@fmt
+        }
+        val all = r.all { e.paras[it].task }
+        for (i in r) e.paras[i].apply { task = !all; done = false; if (!all) style = ParaStyle.BODY }
+        e.attrsChanged(r)
+    }
+
+    private fun applyIndent(d: Int) = fmt { e ->
+        val r = bodyParas(e)
+        if (r.isEmpty()) return@fmt
+        for (i in r) e.paras[i].indent = (e.paras[i].indent + d).coerceIn(0, ParaStyle.MAX_INDENT)
+        e.attrsChanged(r)
+    }
+
+    private fun moveLines(dir: Int) = fmt { e ->
+        if (!e.moveLines(dir)) hint(if (dir < 0) "Выше двигать некуда" else "Ниже двигать некуда", 1500)
+    }
+
+    /** Шрифт: обычный (снять засечки и моноширинный), с засечками — у выделенного, моноширинный — у строк. */
+    private fun applyFont(kind: String?) = fmt { e ->
+        when (kind) {
+            ParaStyle.MONO -> {
+                val r = bodyParas(e)
+                if (r.isEmpty()) return@fmt
+                val all = r.all { !e.paras[it].task && e.paras[it].style == ParaStyle.MONO }
+                for (i in r) e.paras[i].apply { task = false; style = if (all) ParaStyle.BODY else ParaStyle.MONO }
+                e.attrsChanged(r)
+            }
+            Rich.SERIF -> e.toggleKind(Rich.SERIF)
+            else -> {
+                if (e.kindOn(Rich.SERIF)) e.toggleKind(Rich.SERIF)
+                val r = bodyParas(e)
+                for (i in r) if (!e.paras[i].task && e.paras[i].style == ParaStyle.MONO) e.paras[i].style = ParaStyle.BODY
+                if (!r.isEmpty()) e.attrsChanged(r)
+            }
+        }
+    }
+
+    /** Цвет текста (как маркер на айфоне): Нет, Лиловый, Розовый, Оранжевый, Мятный, Синий. */
+    private fun colorMenu(anchor: View) = runAfterCommit {
+        val m = PopupMenu(this, anchor)
+        m.menu.add(0, 0, 0, "Нет")
+        for ((i, n) in PEN_COLOR_NAMES.withIndex()) m.menu.add(0, i + 1, i + 1, n)
+        m.setOnMenuItemClickListener { applyColor(Rich.FC, if (it.itemId == 0) 0 else PEN_COLORS[it.itemId - 1]); true }
+        m.show()
+        lastMenu = m
+    }
+
+    private fun listMenu(anchor: View) = runAfterCommit {
+        val e = caretEdit()
+        val a = e.paras.getOrNull(e.caretAt().first) ?: PAttr()
+        val m = PopupMenu(this, anchor)
+        val items = listOf(ParaStyle.BODY to "Нет", ParaStyle.BULLET to "С маркерами", ParaStyle.DASH to "С пунктиром", ParaStyle.NUM to "С нумерацией")
+        for ((i, p) in items.withIndex()) m.menu.add(0, i, i, p.second).apply {
+            isCheckable = true
+            isChecked = !a.task && (a.style == p.first || (p.first == ParaStyle.BODY && !ParaStyle.isList(a.style)))
+        }
+        m.setOnMenuItemClickListener { setList(items[it.itemId].first); true }
+        m.show()
+        lastMenu = m
+    }
+
+    private lateinit var fmtPanel: LinearLayout
+    private lateinit var fmtScroll: View
+    private val fmtButtons = HashMap<String, TextView>()
+
+    private fun toggleFormat() {
+        if (fmtScroll.visibility == View.VISIBLE) { closeFormat(); return }
+        runAfterCommit {
+            // Как на айфоне: «Aa» — на месте клавиатуры, лист над ним короче, строка с курсором на виду.
+            hideKeyboard()
+            refreshFormat()
+            fmtScroll.visibility = View.VISIBLE
+            revealCaret()
+        }
+    }
+
+    /** Закрыть «Aa»; печатали — клавиатура возвращается. */
+    private fun closeFormat(keyboard: Boolean = true) {
+        if (fmtScroll.visibility != View.VISIBLE) return
+        fmtScroll.visibility = View.GONE
+        if (keyboard && tool == Tool.KEYS) showKeyboard()
+    }
+
+    /** Строку с курсором — на виду (после того как лист стал короче). */
+    private fun revealCaret() {
+        scroll.post {
+            val e = cur ?: return@post
+            val l = e.layout ?: return@post
+            val line = l.getLineForOffset(e.selectionEnd.coerceIn(0, e.text.length))
+            e.requestRectangleOnScreen(android.graphics.Rect(0, e.totalPaddingTop + l.getLineTop(line) - dp(8f),
+                e.width, e.totalPaddingTop + l.getLineBottom(line) + dp(8f)), false)
+        }
+    }
+
+    /**
+     * Окно «Формат» (как «Aa» в Заметках на айфоне): стиль строки, Ж/К/Ч/З, шрифт, маркер, цвет текста, списки, цитата,
+     * отступ. Стоит внизу на месте клавиатуры, лист над ним — короче (не поверх текста, Владимир: «весь текст перекрывается
+     * значками»). Ряды кнопок прокручиваются вбок. Без выделения Ж/К/Ч/З и цвет — для того, что напечатают дальше.
+     */
+    private fun buildFormatPanel(): View {
+        fmtPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12f), dp(2f), dp(12f), dp(8f))
+            tag = "fmt_panel"
+            isClickable = true
+        }
+        val head = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        head.addView(Ui.text(this, "Формат", 15f, Ui.INK, bold = true), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        head.addView(Ui.text(this, "✕", 17f, Ui.INK2).apply {
+            tag = "fmt_close"; setPadding(dp(14f), dp(6f), dp(4f), dp(4f)); setOnClickListener { closeFormat() }
+        })
+        fmtPanel.addView(head)
+        fun row(): LinearLayout {
+            val r = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+            fmtPanel.addView(HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(r, ViewGroup.LayoutParams(Ui.WRAP, Ui.WRAP))
+            }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(6f) })
+            return r
+        }
+        fun gap(r: LinearLayout) = r.addView(View(this).apply { setBackgroundColor(Ui.CHIP_LINE) },
+            LinearLayout.LayoutParams(dp(1f), dp(24f)).apply { setMargins(dp(6f), 0, dp(6f), 0) })
+        fun label(r: LinearLayout, t: String) = r.addView(Ui.text(this, t, 12f, Ui.MUTED, bold = true).apply { setPadding(0, 0, dp(6f), 0) })
+        fun chip(r: LinearLayout, tag: String, text: String, f: () -> Unit): TextView = Ui.pill(this, text, Ui.INK, Ui.DESK).apply {
+            this.tag = tag
+            textSize = 13.5f
+            setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
+            setOnClickListener { f() }
+            fmtButtons[tag] = this
+        }.also { r.addView(it, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { marginEnd = dp(6f) }) }
+        fun dotIn(r: LinearLayout, tag: String, color: Int, f: () -> Unit) =
+            r.addView(dot(tag, color, f), LinearLayout.LayoutParams(dp(30f), dp(30f)).apply { marginEnd = dp(6f) })
+        val styles = row()
+        chip(styles, "fmt_title", "Название") { applyStyle(ParaStyle.TITLE) }.apply { typeface = Typeface.DEFAULT_BOLD }
+        chip(styles, "fmt_h1", "Заголовок") { applyStyle(ParaStyle.H1) }
+        chip(styles, "fmt_h2", "Подзаголовок") { applyStyle(ParaStyle.H2) }
+        chip(styles, "fmt_body", "Основной") { applyStyle(ParaStyle.BODY) }
+        chip(styles, "fmt_font_mono", "Моноширинный") { applyFont(ParaStyle.MONO) }.apply { typeface = Typeface.MONOSPACE }
+        val marks = row()
+        chip(marks, "fmt_b", "Ж") { applyInline(Rich.B) }.apply { typeface = Typeface.DEFAULT_BOLD }
+        chip(marks, "fmt_i", "К") { applyInline(Rich.I) }.apply { setTypeface(Typeface.SERIF, Typeface.ITALIC) }
+        chip(marks, "fmt_u", "Ч") { applyInline(Rich.U) }.apply { paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG }
+        chip(marks, "fmt_s", "З") { applyInline(Rich.S) }.apply { paintFlags = paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG }
+        gap(marks)
+        chip(marks, "fmt_font_normal", "Обычный") { applyFont(null) }
+        chip(marks, "fmt_font_serif", "С засечками") { applyFont(Rich.SERIF) }.apply { typeface = Typeface.SERIF }
+        val hl = row()
+        label(hl, "Маркер")
+        for ((i, c) in HIGHLIGHTS.withIndex()) dotIn(hl, "fmt_hl_$i", c) { applyColor(Rich.HL, c) }
+        dotIn(hl, "fmt_hl_none", 0) { applyColor(Rich.HL, 0) }
+        gap(hl)
+        label(hl, "Цвет")
+        dotIn(hl, "fmt_fc_none", 0) { applyColor(Rich.FC, 0) }
+        for ((i, c) in TEXT_COLORS.withIndex()) dotIn(hl, "fmt_fc_$i", c) { applyColor(Rich.FC, c) }
+        val lists = row()
+        chip(lists, "fmt_bullet", "•  Список") { applyList(ParaStyle.BULLET) }
+        chip(lists, "fmt_dash", "–  Список") { applyList(ParaStyle.DASH) }
+        chip(lists, "fmt_num", "1.  Список") { applyList(ParaStyle.NUM) }
+        chip(lists, "fmt_check", "○  Чек-лист") { toggleTaskLines() }
+        chip(lists, "fmt_quote", "❝ Цитата") { applyList(ParaStyle.QUOTE) }
+        chip(lists, "fmt_outdent", "⇤") { applyIndent(-1) }
+        chip(lists, "fmt_indent", "⇥") { applyIndent(1) }
+        // Внизу во всю ширину, с линией сверху; на широком экране кнопки — не шире 760 dp, по центру.
+        val dock = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Ui.BAR)
+            visibility = View.GONE
+            isClickable = true
+            addView(Ui.barLine(this@NoteActivity), LinearLayout.LayoutParams(Ui.MATCH, dp(1f)))
+            addView(fmtPanel, LinearLayout.LayoutParams(minOf(dp(760f), resources.displayMetrics.widthPixels), Ui.WRAP).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            })
+        }
+        fmtScroll = dock
+        return dock
+    }
+
+    /** Кружок цвета в «Формате» (0 — «без цвета»: крестик). */
+    private fun dot(tag: String, color: Int, f: () -> Unit): TextView = TextView(this).apply {
+        this.tag = tag
+        gravity = Gravity.CENTER
+        text = if (color == 0) "✕" else ""
+        setTextColor(Ui.INK2)
+        background = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.OVAL
+            setColor(if (color == 0) Ui.BAR else color)
+            setStroke(dp(1f), Ui.CHIP_LINE)
+        }
+        layoutParams = ViewGroup.LayoutParams(dp(34f), dp(34f))
+        minWidth = dp(34f); minHeight = dp(34f) // ряд с переносом меряет по содержимому — пустой кружок не схлопывается
+        setOnClickListener { f() }
+        fmtButtons[tag] = this
+    }
+
+    /** Подсветить на панели и в «Формате» то, что уже стоит у строки и выделенного. */
+    private fun refreshFormat() {
+        if (!::fmtPanel.isInitialized) return
+        val e = cur ?: return
+        val a = e.paras.getOrNull(e.caretAt(min(e.selectionStart, e.selectionEnd).coerceAtLeast(0)).first) ?: return
+        val style = if (a.task) null else a.style
+        fun bar(tag: String, v: Boolean) = when (val b = barButtons[tag]) {
+            is Ui.ToolButton -> b.selectedTool = v
+            is TextView -> {
+                b.background = if (v) Ui.rounded(this, Ui.ACCENT_SOFT, null, 10f) else null
+                b.setTextColor(if (v) Ui.ACCENT else Ui.INK)
+            }
+            else -> Unit
+        }
+        bar("bar_b", e.kindOn(Rich.B)); bar("bar_i", e.kindOn(Rich.I)); bar("bar_u", e.kindOn(Rich.U)); bar("bar_s", e.kindOn(Rich.S))
+        bar("keys_task", a.task)
+        bar("bar_list", style != null && ParaStyle.isList(style))
+        bar("bar_quote", style == ParaStyle.QUOTE)
+        bar("bar_color", e.kindOn(Rich.FC))
+        if (fmtScroll.visibility != View.VISIBLE) return
+        fun on(tag: String, v: Boolean) = fmtButtons[tag]?.let {
+            if (it.text.isEmpty() || it.text == "✕") { it.alpha = if (v) 1f else 0.85f; return@let }
+            it.background = Ui.rounded(this, if (v) Ui.INK else Ui.DESK, null, 999f)
+            it.setTextColor(if (v) Color.WHITE else Ui.INK)
+        }
+        on("fmt_title", style == ParaStyle.TITLE); on("fmt_h1", style == ParaStyle.H1); on("fmt_h2", style == ParaStyle.H2)
+        on("fmt_body", style == ParaStyle.BODY)
+        on("fmt_bullet", style == ParaStyle.BULLET); on("fmt_dash", style == ParaStyle.DASH); on("fmt_num", style == ParaStyle.NUM)
+        on("fmt_quote", style == ParaStyle.QUOTE); on("fmt_check", a.task)
+        on("fmt_font_mono", style == ParaStyle.MONO)
+        on("fmt_b", e.kindOn(Rich.B)); on("fmt_i", e.kindOn(Rich.I)); on("fmt_u", e.kindOn(Rich.U)); on("fmt_s", e.kindOn(Rich.S))
+        on("fmt_font_serif", e.kindOn(Rich.SERIF)); on("fmt_font_normal", style != ParaStyle.MONO && !e.kindOn(Rich.SERIF))
+    }
+
+    // ---------------------------------------------------------------- картинки
+
+    private var resizeH0 = 0
+    private var resizeY0 = 0f
 
     private val imageHost = object : NoteImageView.Host {
         override fun isImageSelected(b: Block.Image) = b === selectedImage
@@ -989,10 +1426,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         override fun onImageLongPress(v: NoteImageView) {
             AlertDialog.Builder(this@NoteActivity)
                 .setMessage("Удалить картинку из записи?")
-                .setPositiveButton("Удалить") { _, _ ->
-                    val i = note.blocks.indexOfFirst { it === v.block }
-                    if (i >= 0) removeBlock(i)
-                }
+                .setPositiveButton("Удалить") { _, _ -> removeImage(v.block) }
                 .setNegativeButton("Отмена", null)
                 .show()
         }
@@ -1000,58 +1434,87 @@ class NoteActivity : Activity(), NoteInkView.Host {
         override fun onImageEditStart(v: NoteImageView) {
             imageEditing = true
             pushUndo()
+            burstEdit = null
+            resizeH0 = cells(v.height)
+            resizeY0 = v.bottom.toFloat()
             if (selectedImage !== v.block) selectImage(v.block)
         }
 
-        private fun editEnded(): Boolean {
-            imageEditing = false
-            val r = renderPending
-            renderPending = false
-            return r
-        }
-
         override fun onImageEditCancel(v: NoteImageView) {
-            val needRender = editEnded()
+            imageEditing = false
             if (undoStack.isNotEmpty()) undoStack.removeLast()
-            if (needRender) renderBlocks()
         }
 
         override fun onImageResized(v: NoteImageView) {
-            changed(render = editEnded())
-            ink.invalidate()
+            imageEditing = false
+            changed()
+            sheet.post {
+                val dy = cells(v.height) - resizeH0
+                if (dy != 0) shiftDrawings(resizeY0 - 1f, dy.toFloat())
+                ink.invalidate()
+            }
         }
 
         override fun onImageDropped(v: NoteImageView) {
-            val needRender = editEnded()
+            imageEditing = false
             // Новое место — между строками, ближайшими к середине картинки.
-            val from = note.blocks.indexOfFirst { it === v.block }
             val cy = v.top + v.translationY + v.height / 2f
-            var pos = 0
-            for ((j, bv) in blockViews.withIndex()) if (j != from && bv.top + bv.height / 2f < cy) pos++
             v.translationY = 0f
+            syncModel()
+            val from = note.blocks.indexOfFirst { it === v.block }
+            var pos = boundaryAt(cy, v)
+            if (from >= 0 && pos > from) pos -= 1
             if (from >= 0 && pos != from) {
-                val caretBlock = note.blocks.getOrNull(note.caret)
                 note.blocks.removeAt(from)
                 note.blocks.add(pos.coerceIn(0, note.blocks.size), v.block)
-                note.caret = note.blocks.indexOfFirst { it === caretBlock }.coerceAtLeast(0)
                 changed()
+                render(caretBlock = note.blocks.indexOfFirst { it === v.block })
             } else {
                 v.invalidate()
-                changed(render = needRender)
+                changed()
             }
         }
     }
 
+    /** Номер блока, перед которым встать картинке, отпущенной на высоте [y] (координаты листа). */
+    private fun boundaryAt(y: Float, skip: View): Int {
+        syncModel(maps = true)
+        var k = 0
+        for (v in segs) {
+            if (v === skip) { k++; continue }
+            when (v) {
+                is NoteEdit -> {
+                    val map = paraBlock[v] ?: continue
+                    val l = v.layout ?: continue
+                    val st = v.starts()
+                    for (i in map.indices) {
+                        if (map[i] < 0) continue
+                        val top = v.top + v.totalPaddingTop + l.getLineTop(l.getLineForOffset(st[i]))
+                        val endOff = if (i + 1 < st.size) st[i + 1] - 1 else v.text.length
+                        val bottom = v.top + v.totalPaddingTop + l.getLineBottom(l.getLineForOffset(endOff))
+                        if (y < (top + bottom) / 2f) return map[i]
+                        k = map[i] + 1
+                    }
+                }
+                else -> blockOfView(v)?.let {
+                    val bi = note.blocks.indexOfFirst { b -> b === it }
+                    if (y < v.top + v.height / 2f) return bi
+                    k = bi + 1
+                }
+            }
+        }
+        return k
+    }
+
     private fun selectImage(b: Block.Image?) {
         selectedImage = b
-        for (v in blockViews) if (v is NoteImageView) v.invalidate()
+        for (v in segs) if (v is NoteImageView) v.invalidate()
         updateImageBar()
     }
 
     private fun updateImageBar() {
         if (!::imageBar.isInitialized) return
         imageBar.visibility = if (selectedImage != null) View.VISIBLE else View.GONE
-        mini.visibility = if (selectedImage == null && tool == Tool.WRITE) View.VISIBLE else View.GONE
         if (::selBar.isInitialized) {
             pruneSelection()
             val on = selection.isNotEmpty() && selectedImage == null
@@ -1060,13 +1523,135 @@ class NoteActivity : Activity(), NoteInkView.Host {
         }
     }
 
+    private fun deleteSelectedImage() {
+        val b = selectedImage ?: return
+        selectedImage = null
+        removeImage(b)
+    }
+
+    private fun removeImage(b: Block.Image) {
+        runAfterCommit {
+            pushUndo()
+            burstEdit = null
+            syncModel()
+            val i = note.blocks.indexOfFirst { it === b }
+            if (i < 0) return@runAfterCommit
+            var caret = note.caret
+            val off = note.caretOffset
+            note.blocks.removeAt(i)
+            if (note.blocks.isEmpty()) note.blocks += Block.Para("")
+            if (caret > i) caret -= 1
+            if (selectedImage === b) selectedImage = null
+            changed()
+            render(caret.coerceIn(0, note.blocks.size - 1), off, titleCaret)
+        }
+    }
+
+    /** Картинку — к курсору (как на айфоне): курсор внутри строки — строка делится, картинка встаёт между частями. */
+    private fun insertImage(block: Block.Image) = runAfterCommit {
+        val e = caretEdit()
+        pushUndo()
+        burstEdit = null
+        val (i, o) = e.caretAt()
+        val len = e.paraText(i).length
+        val title = e.first && i == 0
+        var split = false
+        if (!title && o in 1 until len) { quietEdit(e) { e.text.insert(e.selectionEnd, "\n") }; split = true }
+        syncModel()
+        val map = paraBlock[e] ?: IntArray(0)
+        val mi = map.getOrElse(if (split) i + 1 else i) { -1 }
+        val at = when {
+            title -> 0
+            mi < 0 -> blocksBefore(e) // пустая строка под картинкой — сразу за ней
+            split || len == 0 || o == 0 -> mi
+            else -> mi + 1
+        }.coerceIn(0, note.blocks.size)
+        note.blocks.add(at, block)
+        selectedImage = block
+        changed()
+        val next = note.blocks.getOrNull(at + 1)
+        render(if (next is TextLine) at + 1 else at, 0)
+    }
+
+    /** Сколько блоков записи стоит выше поля [e]. */
+    private fun blocksBefore(e: NoteEdit): Int {
+        var n = 0
+        for (v in segs) {
+            if (v === e) break
+            if (v is NoteEdit) n += paraBlock[v]?.count { it >= 0 } ?: 0 else if (blockOfView(v) != null) n++
+        }
+        return n
+    }
+
+    private var cameraFile: File? = null
+
+    /** «Вложить» (скрепка, как на айфоне): снять фото, выбрать фото. */
+    private fun attachMenu(anchor: View) = runAfterCommit {
+        val m = PopupMenu(this, anchor)
+        m.menu.add(0, 1, 0, "Снять фото")
+        m.menu.add(0, 2, 1, "Выбрать фото")
+        m.setOnMenuItemClickListener {
+            when (it.itemId) { 1 -> takePhoto(); 2 -> pickImage() }
+            true
+        }
+        m.show()
+        lastMenu = m
+    }
+
+    private fun takePhoto() {
+        current?.let { commit(it) }
+        try {
+            val dir = File(cacheDir, "camera").apply { mkdirs() }
+            dir.listFiles()?.forEach { if (System.currentTimeMillis() - it.lastModified() > 86_400_000L) it.delete() }
+            val f = File(dir, "shot-${System.currentTimeMillis()}.jpg")
+            cameraFile = f
+            val uri = FileProvider.getUriForFile(this, "$packageName.files", f)
+            val i = Intent(MediaStore.ACTION_IMAGE_CAPTURE).putExtra(MediaStore.EXTRA_OUTPUT, uri)
+                .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            @Suppress("DEPRECATION")
+            startActivityForResult(i, REQ_CAMERA)
+        } catch (t: Throwable) {
+            hint("Не нашлось камеры")
+        }
+    }
+
+    private fun pickImage() {
+        current?.let { commit(it) }
+        val i = Intent(Intent.ACTION_GET_CONTENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE)
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent.createChooser(i, "Выберите картинку"), REQ_IMAGE)
+        } catch (t: Throwable) {
+            hint("Не нашлось приложения для выбора картинки")
+        }
+    }
+
+    @Deprecated("Activity.onActivityResult")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK) return
+        val uri = when (requestCode) {
+            REQ_IMAGE -> data?.data
+            REQ_CAMERA -> cameraFile?.takeIf { it.length() > 0 }?.let { FileProvider.getUriForFile(this, "$packageName.files", it) }
+            else -> null
+        } ?: return
+        hint("Добавляю картинку…", 1500)
+        io.execute {
+            val block = try { store.importImage(this, uri) } catch (t: Throwable) { null }
+            if (requestCode == REQ_CAMERA) cameraFile?.delete()
+            handler.post {
+                if (block == null) hint("Не удалось открыть картинку") else insertImage(block)
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- «Выделить» и «В текст» (0.27.7)
 
     /**
-     * Выделить написанное ручкой и превратить в напечатанный текст (Владимир: «как в приложении, с которого начали: выделил
-     * то, что написал ручкой, — «преобразовать в текст»»). Перо обводит штрихи (штрих выбран, если внутри больше половины его
-     * точек); «В текст» — распознать построчно (строки — по высоте, слова в строке — слева направо), каждая строка — строкой
-     * текста у курсора; штрихи распознанных строк убираются. Один шаг «Отменить».
+     * Выделить написанное ручкой и превратить в напечатанный текст. Перо обводит штрихи (штрих выбран, если внутри больше
+     * половины его точек); «В текст» — распознать построчно, каждая строка — строкой текста у курсора; штрихи распознанных
+     * строк убираются. Один шаг «Отменить».
      */
     private val selection = ArrayList<Drawing>()
     private lateinit var selBar: LinearLayout
@@ -1089,9 +1674,9 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     override fun lassoMode(): Boolean = tool == Tool.SELECT
 
-    override fun selectionRect(): android.graphics.RectF? {
+    override fun selectionRect(): RectF? {
         if (selection.isEmpty()) return null
-        val r = android.graphics.RectF(selection[0].bounds())
+        val r = RectF(selection[0].bounds())
         for (d in selection) r.union(d.bounds())
         return r
     }
@@ -1128,11 +1713,12 @@ class NoteActivity : Activity(), NoteInkView.Host {
         pruneSelection()
         if (selection.isEmpty()) return
         pushUndo()
+        burstEdit = null
         val gone = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Drawing, Boolean>())
         gone.addAll(selection)
         note.drawings.removeAll { it in gone }
         selection.clear()
-        changed(render = false)
+        changed()
         updateImageBar()
         ink.invalidate()
     }
@@ -1213,648 +1799,41 @@ class NoteActivity : Activity(), NoteInkView.Host {
         if (ok.isEmpty()) { hint("Не разобрал выделенное — осталось рисунком", 2500); return }
         runAfterCommit {
             pushUndo()
+            burstEdit = null
             val gone = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Drawing, Boolean>())
             for (k in ok) gone.addAll(lines[k])
             note.drawings.removeAll { it in gone }
             // Строки — у курсора: пустая строка курсора — первая из них, дальше — новые строки ниже.
-            var at = note.caret
-            val cur = note.blocks.getOrNull(at)
-            var first = true
-            for (k in ok) {
-                val t = texts[k]!!
-                if (first && cur != null && blockText(cur)?.isBlank() == true) {
-                    setBlockText(cur, t)
-                } else {
-                    note.blocks.add(at + 1, Block.Para(t))
-                    at += 1
-                }
-                first = false
+            val e = caretEdit()
+            val (i, _) = e.caretAt()
+            val text = ok.joinToString("\n") { texts[it]!! }
+            val blank = e.paraText(i).isBlank()
+            quietEdit(e) {
+                if (blank) e.text.replace(e.paraStart(i), e.paraEnd(i), text)
+                else e.text.insert(e.paraEnd(i), "\n$text")
             }
-            note.caret = at
-            note.caretOffset = -1
+            e.setSelection(e.paraEnd(i + ok.size - (if (blank) 1 else 0)).coerceAtMost(e.text.length))
             selection.clear()
             changed()
+            updateImageBar()
             ink.invalidate()
             val words = ok.sumOf { texts[it]!!.split(Regex("\\s+")).size }
             hint("В текст: " + Ui.plural(words, "слово", "слова", "слов") + if (ok.size < lines.size) " (часть строк не разобрал — осталась рисунком)" else "", 2500)
         }
     }
 
-
-    private fun deleteSelectedImage() {
-        val i = note.blocks.indexOfFirst { it === selectedImage }
-        selectedImage = null
-        if (i >= 0) removeBlock(i) else updateImageBar()
-    }
-
-    private fun emptyImage(i: Int): View = Ui.text(this, "[картинка не найдена]", 14f, Ui.MUTED).apply {
-        setOnLongClickListener { removeBlock(i); true }
-    }
-
-    /** Где в строке курсора показаны вставки (серое слово + курсор): позиция и длина. */
-    private var shownInsertAt = 0
-    private var shownInsertLen = 0
-
-    /** Текст текущей строки + серое промежуточное слово + мигающий курсор — в месте курсора. */
-    private fun refreshCaretText() {
-        val tv = caretTextView ?: return
-        val b = note.blocks.getOrNull(note.caret) ?: return
-        val base = blockText(b) ?: return
-        val pos = caretPos(base)
-        val sb = SpannableStringBuilder(base.substring(0, pos))
-        if (interim.isNotEmpty()) {
-            val start = sb.length
-            val shown = spacedInsert(base.substring(0, pos), base.substring(pos), interim)
-            sb.append(shown)
-            sb.setSpan(ForegroundColorSpan(Ui.MUTED), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }
-        val c = sb.length
-        sb.append("▏")
-        sb.setSpan(ForegroundColorSpan(if (caretOn) Ui.ACCENT else Color.TRANSPARENT), c, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        shownInsertAt = pos
-        shownInsertLen = sb.length - pos
-        sb.append(base.substring(pos))
-        val ins = shownInsertLen
-        if (b is TextLine) Rich.apply(sb, b.spans) { x -> if (x < pos) x else x + ins }
-        cellSpan(sb, (b as? Block.Para)?.style ?: ParaStyle.BODY)
-        tv.text = sb
-    }
-
-    private fun lastTextBlock(): Int {
-        for (i in note.blocks.indices.reversed()) if (note.blocks[i] !is Block.Image) return i
-        return note.blocks.size - 1
-    }
-
-    /** Поставить курсор в строку i; offset — место внутри строки (-1 — в конец). */
-    private fun setCaret(i: Int, offset: Int = -1) {
-        runAfterCommit {
-            selectedImage = null
-            note.caret = i.coerceIn(0, note.blocks.size - 1)
-            val text = blockText(note.blocks[note.caret])
-            note.caretOffset = if (text == null || offset < 0 || offset >= text.length) -1 else offset
-            interim = ""
-            renderBlocks()
-            changed(render = false)
-            if (tool == Tool.KEYS) showKeyboard()
-        }
-    }
-
-    /** Нажатие пальцем на строку ставит курсор в то место слова, куда нажали. */
-    private fun caretOnTap(tv: TextView, i: Int) {
-        val last = FloatArray(2)
-        tv.setOnTouchListener { _, e ->
-            if (e.actionMasked == MotionEvent.ACTION_DOWN) { last[0] = e.x; last[1] = e.y }
-            false
-        }
-        tv.setOnClickListener {
-            var off = tv.getOffsetForPosition(last[0], last[1])
-            if (i == note.caret && off > shownInsertAt) off = max(shownInsertAt, off - shownInsertLen)
-            setCaret(i, off)
-        }
-    }
-
-    /** Кнопка, которая повторяет действие, пока её держат. */
-    private fun repeatOnHold(action: () -> Unit): View.OnTouchListener {
-        var repeat: Runnable? = null
-        return View.OnTouchListener { v, e ->
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    v.isPressed = true
-                    action()
-                    val r = object : Runnable {
-                        override fun run() {
-                            action()
-                            handler.postDelayed(this, 70)
-                        }
-                    }
-                    repeat = r
-                    handler.postDelayed(r, 450)
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    v.isPressed = false
-                    repeat?.let { handler.removeCallbacks(it) }
-                    repeat = null
-                }
-            }
-            true
-        }
-    }
-
-    // ---------------------------------------------------------------- правка текста
-
-    private fun blockText(b: Block): String? = when (b) {
-        is Block.Para -> b.text
-        is Block.Task -> b.text
-        else -> null
-    }
-
-    /** Новый текст строки; оформление сдвигается вместе с текстом ([Rich.adjust]). */
-    private fun setBlockText(b: Block, t: String) {
-        if (b !is TextLine || b.text == t) return
-        Rich.adjust(b.spans, b.text, t)
-        b.text = t
-    }
-
-    /** Позиция курсора в строке text (offset -1 или за концом — конец строки). */
-    private fun caretPos(text: String): Int =
-        if (note.caretOffset < 0 || note.caretOffset > text.length) text.length else note.caretOffset
-
-    private fun isWordChar(c: Char) = c.isLetterOrDigit() || c == '-'
-
-    /**
-     * Что вставить у курсора с учётом пробелов. Если курсор поставлен пальцем внутрь текста
-     * и вставка короткая (1–2 знака) рядом со словом — без пробелов: это исправление буквы.
-     * При обычном письме в конец строки — слова через пробел («Привет» + «на» = «Привет на»).
-     */
-    private fun spacedInsert(before: String, after: String, word: String): String {
-        if (word.isEmpty()) return word
-        val placedCaret = note.caretOffset >= 0
-        val touchesWord = (before.isNotEmpty() && isWordChar(before.last())) || (after.isNotEmpty() && isWordChar(after.first()))
-        if (placedCaret && word.length <= 2 && word.all { isWordChar(it) } && touchesWord) return word
-        val lead = before.isNotEmpty() && !before.last().isWhitespace() && word.first() !in ".,!?;:)»…"
-        val trail = after.isNotEmpty() && !after.first().isWhitespace() && after.first() !in ".,!?;:)»…" && !word.last().isWhitespace()
-        return (if (lead) " " else "") + word + (if (trail) " " else "")
-    }
-
-    /** Блок под курсором, в который можно писать текст (если курсор на картинке — новая строка после неё). */
-    private fun caretTextBlock(): Block {
-        val b = note.blocks.getOrNull(note.caret)
-        if (b == null || b is Block.Image) {
-            note.blocks.add(note.caret + 1, Block.Para(""))
-            note.caret += 1
-            note.caretOffset = -1
-        }
-        return note.blocks[note.caret]
-    }
-
-    /** Вставить текст у курсора. raw = true — как есть, без расстановки пробелов. */
-    private fun insertAtCaret(word: String, raw: Boolean = false) {
-        if (word.isEmpty()) return
-        pushUndo()
-        val b = caretTextBlock()
-        val text = blockText(b) ?: return
-        val pos = caretPos(text)
-        val before = text.substring(0, pos)
-        val after = text.substring(pos)
-        val ins = if (raw) word else spacedInsert(before, after, word)
-        setBlockText(b, before + ins + after)
-        if (note.caretOffset >= 0) note.caretOffset = pos + ins.length
-        changed()
-    }
-
-    private fun editCaret(f: (String) -> String) {
-        pushUndo()
-        val b = caretTextBlock()
-        blockText(b)?.let { setBlockText(b, f(it)) }
-        note.caretOffset = -1
-        changed()
-    }
-
-    private var lastCharDelete = 0L
-
-    /** Стереть одну букву перед курсором. В начале строки — соединить со строкой выше. */
-    private fun deleteChar() {
-        val b = note.blocks.getOrNull(note.caret) ?: return
-        val text = blockText(b)
-        val now = android.os.SystemClock.uptimeMillis()
-        val coalesce = now - lastCharDelete < 1500 // серия нажатий — один шаг отмены
-        lastCharDelete = now
-        if (text == null) {
-            hint("Курсор на картинке — нажмите на строку с текстом")
-            return
-        }
-        val pos = caretPos(text)
-        if (pos > 0) {
-            if (!coalesce) pushUndo()
-            val cut = text.offsetByCodePoints(pos, -1)
-            setBlockText(b, text.substring(0, cut) + text.substring(pos))
-            if (note.caretOffset >= 0) note.caretOffset = cut
-            changed()
-            return
-        }
-        // Курсор в начале строки списка, цитаты или с отступом: сначала убрать отступ, потом список (как на айфоне).
-        if (b is TextLine && (b.indent > 0 || (b is Block.Para && (ParaStyle.isList(b.style) || b.style == ParaStyle.QUOTE)))) {
-            if (!coalesce) pushUndo()
-            if (b.indent > 0) b.indent -= 1 else if (b is Block.Para) b.style = ParaStyle.BODY
-            changed()
-            return
-        }
-        // Курсор в начале строки: соединяем с предыдущей строкой (как на клавиатуре).
-        val prevIndex = note.caret - 1
-        val prev = note.blocks.getOrNull(prevIndex)
-        val prevText = prev?.let { blockText(it) }
-        if (prev == null || prevText == null) {
-            if (text.isEmpty() && note.blocks.size > 1) {
-                if (!coalesce) pushUndo()
-                note.blocks.removeAt(note.caret)
-                note.caret = max(0, note.caret - 1)
-                note.caretOffset = -1
-                changed()
-            }
-            return
-        }
-        if (!coalesce) pushUndo()
-        (prev as TextLine).text = prevText + text
-        Rich.appendShifted(prev.spans, (b as TextLine).spans, prevText.length, prev.text.length)
-        note.blocks.removeAt(note.caret)
-        note.caret = prevIndex
-        note.caretOffset = if (text.isEmpty()) -1 else prevText.length
-        changed()
-    }
-
-    /** Стереть слово перед курсором (вместе с пробелами вокруг). */
-    private fun deleteWord() {
-        val b = note.blocks.getOrNull(note.caret)
-        val text = b?.let { blockText(it) }
-        if (b != null && text != null && text.isNotBlank()) {
-            val pos = caretPos(text)
-            val before = text.substring(0, pos).replace(Regex("""\s*\S+\s*$"""), "")
-            if (before.length == pos) return
-            pushUndo()
-            setBlockText(b, before + text.substring(pos))
-            if (note.caretOffset >= 0) note.caretOffset = before.length
-            changed()
-        } else if (note.blocks.size > 1) {
-            pushUndo()
-            note.blocks.removeAt(note.caret)
-            note.caret = max(0, note.caret - 1)
-            note.caretOffset = -1
-            changed()
-        }
-    }
-
-    /** Новая строка (или задача). Если курсор внутри строки — текст после курсора переносится. */
-    private fun newLine(task: Boolean) {
-        pushUndo()
-        val b = note.blocks.getOrNull(note.caret)
-        val text = b?.let { blockText(it) }
-        if (task && b is Block.Para && b.text.isBlank()) {
-            note.blocks[note.caret] = Block.Task("", false)
-        } else if (b != null && text != null) {
-            val line = b as TextLine
-            val pos = caretPos(text)
-            val left = text.substring(0, pos).trimEnd()
-            val restAt = pos + (text.length - pos - text.substring(pos).trimStart().length)
-            val rest = text.substring(restAt)
-            val restSpans = Rich.slice(line.spans, restAt, text.length)
-            val leftSpans = Rich.slice(line.spans, 0, left.length)
-            line.text = left
-            line.spans.clear(); line.spans += leftSpans
-            val style = ParaStyle.next((b as? Block.Para)?.style ?: ParaStyle.BODY)
-            note.blocks.add(note.caret + 1, if (task) Block.Task(rest, false, line.indent, restSpans) else Block.Para(rest, style, line.indent, restSpans))
-            note.caret += 1
-            note.caretOffset = if (rest.isEmpty()) -1 else 0
-        } else {
-            note.blocks.add(note.caret + 1, if (task) Block.Task("", false) else Block.Para(""))
-            note.caret += 1
-            note.caretOffset = -1
-        }
-        changed()
-    }
-
-    private fun toggleTask(i: Int) {
-        runAfterCommit {
-            val b = note.blocks.getOrNull(i) as? Block.Task ?: return@runAfterCommit
-            pushUndo()
-            b.done = !b.done
-            changed()
-        }
-    }
-
-    private fun removeBlock(i: Int) {
-        pushUndo()
-        note.blocks.removeAt(i)
-        if (note.blocks.isEmpty()) note.blocks += Block.Para("")
-        note.caret = note.caret.coerceIn(0, note.blocks.size - 1)
-        changed()
-    }
-
-    private fun editCaretDialog() {
-        val b = note.blocks.getOrNull(note.caret)
-        val text = when (b) { is Block.Para -> b.text; is Block.Task -> b.text; else -> null }
-        if (text == null) {
-            hint("Нажмите на строку с текстом, чтобы её исправить")
-            return
-        }
-        val edit = EditText(this).apply {
-            setText(text)
-            setSelection(text.length)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-        }
-        val box = FrameLayout(this).apply { setPadding(dp(20f), dp(8f), dp(20f), 0); addView(edit) }
-        AlertDialog.Builder(this)
-            .setTitle("Исправить строку")
-            .setView(box)
-            .setPositiveButton("Готово") { _, _ -> editCaret { edit.text.toString() } }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
-    // ---------------------------------------------------------------- название — первая строка листа (0.30)
-
-    private lateinit var titleEdit: EditText
-    private var titleLoading = false
-    private var titleTyping = false
-    private var titleEditAt = 0L
-    /** Клавиатуру убрали кнопкой — поле ввода не отбирает фокус само при пересборке листа. */
-    private var keysHidden = false
-
-    /** Поле названия: стиль «Название» (две клетки), Enter — к первой строке записи. */
-    private fun buildTitleEdit() {
-        titleEdit = EditText(this).apply {
-            textStyle(this, ParaStyle.TITLE)
-            tag = "note_title"
-            background = null
-            setPadding(0, 0, 0, 0)
-            hint = "Название"
-            setHintTextColor(Ui.MUTED)
-            gravity = Gravity.TOP or Gravity.START
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
-            isSingleLine = false
-            setHorizontallyScrolling(false)
-            addTextChangedListener(object : TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-                override fun afterTextChanged(e: Editable?) { if (!titleLoading) onTitleText(e?.toString().orEmpty()) }
-            })
-            // Коснулись названия — печатают его: внизу панель клавиатуры (поле строки остаётся без фокуса). Именно касание:
-            // курсор система ставит в первое поле и сама, при открытии экрана.
-            setOnTouchListener { _, e ->
-                if (e.actionMasked == MotionEvent.ACTION_UP) {
-                    keysHidden = false
-                    if (tool != Tool.KEYS) post { setTool(Tool.KEYS, focusLine = false); titleEdit.requestFocus() }
-                }
-                false
-            }
-        }
-        loadTitle()
-    }
-
-    private fun loadTitle() {
-        if (!::titleEdit.isInitialized) return
-        titleLoading = true
-        try {
-            titleEdit.setText(styledPlain(note.title, ParaStyle.TITLE))
-        } finally { titleLoading = false }
-    }
-
-    /** Печатают название. Enter — название кончилось: остальное — первой строкой записи, курсор туда. */
-    private fun onTitleText(s: String) {
-        val now = android.os.SystemClock.uptimeMillis()
-        if ('\n' in s) {
-            pushUndo()
-            val before = s.substringBefore('\n')
-            val after = s.substringAfter('\n').replace("\n", " ")
-            note.title = before.trim()
-            val first = note.blocks.firstOrNull()
-            if (after.isNotEmpty() || first !is Block.Para || first.text.isNotEmpty()) note.blocks.add(0, Block.Para(after))
-            note.caret = 0
-            note.caretOffset = if (after.isEmpty()) -1 else 0
-            loadTitle()
-            titleEdit.clearFocus()
-            changed()
-            showKeyboard()
-            return
-        }
-        titleTyping = true
-        try {
-            if (now - titleEditAt > 2000) pushUndo()
-            titleEditAt = now
-            note.title = s
-            changed(render = false)
-        } finally { titleTyping = false }
-    }
-
-    // ---------------------------------------------------------------- «Aa» — формат (0.30)
-
-    private lateinit var fmtPanel: LinearLayout
-    private val fmtButtons = HashMap<String, TextView>()
-
-    private fun toggleFormat() {
-        if (fmtPanel.visibility == View.VISIBLE) { fmtPanel.visibility = View.GONE; return }
-        runAfterCommit {
-            refreshFormat()
-            fmtPanel.visibility = View.VISIBLE
-        }
-    }
-
-    /**
-     * Окно «Формат» (как в макете и Заметках на айфоне): стиль строки, Ж/К/Ч/З, маркер, цвет текста, списки, цитата, отступ,
-     * шрифт. Лежит над нижней панелью и не забирает клавиатуру: выделили слово — нажали «Ж». Без выделения — слово у курсора.
-     */
-    private fun buildFormatPanel(area: FrameLayout) {
-        fmtPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = Ui.rounded(this@NoteActivity, Ui.BAR, Ui.BAR_LINE, 18f)
-            elevation = dp(10f).toFloat()
-            setPadding(dp(14f), dp(8f), dp(14f), dp(12f))
-            tag = "fmt_panel"
-            visibility = View.GONE
-            isClickable = true
-        }
-        val head = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        head.addView(Ui.text(this, "Формат", 17f, Ui.INK, bold = true), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        head.addView(Ui.text(this, "✕", 18f, Ui.INK2).apply {
-            tag = "fmt_close"; setPadding(dp(12f), dp(6f), dp(4f), dp(6f)); setOnClickListener { fmtPanel.visibility = View.GONE }
-        })
-        fmtPanel.addView(head)
-        fun row(): Ui.FlowRow = Ui.FlowRow(this).apply { hGap = dp(6f); vGap = dp(6f); setPadding(0, dp(4f), 0, dp(4f)) }.also { fmtPanel.addView(it) }
-        fun label(t: String) = fmtPanel.addView(Ui.text(this, t, 12f, Ui.MUTED, bold = true).apply { setPadding(0, dp(8f), 0, dp(2f)) })
-        fun chip(tag: String, text: String, f: () -> Unit): TextView = Ui.pill(this, text, Ui.INK, Ui.DESK).apply {
-            this.tag = tag
-            setOnClickListener { f() }
-            fmtButtons[tag] = this
-        }
-        val styles = row()
-        styles.addView(chip("fmt_title", "Название") { applyStyle(ParaStyle.TITLE) }.apply { typeface = Ui.brandFont(this@NoteActivity) })
-        styles.addView(chip("fmt_h1", "Заголовок") { applyStyle(ParaStyle.H1) })
-        styles.addView(chip("fmt_h2", "Подзаголовок") { applyStyle(ParaStyle.H2) })
-        styles.addView(chip("fmt_body", "Основной") { applyStyle(ParaStyle.BODY) })
-        val marks = row()
-        marks.addView(chip("fmt_b", "Ж") { applyInline(Rich.B) }.apply { typeface = Typeface.DEFAULT_BOLD })
-        marks.addView(chip("fmt_i", "К") { applyInline(Rich.I) }.apply { setTypeface(Typeface.SERIF, Typeface.ITALIC) })
-        marks.addView(chip("fmt_u", "Ч") { applyInline(Rich.U) }.apply { paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG })
-        marks.addView(chip("fmt_s", "З") { applyInline(Rich.S) }.apply { paintFlags = paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG })
-        label("Выделение маркером")
-        val hl = row()
-        for ((i, c) in HIGHLIGHTS.withIndex()) hl.addView(dot("fmt_hl_$i", c) { applyColor(Rich.HL, c) })
-        hl.addView(dot("fmt_hl_none", 0) { applyColor(Rich.HL, 0) })
-        label("Цвет текста")
-        val fc = row()
-        fc.addView(dot("fmt_fc_none", 0) { applyColor(Rich.FC, 0) })
-        for ((i, c) in TEXT_COLORS.withIndex()) fc.addView(dot("fmt_fc_$i", c) { applyColor(Rich.FC, c) })
-        label("Списки и абзац")
-        val lists = row()
-        lists.addView(chip("fmt_bullet", "•  Список") { applyList(ParaStyle.BULLET) })
-        lists.addView(chip("fmt_dash", "–  Список") { applyList(ParaStyle.DASH) })
-        lists.addView(chip("fmt_num", "1.  Список") { applyList(ParaStyle.NUM) })
-        lists.addView(chip("fmt_check", "☐  Чек-лист") { runAfterCommit { keysToggleTask() } })
-        lists.addView(chip("fmt_quote", "❝ Цитата") { applyList(ParaStyle.QUOTE) })
-        lists.addView(chip("fmt_outdent", "⇤") { applyIndent(-1) })
-        lists.addView(chip("fmt_indent", "⇥") { applyIndent(1) })
-        label("Шрифт")
-        val fonts = row()
-        fonts.addView(chip("fmt_font_normal", "Обычный") { applyFont(null) })
-        fonts.addView(chip("fmt_font_serif", "С засечками") { applyFont(Rich.SERIF) }.apply { typeface = Typeface.SERIF })
-        fonts.addView(chip("fmt_font_mono", "Моноширинный") { applyFont(ParaStyle.MONO) }.apply { typeface = Typeface.MONOSPACE })
-        val scroll = ScrollView(this).apply { addView(fmtPanel) }
-        area.addView(scroll, FrameLayout.LayoutParams(minOf(dp(560f), resources.displayMetrics.widthPixels - dp(16f)), Ui.WRAP).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            bottomMargin = dp(8f)
-        })
-    }
-
-    /** Кружок цвета в «Формате» (0 — «без цвета»: крестик). */
-    private fun dot(tag: String, color: Int, f: () -> Unit): TextView = TextView(this).apply {
-        this.tag = tag
-        gravity = Gravity.CENTER
-        text = if (color == 0) "✕" else ""
-        setTextColor(Ui.INK2)
-        background = android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.OVAL
-            setColor(if (color == 0) Ui.BAR else color)
-            setStroke(dp(1f), Ui.CHIP_LINE)
-        }
-        layoutParams = android.view.ViewGroup.LayoutParams(dp(34f), dp(34f))
-        minWidth = dp(34f); minHeight = dp(34f) // ряд с переносом меряет по содержимому — пустой кружок не схлопывается
-        setOnClickListener { f() }
-        fmtButtons[tag] = this
-    }
-
-    /** Строка и кусок, к которым применяется формат: выделение в поле ввода, иначе слово у курсора. */
-    private fun fmtTarget(): Triple<TextLine, Int, Int>? {
-        val b = note.blocks.getOrNull(note.caret) as? TextLine ?: return null
-        if (tool == Tool.KEYS && keysEdit.parent != null) {
-            val a = keysEdit.selectionStart; val e = keysEdit.selectionEnd
-            if (a in 0..b.text.length && e in 0..b.text.length && a != e) return Triple(b, minOf(a, e), maxOf(a, e))
-        }
-        val w = Rich.wordAt(b.text, caretPos(b.text))
-        return Triple(b, w.first, w.last + 1)
-    }
-
-    private fun afterFormat() {
-        keysSig = 0 // поле ввода перезаполнить оформлением
-        changed()
-        refreshFormat()
-        if (tool == Tool.KEYS && !keysHidden && !titleEdit.hasFocus()) showKeyboard()
-    }
-
-    private fun applyInline(kind: String) = runAfterCommit {
-        val (l, a, e) = fmtTarget() ?: return@runAfterCommit
-        if (a >= e) { hint("Выделите слово или поставьте курсор в слово"); return@runAfterCommit }
-        pushUndo()
-        Rich.toggle(l.spans, kind, a, e, l.text.length)
-        afterFormat()
-    }
-
-    private fun applyColor(kind: String, color: Int) = runAfterCommit {
-        val (l, a, e) = fmtTarget() ?: return@runAfterCommit
-        if (a >= e) { hint("Выделите слово или поставьте курсор в слово"); return@runAfterCommit }
-        pushUndo()
-        if (color == 0) Rich.clear(l.spans, kind, a, e) else Rich.set(l.spans, kind, a, e, l.text.length, color)
-        Rich.normalize(l.spans, l.text.length)
-        afterFormat()
-    }
-
-    /** Стиль строки с курсором (пункт чек-листа станет абзацем этого стиля). */
-    private fun applyStyle(style: String) = runAfterCommit {
-        val b = note.blocks.getOrNull(note.caret) ?: return@runAfterCommit
-        pushUndo()
-        when (b) {
-            is Block.Para -> b.style = style
-            is Block.Task -> note.blocks[note.caret] = Block.Para(b.text, style, b.indent, b.spans)
-            else -> return@runAfterCommit
-        }
-        afterFormat()
-    }
-
-    /** Список / цитата: нажали ещё раз — снова обычная строка. */
-    private fun applyList(style: String) = runAfterCommit {
-        val b = note.blocks.getOrNull(note.caret) ?: return@runAfterCommit
-        pushUndo()
-        when (b) {
-            is Block.Para -> b.style = if (b.style == style) ParaStyle.BODY else style
-            is Block.Task -> note.blocks[note.caret] = Block.Para(b.text, style, b.indent, b.spans)
-            else -> return@runAfterCommit
-        }
-        afterFormat()
-    }
-
-    private fun applyIndent(d: Int) = runAfterCommit {
-        val b = note.blocks.getOrNull(note.caret) as? TextLine ?: return@runAfterCommit
-        val v = (b.indent + d).coerceIn(0, ParaStyle.MAX_INDENT)
-        if (v == b.indent) return@runAfterCommit
-        pushUndo()
-        b.indent = v
-        afterFormat()
-    }
-
-    /** Шрифт: обычный (снять засечки и моноширинный), с засечками — у куска, моноширинный — у строки. */
-    private fun applyFont(kind: String?) = runAfterCommit {
-        val b = note.blocks.getOrNull(note.caret) ?: return@runAfterCommit
-        when (kind) {
-            ParaStyle.MONO -> {
-                pushUndo()
-                when (b) {
-                    is Block.Para -> b.style = if (b.style == ParaStyle.MONO) ParaStyle.BODY else ParaStyle.MONO
-                    is Block.Task -> note.blocks[note.caret] = Block.Para(b.text, ParaStyle.MONO, b.indent, b.spans)
-                    else -> return@runAfterCommit
-                }
-            }
-            Rich.SERIF -> {
-                val (l, a, e) = fmtTarget() ?: return@runAfterCommit
-                if (a >= e) return@runAfterCommit
-                pushUndo()
-                Rich.toggle(l.spans, Rich.SERIF, a, e, l.text.length)
-            }
-            else -> {
-                val l = b as? TextLine ?: return@runAfterCommit
-                pushUndo()
-                val (_, a, e) = fmtTarget() ?: return@runAfterCommit
-                Rich.clear(l.spans, Rich.SERIF, a, e)
-                if (b is Block.Para && b.style == ParaStyle.MONO) b.style = ParaStyle.BODY
-            }
-        }
-        afterFormat()
-    }
-
-    /** Подсветить в «Формате» то, что уже стоит у строки и куска. */
-    private fun refreshFormat() {
-        if (!::fmtPanel.isInitialized) return
-        val b = note.blocks.getOrNull(note.caret)
-        val style = (b as? Block.Para)?.style
-        val t = fmtTarget()
-        fun on(tag: String, v: Boolean) = fmtButtons[tag]?.let {
-            if (it.text.isEmpty() || it.text == "✕") { it.alpha = if (v) 1f else 0.85f; return@let }
-            it.background = Ui.rounded(this, if (v) Ui.INK else Ui.DESK, null, 999f)
-            it.setTextColor(if (v) Color.WHITE else Ui.INK)
-        }
-        on("fmt_title", style == ParaStyle.TITLE); on("fmt_h1", style == ParaStyle.H1); on("fmt_h2", style == ParaStyle.H2)
-        on("fmt_body", style == ParaStyle.BODY)
-        on("fmt_bullet", style == ParaStyle.BULLET); on("fmt_dash", style == ParaStyle.DASH); on("fmt_num", style == ParaStyle.NUM)
-        on("fmt_quote", style == ParaStyle.QUOTE); on("fmt_check", b is Block.Task)
-        on("fmt_font_mono", style == ParaStyle.MONO)
-        val (l, a, e) = t ?: Triple(null, 0, 0)
-        fun cov(k: String) = l != null && Rich.covered(l.spans, k, a, e)
-        on("fmt_b", cov(Rich.B)); on("fmt_i", cov(Rich.I)); on("fmt_u", cov(Rich.U)); on("fmt_s", cov(Rich.S))
-        on("fmt_font_serif", cov(Rich.SERIF)); on("fmt_font_normal", style != ParaStyle.MONO && !cov(Rich.SERIF))
-    }
-
     // ---------------------------------------------------------------- «⋯», разлиновка, поделиться
 
     private fun noteMenu(anchor: View) {
         runAfterCommit {
-            val m = android.widget.PopupMenu(this, anchor)
+            val m = PopupMenu(this, anchor)
             m.menu.add(0, 1, 0, if (note.pinned) "Открепить" else "Закрепить")
-            m.menu.add(0, 2, 1, "Разлиновка: " + NotePaper.label(note.paper))
             m.menu.add(0, 3, 2, "Итоги записи")
             m.menu.add(0, 4, 3, if (fingerWrites) "Палец пишет: да" else "Палец пишет: нет")
             m.menu.add(0, 5, 4, "Удалить заметку")
             m.setOnMenuItemClickListener {
                 when (it.itemId) {
                     1 -> { note.pinned = !note.pinned; saveSoon(); hint(if (note.pinned) "Заметка закреплена" else "Заметка откреплена") }
-                    2 -> paperDialog()
                     3 -> showSummary()
                     4 -> { fingerWrites = !fingerWrites; hint(if (fingerWrites) "Палец пишет, как перо" else "Палец — листать и ставить курсор") }
                     5 -> deleteDialog()
@@ -1866,39 +1845,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         }
     }
 
-    internal var lastMenu: android.widget.PopupMenu? = null
-    internal var paperDlg: AlertDialog? = null
-
-    /** «Разлиновка»: без разметки, в линейку, в клетку — для этой заметки или для всех новых. */
-    internal fun paperDialog() {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(8f), dp(20f), 0) }
-        val row = Ui.FlowRow(this).apply { hGap = dp(8f); vGap = dp(8f) }
-        val pills = HashMap<String, TextView>()
-        fun paint() { for ((p, v) in pills) { val on = p == note.paper; v.background = Ui.rounded(this, if (on) Ui.INK else Ui.DESK, null, 999f); v.setTextColor(if (on) Color.WHITE else Ui.INK) } }
-        val all = CheckBox(this).apply {
-            text = "Для всех новых заметок"
-            tag = "paper_all"
-            isChecked = NotePaper.default(this@NoteActivity) == note.paper && note.paper != NotePaper.LINES
-            buttonTintList = ColorStateList.valueOf(Ui.ACCENT)
-            setOnCheckedChangeListener { _, on -> NotePaper.setDefault(this@NoteActivity, if (on) note.paper else NotePaper.LINES) }
-        }
-        for (p in NotePaper.ALL) row.addView(Ui.pill(this, NotePaper.label(p), Ui.INK, Ui.DESK).apply {
-            tag = "paper_$p"
-            setOnClickListener {
-                if (note.paper != p) { note.paper = p; changed() }
-                if (all.isChecked) NotePaper.setDefault(this@NoteActivity, p)
-                paint()
-            }
-        }.also { pills[p] = it })
-        paint()
-        box.addView(row)
-        box.addView(all)
-        box.addView(Ui.text(this, "Шаг линейки и клетки — строка текста: каждая строка ложится на линию, название — на две.", 13f, Ui.MUTED).apply {
-            setPadding(0, dp(6f), 0, 0)
-        })
-        paperDlg = AlertDialog.Builder(this).setTitle("Разлиновка").setView(box).setPositiveButton("Готово", null).show()
-    }
-
+    internal var lastMenu: PopupMenu? = null
     private fun deleteDialog() {
         AlertDialog.Builder(this)
             .setMessage("Удалить заметку «${note.title.ifBlank { "Новая заметка" }}»?")
@@ -1914,26 +1861,29 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     private var deleted = false
 
-    /** Текст заметки для «Поделиться» (0.30; Word и PDF — следующим шагом): строки с отметками списков и чек-листа. */
-    internal fun plainText(): String = buildString {
-        if (note.title.isNotBlank()) append(note.title.trim()).append("\n\n")
-        var num = 0
-        var prev: Block? = null
-        for (b in note.blocks) {
-            val pad = "    ".repeat((b as? TextLine)?.indent ?: 0)
-            when (b) {
-                is Block.Para -> {
-                    val p = prev
-                    num = if (b.style == ParaStyle.NUM && p is Block.Para && p.style == ParaStyle.NUM && p.indent == b.indent) num + 1 else 1
-                    val mark = when (b.style) { ParaStyle.BULLET -> "• "; ParaStyle.DASH -> "– "; ParaStyle.NUM -> "$num. "; ParaStyle.QUOTE -> "> "; else -> "" }
-                    append(pad).append(mark).append(b.text).append('\n')
+    /** Текст заметки для «Поделиться»: строки с отметками списков и чек-листа. */
+    internal fun plainText(): String {
+        syncModel()
+        return buildString {
+            if (note.title.isNotBlank()) append(note.title.trim()).append("\n\n")
+            var num = 0
+            var prev: Block? = null
+            for (b in note.blocks) {
+                val pad = "    ".repeat((b as? TextLine)?.indent ?: 0)
+                when (b) {
+                    is Block.Para -> {
+                        val p = prev
+                        num = if (b.style == ParaStyle.NUM && p is Block.Para && p.style == ParaStyle.NUM && p.indent == b.indent) num + 1 else 1
+                        val mark = when (b.style) { ParaStyle.BULLET -> "• "; ParaStyle.DASH -> "– "; ParaStyle.NUM -> "$num. "; ParaStyle.QUOTE -> "> "; else -> "" }
+                        append(pad).append(mark).append(b.text).append('\n')
+                    }
+                    is Block.Task -> append(pad).append(if (b.done) "☑ " else "☐ ").append(b.text).append('\n')
+                    is Block.Image -> append("[картинка]\n")
                 }
-                is Block.Task -> append(pad).append(if (b.done) "☑ " else "☐ ").append(b.text).append('\n')
-                is Block.Image -> append("[картинка]\n")
+                prev = b
             }
-            prev = b
-        }
-    }.trimEnd()
+        }.trimEnd()
+    }
 
     private fun shareNote() {
         runAfterCommit {
@@ -1945,185 +1895,17 @@ class NoteActivity : Activity(), NoteInkView.Host {
         }
     }
 
-    // ---------------------------------------------------------------- старые записи: рисунки — за своими строками (0.30)
-
-    /**
-     * Запись до 0.30 ([Note.layoutV] = 1): название и дата были другой высоты, строки — не по клеткам. Рисунки (схемы у строк)
-     * сдвигаем вслед за их строкой: старое место строки считаем прежними видами, новое — по листу. Один раз, без «Отменить».
-     */
-    private fun migrateLayout() {
-        if (note.layoutV >= 2) return
-        if (note.drawings.isEmpty() || blockViews.size != note.blocks.size || sheet.width == 0) { note.layoutV = 2; saveSoon(); return }
-        val w = sheet.width - sheet.paddingLeft - sheet.paddingRight
-        fun measure(v: View): Int {
-            v.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
-            return v.measuredHeight
-        }
-        fun oldLine(text: String, width: Int): Int {
-            val tv = TextView(this).apply { textSize = 19f; setExactLineHeight(lineHeightPx); minHeight = lineHeightPx; this.text = text }
-            tv.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
-            return tv.measuredHeight
-        }
-        var y = sheet.paddingTop + measure(Ui.text(this, note.title, 26f, Ui.INK, bold = true).apply { setPadding(0, 0, 0, dp(2f)) }) +
-            measure(Ui.mono(this, Ui.noteMeta(note.created), 12f).apply { setPadding(0, 0, 0, dp(10f)) })
-        val oldTops = IntArray(note.blocks.size)
-        for ((i, b) in note.blocks.withIndex()) {
-            oldTops[i] = y
-            y += when (b) {
-                is Block.Para -> oldLine(b.text, w)
-                is Block.Task -> maxOf(lineHeightPx, oldLine(b.text, w - dp(34f) - dp(80f)))
-                is Block.Image -> blockViews[i].measuredHeight
-            }
-        }
-        val newTops = IntArray(note.blocks.size) { blockViews[it].top }
-        for (d in note.drawings) {
-            if (d.pts.size < 2) continue
-            val y0 = d.pts[1]
-            var k = 0
-            while (k + 1 < oldTops.size && oldTops[k + 1] <= y0) k++
-            val dy = (newTops[k] - oldTops[k]).toFloat()
-            if (dy == 0f) continue
-            var j = 1
-            while (j < d.pts.size) { d.pts[j] += dy; j += 3 }
-            d.changed()
-        }
-        note.layoutV = 2
-        saveSoon() // не правка: время заметки в списке не меняется
-        ink.invalidate()
-    }
-
-    // ---------------------------------------------------------------- отмена и сохранение
-
-    private fun copyBlock(b: Block): Block = when (b) {
-        is Block.Para -> Block.Para(b.text, b.style, b.indent, Rich.copy(b.spans))
-        is Block.Task -> Block.Task(b.text, b.done, b.indent, Rich.copy(b.spans))
-        is Block.Image -> Block.Image(b.file, b.width, b.height, b.wf, b.xa)
-    }
-
-    private fun snap() = Snap(note.title, note.blocks.map { copyBlock(it) }, ArrayList(note.drawings), note.caret, note.caretOffset)
-
-    private fun restore(x: Snap): Note =
-        Note(note.id, x.title, note.created, note.updated, x.blocks.mapTo(ArrayList()) { copyBlock(it) }, ArrayList(x.drawings), x.caret)
-            .apply { caretOffset = x.caretOffset; folder = note.folder; pinned = note.pinned; paper = note.paper; layoutV = note.layoutV }
-
-    private fun pushUndo() {
-        undoStack.addLast(snap())
-        while (undoStack.size > 60) undoStack.removeFirst()
-        redoStack.clear()
-    }
-
-    private fun undo() {
-        val g = current
-        if (g != null && g.strokes.isNotEmpty()) {
-            // Сначала убираем ещё не распознанные штрихи — по одному.
-            g.strokes.removeAt(g.strokes.lastIndex)
-            g.resultFor = -1
-            interim = ""
-            handler.removeCallbacks(interimRunnable)
-            handler.removeCallbacks(commitRunnable)
-            if (g.strokes.isEmpty()) current = null else handler.postDelayed(interimRunnable, 150)
-            refreshCaretText()
-            ink.invalidate()
-            return
-        }
-        if (commitQueue.isNotEmpty() || undoStack.isEmpty()) return
-        redoStack.addLast(snap())
-        note = restore(undoStack.removeLast())
-        loadTitle()
-        changed()
-    }
-
-    private fun redo() {
-        if (redoStack.isEmpty() || commitQueue.isNotEmpty() || current != null) return
-        undoStack.addLast(snap())
-        note = restore(redoStack.removeLast())
-        loadTitle()
-        changed()
-    }
-
-    /** Сохранить скоро, не трогая время правки (закрепили, перенесли раскладку — это не правка текста). */
-    private fun saveSoon() {
-        handler.removeCallbacks(saveRunnable)
-        handler.postDelayed(saveRunnable, 400)
-    }
-
-    private fun changed(render: Boolean = true) {
-        note.updated = System.currentTimeMillis() // список заметок (0.28) — по времени правки
-        if (render) {
-            if (imageEditing) renderPending = true else renderBlocks()
-        }
-        handler.removeCallbacks(saveRunnable)
-        handler.postDelayed(saveRunnable, 400)
-    }
-
-    /**
-     * Сохранить запись. Текст файла собирается здесь (рисунки — готовыми строками, быстро), пишется в фоне (0.27.6: раньше
-     * запись целиком переводилась в JSON и писалась на главном потоке после каждой паузы в письме — перо замирало).
-     * [wait] — дождаться записи (уход с экрана). Один фоновый поток — файлы пишутся по порядку.
-     */
-    private fun saveNow(wait: Boolean = false) {
-        handler.removeCallbacks(saveRunnable)
-        if (deleted) return
-        val text = try { store.prepare(note) } catch (t: Throwable) { saveFailed(t); return }
-        val id = note.id
-        val job = try { io.submit { try { store.write(id, text) } catch (t: Throwable) { handler.post { saveFailed(t) } } } } catch (t: Throwable) { null }
-        if (job == null) { try { store.write(id, text) } catch (t: Throwable) { saveFailed(t) }; return }
-        if (wait) try { job.get() } catch (_: Throwable) {}
-    }
-
-    private fun saveFailed(t: Throwable) {
-        Toast.makeText(this, "Не удалось сохранить: ${t.message}", Toast.LENGTH_LONG).show()
-    }
-
-    // ---------------------------------------------------------------- картинки и итоги
-
-    private fun pickImage() {
-        current?.let { commit(it) }
-        val i = Intent(Intent.ACTION_GET_CONTENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE)
-        try {
-            @Suppress("DEPRECATION")
-            startActivityForResult(Intent.createChooser(i, "Выберите картинку"), REQ_IMAGE)
-        } catch (t: Throwable) {
-            hint("Не нашлось приложения для выбора картинки")
-        }
-    }
-
-    @Deprecated("Activity.onActivityResult")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        @Suppress("DEPRECATION")
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQ_IMAGE || resultCode != RESULT_OK) return
-        val uri = data?.data ?: return
-        hint("Добавляю картинку…", 1500)
-        io.execute {
-            val block = try { store.importImage(this, uri) } catch (t: Throwable) { null }
-            handler.post {
-                if (block == null) {
-                    hint("Не удалось открыть картинку")
-                    return@post
-                }
-                runAfterCommit {
-                    pushUndo()
-                    note.blocks.add(note.caret + 1, block)
-                    note.blocks.add(note.caret + 2, Block.Para(""))
-                    note.caret += 2
-                    selectedImage = block
-                    changed()
-                }
-            }
-        }
-    }
-
     private fun showSummary() {
         runAfterCommit {
+            syncModel()
             val tasks = note.blocks.filterIsInstance<Block.Task>().filter { it.text.isNotBlank() }
             val open = tasks.filter { !it.done }
             val done = tasks.filter { it.done }
             val text = buildString {
-                append("Не сдано · ").append(open.size).append('\n')
+                append("Не сделано · ").append(open.size).append('\n')
                 open.forEach { append("— ").append(it.text).append('\n') }
                 if (open.isEmpty()) append("нет\n")
-                append("\nСдано · ").append(done.size).append('\n')
+                append("\nСделано · ").append(done.size).append('\n')
                 done.forEach { append("— ").append(it.text).append('\n') }
                 if (done.isEmpty()) append("нет\n")
             }
@@ -2137,6 +1919,218 @@ class NoteActivity : Activity(), NoteInkView.Host {
                 .setNegativeButton("Закрыть", null)
                 .show()
         }
+    }
+
+    // ---------------------------------------------------------------- старые записи: рисунки — за своими строками (0.30)
+
+    /**
+     * Запись до 0.30 ([Note.layoutV] = 1): название и дата были другой высоты, строки — не по клеткам. Рисунки (схемы у строк)
+     * сдвигаем вслед за их строкой: старое место строки считаем, как было, новое — по листу. Один раз, без «Отменить».
+     */
+    private fun migrateLayout() {
+        if (note.layoutV >= 2) return
+        syncModel(maps = true)
+        if (note.drawings.isEmpty() || sheet.width == 0) { note.layoutV = 2; saveSoon(); return }
+        // Лист до 0.30: поля 56 и 36 dp, сверху 18 dp. Теперь лист чистый, поля другие — рисунки сдвигаются и вбок.
+        val w = sheet.width - dp(56f) - dp(36f)
+        val dx = (sheet.paddingLeft - dp(56f)).toFloat()
+        fun measure(v: View): Int {
+            v.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+            return v.measuredHeight
+        }
+        fun oldLine(text: String, width: Int): Int {
+            val tv = TextView(this).apply { textSize = 19f; setExactLineHeight(lineHeightPx); minHeight = lineHeightPx; this.text = text }
+            tv.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+            return tv.measuredHeight
+        }
+        val newTops = IntArray(note.blocks.size)
+        val imageH = IntArray(note.blocks.size)
+        for (v in segs) when (v) {
+            is NoteEdit -> {
+                val map = paraBlock[v] ?: continue
+                val l = v.layout ?: continue
+                val st = v.starts()
+                for (i in map.indices) if (map[i] >= 0 && i < st.size) newTops[map[i]] = v.top + v.totalPaddingTop + l.getLineTop(l.getLineForOffset(st[i]))
+            }
+            else -> blockOfView(v)?.let { b ->
+                val bi = note.blocks.indexOfFirst { it === b }
+                if (bi >= 0) { newTops[bi] = v.top; imageH[bi] = v.height }
+            }
+        }
+        var y = dp(18f) + measure(Ui.text(this, note.title, 26f, Ui.INK, bold = true).apply { setPadding(0, 0, 0, dp(2f)) }) +
+            measure(Ui.mono(this, Ui.noteMeta(note.created), 12f).apply { setPadding(0, 0, 0, dp(10f)) })
+        val oldTops = IntArray(note.blocks.size)
+        for ((i, b) in note.blocks.withIndex()) {
+            oldTops[i] = y
+            y += when (b) {
+                is Block.Para -> oldLine(b.text, w)
+                is Block.Task -> maxOf(lineHeightPx, oldLine(b.text, w - dp(34f) - dp(80f)))
+                is Block.Image -> imageH[i]
+            }
+        }
+        for ((n, d) in note.drawings.withIndex()) {
+            if (d.pts.size < 2) continue
+            val y0 = d.pts[1]
+            var k = 0
+            while (k + 1 < oldTops.size && oldTops[k + 1] <= y0) k++
+            val dy = (newTops[k] - oldTops[k]).toFloat()
+            if (dy == 0f && dx == 0f) continue
+            note.drawings[n] = moved(d, dx, dy)
+        }
+        note.layoutV = 2
+        saveSoon() // не правка: время заметки в списке не меняется
+        ink.invalidate()
+    }
+
+    private fun moved(d: Drawing, dx: Float, dy: Float): Drawing {
+        val pts = d.pts.copyOf()
+        var j = 0
+        while (j + 1 < pts.size) { pts[j] += dx; pts[j + 1] += dy; j += 3 }
+        return Drawing(d.kind, d.color, d.width, pts).also { it.id = d.id }
+    }
+
+    /**
+     * Разлиновку убрали (0.31): заметка в линейку или в клетку становится чистым листом. Рисунки (схемы у строк) сдвигаются
+     * вслед за своей строкой — с места строки на листе в клетку (как открыли) на её место на чистом листе. Один раз, без «Отменить».
+     */
+    private fun migratePaper() {
+        val oldTops = anchorTops()
+        val oldLeft = sheet.paddingLeft
+        note.paper = NotePaper.NONE
+        applyPaper()
+        for (e in edits) e.relayout()
+        sheet.requestLayout()
+        sheet.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                sheet.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                val newTops = anchorTops()
+                val dx = (sheet.paddingLeft - oldLeft).toFloat()
+                for ((n, d) in note.drawings.withIndex()) {
+                    if (d.pts.size < 2) continue
+                    val y0 = d.pts[1]
+                    var k = 0
+                    while (k + 1 < oldTops.size && oldTops[k + 1] <= y0) k++
+                    val dy = (newTops[k] - oldTops[k]).toFloat()
+                    if (dy != 0f || dx != 0f) note.drawings[n] = moved(d, dx, dy)
+                }
+                saveSoon() // не правка: время заметки в списке не меняется
+                ink.invalidate()
+            }
+        })
+    }
+
+    /** Верх названия и каждого блока записи на листе (координаты листа): [0] — название, [i + 1] — блок i. */
+    private fun anchorTops(): IntArray {
+        syncModel(maps = true)
+        val out = IntArray(note.blocks.size + 1)
+        val f = firstEdit()
+        out[0] = f.top + f.totalPaddingTop
+        for (v in segs) when (v) {
+            is NoteEdit -> {
+                val map = paraBlock[v] ?: continue
+                val l = v.layout ?: continue
+                val st = v.starts()
+                for (i in map.indices) if (map[i] >= 0 && i < st.size) out[map[i] + 1] = v.top + v.totalPaddingTop + l.getLineTop(l.getLineForOffset(st[i]))
+            }
+            else -> blockOfView(v)?.let { b ->
+                val bi = note.blocks.indexOfFirst { it === b }
+                if (bi >= 0) out[bi + 1] = v.top
+            }
+        }
+        return out
+    }
+
+    // ---------------------------------------------------------------- отмена и сохранение
+
+    private fun copyBlock(b: Block): Block = when (b) {
+        is Block.Para -> Block.Para(b.text, b.style, b.indent, Rich.copy(b.spans))
+        is Block.Task -> Block.Task(b.text, b.done, b.indent, Rich.copy(b.spans))
+        is Block.Image -> b // картинку не меняют на месте, кроме размера и места — их хранит снимок ниже
+    }
+
+    private class ImageLook(val wf: Float, val xa: Float)
+    private val imageLooks = java.util.IdentityHashMap<Snap, Map<Block.Image, ImageLook>>()
+
+    private fun snap(): Snap {
+        syncModel()
+        val s = Snap(note.title, note.blocks.map { copyBlock(it) }, ArrayList(note.drawings), note.caret, note.caretOffset, titleCaret)
+        val looks = java.util.IdentityHashMap<Block.Image, ImageLook>()
+        for (b in note.blocks) if (b is Block.Image) looks[b] = ImageLook(b.wf, b.xa)
+        if (looks.isNotEmpty()) imageLooks[s] = looks
+        return s
+    }
+
+    private fun restore(x: Snap) {
+        imageLooks.remove(x)?.forEach { (b, l) -> b.wf = l.wf; b.xa = l.xa }
+        val n = Note(note.id, x.title, note.created, note.updated, x.blocks.mapTo(ArrayList()) { copyBlock(it) }, ArrayList(x.drawings), x.caret)
+            .apply { caretOffset = x.caretOffset; folder = note.folder; pinned = note.pinned; paper = note.paper; layoutV = note.layoutV }
+        note = n
+        render(x.caret, x.caretOffset, x.titleCaret)
+    }
+
+    private fun pushUndo() {
+        undoStack.addLast(snap())
+        while (undoStack.size > 60) imageLooks.remove(undoStack.removeFirst())
+        redoStack.clear()
+    }
+
+    private fun undo() {
+        val g = current
+        if (g != null && g.strokes.isNotEmpty()) {
+            // Сначала убираем ещё не распознанные штрихи — по одному.
+            g.strokes.removeAt(g.strokes.lastIndex)
+            g.resultFor = -1
+            interim = ""
+            handler.removeCallbacks(interimRunnable)
+            handler.removeCallbacks(commitRunnable)
+            if (g.strokes.isEmpty()) current = null else handler.postDelayed(interimRunnable, 150)
+            ink.invalidate()
+            return
+        }
+        if (commitQueue.isNotEmpty() || undoStack.isEmpty()) return
+        redoStack.addLast(snap())
+        restore(undoStack.removeLast())
+        burstEdit = null
+        changed()
+    }
+
+    private fun redo() {
+        if (redoStack.isEmpty() || commitQueue.isNotEmpty() || current != null) return
+        undoStack.addLast(snap())
+        restore(redoStack.removeLast())
+        burstEdit = null
+        changed()
+    }
+
+    /** Сохранить скоро, не трогая время правки (закрепили, перенесли раскладку — это не правка текста). */
+    private fun saveSoon() {
+        handler.removeCallbacks(saveRunnable)
+        handler.postDelayed(saveRunnable, 400)
+    }
+
+    private fun changed() {
+        note.updated = System.currentTimeMillis() // список заметок (0.28) — по времени правки
+        handler.removeCallbacks(saveRunnable)
+        handler.postDelayed(saveRunnable, 400)
+        refreshFormat()
+    }
+
+    /**
+     * Сохранить запись. Текст файла собирается здесь, пишется в фоне. [wait] — дождаться записи (уход с экрана). Один фоновый
+     * поток — файлы пишутся по порядку.
+     */
+    private fun saveNow(wait: Boolean = false) {
+        handler.removeCallbacks(saveRunnable)
+        if (deleted) return
+        val text = try { syncModel(); store.prepare(note) } catch (t: Throwable) { saveFailed(t); return }
+        val id = note.id
+        val job = try { io.submit { try { store.write(id, text) } catch (t: Throwable) { handler.post { saveFailed(t) } } } } catch (t: Throwable) { null }
+        if (job == null) { try { store.write(id, text) } catch (t: Throwable) { saveFailed(t) }; return }
+        if (wait) try { job.get() } catch (_: Throwable) {}
+    }
+
+    private fun saveFailed(t: Throwable) {
+        Toast.makeText(this, "Не удалось сохранить: ${t.message}", Toast.LENGTH_LONG).show()
     }
 
     // ---------------------------------------------------------------- NoteInkView.Host
@@ -2157,12 +2151,14 @@ class NoteActivity : Activity(), NoteInkView.Host {
 
     override fun passThrough(): Boolean = tool == Tool.HAND || tool == Tool.KEYS
 
-    /** Перо коснулось листа, пока печатают (0.30, как в макете): клавиатура уходит, написанное станет текстом у курсора. */
+    /** Перо коснулось листа, пока печатают: клавиатура уходит, написанное станет текстом у курсора. */
     override fun penWhileTyping(): Boolean {
+        if (!stylusKnown) { stylusKnown = true; Input.markStylus(this) }
         if (tool != Tool.KEYS) return false
         setTool(Tool.WRITE)
         return true
     }
+
     override fun pipetteMode(): Boolean = tool == Tool.PIPETTE
 
     /** Цвет под точкой слоя пера: рисунок рядом — его цвет, иначе пиксель листа (текст, картинка). */
@@ -2181,7 +2177,11 @@ class NoteActivity : Activity(), NoteInkView.Host {
         setTool(toolBeforePipette)
         hint("Цвет взят")
     }
-    override fun fingerWrites(): Boolean = fingerWrites
+
+    /** Пальцем пишут: включили в «⋯» или пера у устройства нет (телефон: «Перо» — рисовать и писать пальцем, как на айфоне). */
+    override fun fingerWrites(): Boolean = fingerWrites || (!stylusKnown && tool != Tool.HAND && tool != Tool.KEYS)
+
+    private var stylusKnown = false
     override fun isEraser(): Boolean = tool == Tool.ERASER
 
     override fun strokeStyle(): NoteInkView.StrokeStyle = when (tool) {
@@ -2202,6 +2202,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
     }
 
     override fun onStrokeEnd(stroke: InkStroke, style: NoteInkView.StrokeStyle, tap: Boolean) {
+        if (!stylusKnown && stroke.toolType == MotionEvent.TOOL_TYPE_STYLUS) { stylusKnown = true; Input.markStylus(this) }
         if (tap && tapOnCheckbox(stroke.points[0].x, stroke.points[0].y)) {
             if (current?.strokes?.isEmpty() == true) current = null
             if (current != null) scheduleWrite()
@@ -2213,16 +2214,18 @@ class NoteActivity : Activity(), NoteInkView.Host {
             scheduleWrite()
         } else if (style.kind == "shape") {
             pushUndo()
+            burstEdit = null
             val r = shapeTool.onStroke(
-                stroke, style, note.drawings, Ui.dpf(this, 24f), Ui.dpf(this, 4f), android.os.SystemClock.uptimeMillis(),
+                stroke, style, note.drawings, Ui.dpf(this, 24f), Ui.dpf(this, 4f), SystemClock.uptimeMillis(),
             )
             note.drawings.removeAll { d -> r.remove.any { it === d } }
             note.drawings += r.add
-            changed(render = false)
+            changed()
         } else {
             pushUndo()
+            burstEdit = null
             note.drawings += NoteInkView.toDrawing(stroke, style)
-            changed(render = false)
+            changed()
         }
         ink.invalidate()
     }
@@ -2235,11 +2238,11 @@ class NoteActivity : Activity(), NoteInkView.Host {
         // Как в рисовалке (0.27.6): стирается только участок под ластиком, куски по краям остаются.
         val widest = FloatArray(1)
         val keep = InkEraser.eraseIn(note.drawings, x, y, r, widest) ?: return
-        if (!eraseUndoPushed) { pushUndo(); eraseUndoPushed = true } // одно движение ластиком — один шаг «Отменить»
+        if (!eraseUndoPushed) { pushUndo(); burstEdit = null; eraseUndoPushed = true } // одно движение ластиком — один шаг «Отменить»
         note.drawings.clear()
         note.drawings.addAll(keep)
         ink.eraseHole(x, y, r + widest[0] + 1f) // стёртое у маркера шире круга ластика
-        changed(render = false)
+        changed()
         ink.invalidate()
     }
 
@@ -2252,13 +2255,27 @@ class NoteActivity : Activity(), NoteInkView.Host {
         return out
     }
 
+    /** Серое слово у курсора: распознанное, ещё не ставшее текстом. */
+    override fun interimMark(): NoteInkView.Mark? {
+        if (interim.isEmpty() || segs.isEmpty()) return null
+        val e = caretEdit()
+        val l = e.layout ?: return null
+        val off = min(e.selectionStart, e.selectionEnd).coerceIn(0, e.text.length)
+        val line = l.getLineForOffset(off)
+        val (before, after, placed) = caretContext(e)
+        val shown = spacedInsert(before, after, interim, placed)
+        return NoteInkView.Mark(
+            e.left + e.totalPaddingLeft + l.getPrimaryHorizontal(off),
+            (e.top + e.totalPaddingTop + l.getLineBaseline(line)).toFloat(),
+            shown, e.textPxAt(e.paraAt(off)),
+        )
+    }
+
     private fun tapOnCheckbox(x: Float, y: Float): Boolean {
-        for ((i, v) in blockViews.withIndex()) {
-            if (note.blocks.getOrNull(i) !is Block.Task) continue
-            if (y >= v.top && y <= v.bottom && x >= v.left && x <= v.left + dp(40f)) {
-                toggleTask(i)
-                return true
-            }
+        for (v in segs) {
+            if (v !is NoteEdit || y < v.top || y > v.bottom) continue
+            val i = v.checkAt(x - v.left, y - v.top)
+            if (i >= 0) { onToggleDone(v, i); return true }
         }
         return false
     }
@@ -2280,11 +2297,9 @@ class NoteActivity : Activity(), NoteInkView.Host {
     }
 
     /**
-     * Перо оторвали и начали следующее слово (0.27.7, Владимир: «написал слово, отрываю ручку — как пробел — и пишу следующее;
-     * логично, чтобы предыдущее сразу становилось текстом, а не занимало страницу»). Раньше слово ждало паузы в 1 с или
-     * прыжка дальше 60 dp — обычный промежуток между словами меньше, и вся строка копилась одной надписью.
-     * Новое слово: штрих начат правее надписи на промежуток ≥ 0,45 высоты букв (между буквами — меньше), или строкой ниже,
-     * или заметно левее/выше. Точки над «ё», «й» и перекладины — над словом или внутри него, слово не рвут.
+     * Перо оторвали и начали следующее слово (0.27.7): прошлое слово сразу становится текстом. Новое слово: штрих начат правее
+     * надписи на промежуток ≥ 0,45 высоты букв (между буквами — меньше), или строкой ниже, или заметно левее/выше. Точки над
+     * «ё», «й» и перекладины — над словом или внутри него, слово не рвут.
      */
     private fun isNextWord(g: Group, x: Float, y: Float): Boolean {
         val b = NoteInkView.bounds(g.strokes)
@@ -2301,16 +2316,12 @@ class NoteActivity : Activity(), NoteInkView.Host {
         return (base * 1.15f).coerceIn(lo, max(lo, ink.height.toFloat()))
     }
 
+    /** Текст перед курсором (до 20 знаков) — подсказка распознаванию. */
     private fun preContext(): String {
-        // Текст перед курсором (до 20 знаков): строки выше + начало текущей строки до курсора.
-        val sb = StringBuilder()
-        for (i in 0..min(note.caret, note.blocks.size - 1)) {
-            val t = blockText(note.blocks[i]) ?: continue
-            val part = if (i == note.caret) t.substring(0, caretPos(t)) else t
-            if (sb.isNotEmpty()) sb.append(' ')
-            sb.append(part)
-        }
-        return sb.takeLast(20).toString()
+        if (segs.isEmpty()) return ""
+        val e = caretEdit()
+        val a = min(e.selectionStart, e.selectionEnd).coerceIn(0, e.text.length)
+        return e.text.subSequence(max(0, a - 40), a).toString().replace(NoteEdit.ZWS, "").replace('\n', ' ').takeLast(20)
     }
 
     private fun recognize(g: Group) {
@@ -2323,7 +2334,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
             g.candidates = if (text != null) listOf(Candidate(text, null)) else emptyList()
             g.error = null
             g.resultFor = n
-            if (g === current) { interim = text.orEmpty(); refreshCaretText() }
+            if (g === current) { interim = text.orEmpty(); ink.refreshMarks() }
             if (g.committing) flush()
             return
         }
@@ -2345,7 +2356,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
             g.resultFor = n
             if (g === current && n == g.strokes.size) {
                 interim = out.candidates.firstOrNull()?.text?.trim().orEmpty()
-                refreshCaretText()
+                ink.refreshMarks()
             }
             if (g.committing) flush()
         }
@@ -2371,7 +2382,6 @@ class NoteActivity : Activity(), NoteInkView.Host {
         }
         val cur = current
         interim = if (cur != null && cur.resultFor == cur.strokes.size) cur.candidates?.firstOrNull()?.text?.trim().orEmpty() else ""
-        refreshCaretText()
         ink.invalidate()
         if (commitQueue.isEmpty() && current == null) {
             while (afterCommit.isNotEmpty()) afterCommit.removeFirst().invoke()
@@ -2385,16 +2395,18 @@ class NoteActivity : Activity(), NoteInkView.Host {
         val textSize = if (wordHeights.isNotEmpty()) max(lineHeightPx.toFloat(), wordHeights.sorted()[wordHeights.size / 2]) else lineHeightPx.toFloat()
         ShapeTool.fromWriting(g.strokes, best, textSize * 2.6f, Ui.dpf(this, 4f))?.let { shape ->
             pushUndo()
+            burstEdit = null
             note.drawings += ShapeTool.drawingOf(shape, NoteInkView.StrokeStyle("pen", Ui.PEN_INK, Ui.dpf(this, 2.4f)))
-            changed(render = false)
+            changed()
             return
         }
         if (best.isEmpty()) {
             pushUndo()
+            burstEdit = null
             for (s in g.strokes) note.drawings += NoteInkView.toDrawing(s, style)
             hint(g.error?.let { "Не распознано (${HandwritingEngine.shortError(it)}) — оставил рисунком" }
                 ?: "Не разобрал надпись — оставил её рисунком")
-            changed(render = false)
+            changed()
             return
         }
         val bb = NoteInkView.bounds(g.strokes)
@@ -2404,30 +2416,19 @@ class NoteActivity : Activity(), NoteInkView.Host {
         insertAtCaret(best)
     }
 
-    /**
-     * Куда улетают буквы (0.27.8): место слова в строке с курсором — серое слово (оно и есть распознанное) или, если его нет,
-     * сразу за курсором; координаты листа. null — строки с курсором нет на экране.
-     */
-    private fun flyTarget(word: String): android.graphics.RectF? {
-        val tv = caretTextView ?: return null
-        val layout = tv.layout ?: return null
-        val len = tv.text.length
-        val start = shownInsertAt.coerceIn(0, len)
-        val end = (shownInsertAt + shownInsertLen - 1).coerceIn(start, len) // без знака курсора
-        val line = layout.getLineForOffset(start)
-        val x0 = layout.getPrimaryHorizontal(start)
-        var x1 = if (end > start && layout.getLineForOffset(end) == line) layout.getPrimaryHorizontal(end) else 0f
-        if (x1 <= x0) x1 = x0 + tv.paint.measureText(" $word")
-        val base = layout.getLineBaseline(line).toFloat()
-        val fm = tv.paint.fontMetrics
-        var ox = tv.paddingLeft.toFloat()
-        var oy = tv.paddingTop.toFloat()
-        var v: View = tv
-        while (v !== sheet) {
-            ox += v.left; oy += v.top
-            v = v.parent as? View ?: return null
-        }
-        return android.graphics.RectF(ox + x0, oy + base + fm.ascent * 0.8f, ox + x1, oy + base + fm.descent * 0.6f)
+    /** Куда улетают буквы (0.27.8): место слова у курсора, координаты листа. null — поля с курсором нет. */
+    private fun flyTarget(word: String): RectF? {
+        if (segs.isEmpty()) return null
+        val e = caretEdit()
+        val l = e.layout ?: return null
+        val off = min(e.selectionStart, e.selectionEnd).coerceIn(0, e.text.length)
+        val line = l.getLineForOffset(off)
+        val paint = TextPaint(e.paint).apply { textSize = e.textPxAt(e.paraAt(off)) }
+        val x0 = e.left + e.totalPaddingLeft + l.getPrimaryHorizontal(off)
+        val x1 = x0 + paint.measureText(" $word")
+        val base = (e.top + e.totalPaddingTop + l.getLineBaseline(line)).toFloat()
+        val fm = paint.fontMetrics
+        return RectF(x0, base + fm.ascent * 0.8f, x1, base + fm.descent * 0.6f)
     }
 
     /** Выполнить действие после того, как недописанные слова станут текстом (чтобы не сбить порядок). */
@@ -2437,8 +2438,18 @@ class NoteActivity : Activity(), NoteInkView.Host {
     }
 
     /** В заметке ничего нет: ни названия, ни текста, ни картинок, ни рисунков. */
-    internal fun isEmptyNote(): Boolean = note.title.isBlank() && note.drawings.isEmpty() &&
-        note.blocks.all { (it is TextLine && it.text.isBlank()) } && current == null
+    internal fun isEmptyNote(): Boolean {
+        syncModel()
+        return note.title.isBlank() && note.drawings.isEmpty() &&
+            note.blocks.all { (it is TextLine && it.text.isBlank()) } && current == null
+    }
+
+    /** Для проверок: запись по листу сейчас. */
+    internal fun model(): Note { syncModel(); return note }
+
+    /** Для проверок: поля текста листа по порядку и поле с курсором. */
+    internal fun editors(): List<NoteEdit> = edits
+    internal fun caretEditor(): NoteEdit = caretEdit()
 
     companion object {
         const val EXTRA_ID = "note_id"
@@ -2446,7 +2457,7 @@ class NoteActivity : Activity(), NoteInkView.Host {
         const val EXTRA_KEYS = "note_keys"
         /** Отступ на один шаг (dp). */
         const val INDENT_DP = 28f
-        /** Маркеры «Формата»: жёлтый, зелёный, голубой, розовый, оранжевый, фиолетовый (как в макете). */
+        /** Маркеры «Формата»: жёлтый, зелёный, голубой, розовый, оранжевый, фиолетовый. */
         val HIGHLIGHTS = intArrayOf(
             Color.argb(140, 255, 214, 10), Color.argb(107, 52, 199, 89), Color.argb(115, 90, 200, 250),
             Color.argb(97, 255, 105, 180), Color.argb(107, 255, 149, 0), Color.argb(97, 175, 82, 222),
@@ -2455,7 +2466,13 @@ class NoteActivity : Activity(), NoteInkView.Host {
         val TEXT_COLORS = intArrayOf(
             Color.rgb(224, 53, 43), Color.rgb(47, 124, 246), Color.rgb(46, 170, 74), Color.rgb(232, 131, 12), Color.rgb(155, 89, 214),
         )
+        /** Цвет текста с панели (как маркер на айфоне). */
+        val PEN_COLOR_NAMES = listOf("Лиловый", "Розовый", "Оранжевый", "Мятный", "Синий")
+        val PEN_COLORS = intArrayOf(
+            Color.rgb(155, 89, 214), Color.rgb(224, 69, 123), Color.rgb(232, 131, 12), Color.rgb(24, 160, 146), Color.rgb(47, 124, 246),
+        )
         private const val REQ_IMAGE = 41
+        private const val REQ_CAMERA = 42
 
         /** Для проверок: распознавание выделенного без ML Kit (в Robolectric его нет). */
         internal var testRecognizer: ((List<InkStroke>) -> String?)? = null

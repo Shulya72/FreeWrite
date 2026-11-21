@@ -483,7 +483,7 @@ class HomeActivity : Activity() {
     private fun newNote() {
         val n = Note.create("")
         n.folder = folder // новая заметка — в открытую папку
-        n.paper = NotePaper.default(this)
+        n.paper = NotePaper.NONE // как на айфоне — чистый лист
         store.save(n)
         startActivity(Intent(this, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_ID, n.id).putExtra(NoteActivity.EXTRA_KEYS, true))
     }
