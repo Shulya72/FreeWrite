@@ -489,6 +489,7 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
                     val x = p.seconds * 1000 / maxOf(1L, p.ms)
                     "«$text» — ${String.format(ru, "%.1f", p.seconds)} с речи за ${String.format(ru, "%.2f", p.ms / 1000.0)} с " +
                         "(в ${String.format(ru, "%.0f", x)} раз быстрее речи)" +
+                        (if (p.gain >= 1.5f) "; тихо — усилено в ${String.format(ru, "%.0f", p.gain)} раз" else "") +
                         (if (!wasLoaded) "; модель загрузилась за ${String.format(ru, "%.1f", VoiceEngine.lastLoadMs / 1000.0)} с" else "")
                 } else "«$text»"
                 heard = true

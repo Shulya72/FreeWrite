@@ -425,8 +425,9 @@ class SileroVad(model: ByteArray) : VoiceActivity {
  * короче [minSpeech] — шум, не фраза; длиннее [maxSpeech] — режется (модель рассчитана на куски до 25 с).
  */
 class Segmenter(
-    private val on: Float = 0.5f,
-    private val off: Float = 0.35f,
+    // Пороги чуть ниже стандартных Silero (0,5 / 0,35): тихий далёкий голос и с усилением даёт вероятность пониже.
+    private val on: Float = 0.4f,
+    private val off: Float = 0.3f,
     private val minSilence: Int = 16_000 * 700 / 1000,
     private val pad: Int = 16_000 * 200 / 1000,
     private val minSpeech: Int = 16_000 * 250 / 1000,
@@ -479,6 +480,123 @@ class Segmenter(
         inSpeech = false
         silenceFrom = -1
         if (speechEnd - rawStart >= minSpeech) emit(start, e)
+    }
+}
+
+/**
+ * Автоусиление фразы перед распознаванием (0.32.1, Владимир: «на совещании распознаётся только мой голос, тех, кто сидит
+ * далеко, — нет»). Источник VOICE_RECOGNITION по правилам Android без автоусиления, а модель плохо разбирает тихий звук.
+ * Громкость считается по кадрам 32 мс; местный уровень речи — наибольший в ±[win] кадрах (паузы между словами получают
+ * усиление соседней речи); усиление — до [target] (−20 дБ), не меньше 1 (громкое не трогаем) и не больше [maxGain] (+30 дБ);
+ * сглаживается, ограничитель мягко срезает пики выше [lim]. Тот же способ проверен на «далёком» голосе —
+ * `tools/voice/eval_agc.py`.
+ */
+object AutoGain {
+    const val FRAME = 512
+
+    class Result(val pcm: FloatArray, val maxGain: Float)
+
+    fun apply(
+        y: FloatArray,
+        target: Float = 0.1f,
+        maxGain: Float = 31.6f,
+        win: Int = 10,
+        smooth: Int = 5,
+        lim: Float = 0.9f,
+    ): Result {
+        val n = y.size / FRAME
+        if (n == 0) return Result(y, 1f)
+        val r = FloatArray(n) { i ->
+            var sq = 0.0
+            for (k in i * FRAME until (i + 1) * FRAME) sq += y[k] * y[k]
+            (sqrt(sq / FRAME) + 1e-7).toFloat()
+        }
+        val g = FloatArray(n) { i ->
+            var m = 0f
+            for (k in max(0, i - win)..min(n - 1, i + win)) m = max(m, r[k])
+            (target / m).coerceIn(1f, maxGain)
+        }
+        val half = smooth / 2
+        val gs = FloatArray(n) { i ->
+            var sum = 0f
+            for (k in -half..half) sum += g[(i + k).coerceIn(0, n - 1)]
+            sum / (2 * half + 1)
+        }
+        val out = FloatArray(y.size)
+        var top = 1f
+        for (j in y.indices) {
+            // Усиление между серединами кадров — плавно.
+            val pos = j.toFloat() / FRAME - 0.5f
+            val i0 = kotlin.math.floor(pos).toInt()
+            val gg = when {
+                i0 < 0 -> gs[0]
+                i0 >= n - 1 -> gs[n - 1]
+                else -> gs[i0] + (gs[i0 + 1] - gs[i0]) * (pos - i0)
+            }
+            if (gg > top) top = gg
+            val z = y[j] * gg
+            val a = kotlin.math.abs(z)
+            out[j] = if (a > lim) Math.signum(z) * (lim + (1 - lim) * kotlin.math.tanh((a - lim) / (1 - lim))) else z
+        }
+        return Result(out, top)
+    }
+}
+
+/**
+ * Автоусиление на лету — для детектора речи (0.32.1). Проверка на настоящей речи (`tools/voice/eval_agc.py`): без усиления
+ * Silero на 5 м находил 41 % речи, «далеко» — 13 %, и фразы просто не уходили на распознавание («полоска шевелится, а букв
+ * нет»); с усилением — 92 % и 74 %. Способ тот же, что [AutoGain.apply] (местный уровень — наибольший в ±[win] кадрах), поэтому
+ * кадр выдаётся с задержкой [win] кадров (0,32 с); усиление между кадрами сглаживается.
+ */
+class LiveGain(
+    private val target: Float = 0.1f,
+    private val maxGain: Float = 31.6f,
+    private val win: Int = 10,
+    private val lim: Float = 0.9f,
+) {
+    private class Fr(val x: FloatArray, val n: Int, val pos: Long, val rms: Float)
+
+    private val q = ArrayDeque<Fr>()
+    private var done = 0 // сколько кадров из начала очереди уже выдано (они нужны как «прошлое» окна)
+    private var gain = 1f
+    var lastGain = 1f
+        private set
+
+    /** Кадр [x] (первые [n] отсчётов) с положения [pos]. Готовые кадры — в [out] (усиленные отсчёты, n, положение). */
+    fun push(x: FloatArray, n: Int, pos: Long, out: (FloatArray, Int, Long) -> Unit) {
+        var sq = 0.0
+        for (i in 0 until n) sq += x[i] * x[i]
+        q.addLast(Fr(x.copyOf(), n, pos, (sqrt(sq / max(1, n)) + 1e-7).toFloat()))
+        // Кадр готов, когда пришло ещё win кадров после него.
+        while (q.size - done > win) emit(out)
+        // Прошлое окна — не больше win кадров.
+        while (done > win) { q.removeFirst(); done-- }
+    }
+
+    /** Запись кончилась — выдать оставшиеся. */
+    fun flush(out: (FloatArray, Int, Long) -> Unit) {
+        while (done < q.size) emit(out)
+    }
+
+    private fun emit(out: (FloatArray, Int, Long) -> Unit) {
+        val k = done
+        val f = q.elementAt(k)
+        var m = 0f
+        for (i in max(0, k - win)..min(q.size - 1, k + win)) m = max(m, q.elementAt(i).rms)
+        val want = (target / m).coerceIn(1f, maxGain)
+        val from = gain
+        val to = from + (want - from) * 0.4f // сглаживание (≈ 5 кадров)
+        val y = FloatArray(f.x.size)
+        for (i in 0 until f.n) {
+            val g = from + (to - from) * (i + 1) / f.n
+            val z = f.x[i] * g
+            val a = kotlin.math.abs(z)
+            y[i] = if (a > lim) Math.signum(z) * (lim + (1 - lim) * kotlin.math.tanh((a - lim) / (1 - lim))) else z
+        }
+        gain = to
+        lastGain = to
+        done++
+        out(y, f.n, f.pos)
     }
 }
 
@@ -602,19 +720,15 @@ class VoiceSession(private val ctx: Context, private val l: Listener) {
             var levelN = 0
             var lastState: State? = null
             post { l.onVoiceState(State.LISTENING) }
-            while (!stopFlag.get()) {
-                val filled = src.read(frame) // целый кадр за раз
-                if (filled < 0) break
-                if (filled == 0) continue
-                ring.write(frame, filled)
-                for (i in 0 until filled) f[i] = frame[i] / 32768f
-                if (filled < f.size) java.util.Arrays.fill(f, filled, f.size, 0f)
-                val p = vad.prob(f)
-                seg.feed(pos, p, filled)
-                pos += filled
+            val live = LiveGain()
+            val v = vad
+            // Усиленный кадр — детектору речи (положение — исходное: в кольце звук без усиления).
+            val onFrame: (FloatArray, Int, Long) -> Unit = { g, n, at ->
+                val p = v.prob(g)
+                seg.feed(at, p, n)
                 var sq = 0.0
-                for (i in 0 until filled) sq += f[i] * f[i]
-                levelAcc += sq / filled
+                for (i in 0 until n) sq += g[i] * g[i]
+                levelAcc += sq / n
                 levelN++
                 if (levelN >= 3) {
                     val rms = sqrt(levelAcc / levelN)
@@ -626,10 +740,21 @@ class VoiceSession(private val ctx: Context, private val l: Listener) {
                 }
                 val st = if (seg.inSpeech) State.SPEECH else if (pending.get() > 0) State.RECOGNIZING else State.LISTENING
                 if (st != lastState) { lastState = st; post { l.onVoiceState(st) } }
+            }
+            while (!stopFlag.get()) {
+                val filled = src.read(frame) // целый кадр за раз
+                if (filled < 0) break
+                if (filled == 0) continue
+                ring.write(frame, filled)
+                for (i in 0 until filled) f[i] = frame[i] / 32768f
+                if (filled < f.size) java.util.Arrays.fill(f, filled, f.size, 0f)
+                live.push(f, filled, pos, onFrame)
+                pos += filled
                 // Долго тишина — микрофон выключается сам (батарея).
                 val quiet = pos - max(0L, seg.lastSpeech)
                 if (quiet > 16_000L * SILENCE_STOP_S && pending.get() == 0) { silenceStop = true; break }
             }
+            live.flush(onFrame)
             seg.flush(pos)
         } catch (t: Throwable) {
             Trail.add("Голос: запись прервалась — ${t.javaClass.simpleName}: ${t.message}")
@@ -671,15 +796,17 @@ class VoiceSession(private val ctx: Context, private val l: Listener) {
         val pcm = whole ?: ring.read(s, e) ?: return
         post { l.onVoiceState(State.RECOGNIZING) }
         val t0 = SystemClock.uptimeMillis()
-        val text = r.recognize(pcm)
+        val boosted = AutoGain.apply(pcm)
+        val text = r.recognize(boosted.pcm)
         val ms = SystemClock.uptimeMillis() - t0
         lastMs = ms
         phrases++
         speechMs += (e - s) * 1000 / 16_000
         recognizeMs += ms
         val sec = pcm.size / 16_000.0
-        Trail.add("Голос: ${"%.1f".format(sec)} с звука → ${ms} мс (×${"%.2f".format(ms / 1000.0 / max(sec, 0.1))})${if (join) " · уточнение" else ""}")
-        lastPhrase = Phrase(text, sec, ms)
+        val boost = if (boosted.maxGain >= 1.5f) " · усиление до ×${"%.0f".format(boosted.maxGain)}" else ""
+        Trail.add("Голос: ${"%.1f".format(sec)} с звука → ${ms} мс (×${"%.2f".format(ms / 1000.0 / max(sec, 0.1))})${if (join) " · уточнение" else ""}$boost")
+        lastPhrase = Phrase(text, sec, ms, boosted.maxGain)
         if (text.isBlank()) {
             if (!join) chunkStart = -1
             return
@@ -693,7 +820,7 @@ class VoiceSession(private val ctx: Context, private val l: Listener) {
         post { l.onVoiceText(c, text, join) }
     }
 
-    class Phrase(val text: String, val seconds: Double, val ms: Long)
+    class Phrase(val text: String, val seconds: Double, val ms: Long, val gain: Float = 1f)
 
     /** Последняя распознанная фраза (для «Проверки планшета»). */
     @Volatile var lastPhrase: Phrase? = null

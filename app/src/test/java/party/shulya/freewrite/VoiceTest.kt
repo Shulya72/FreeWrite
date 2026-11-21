@@ -83,6 +83,117 @@ class VoiceTest {
     }
 
     @Test
+    fun autoGainLiftsQuietSpeechOnly() {
+        fun tone(seconds: Double, amp: Double) = FloatArray((seconds * 16_000).toInt()) { i ->
+            // «речь»: тон 220 Гц, громкость дышит 4 раза в секунду
+            val t = i / 16_000.0
+            (amp * Math.sin(2 * Math.PI * 220 * t) * (0.6 + 0.4 * Math.sin(2 * Math.PI * 4 * t))).toFloat()
+        }
+        fun rms(x: FloatArray, a: Int = 0, b: Int = x.size): Double {
+            var s = 0.0
+            for (i in a until b) s += x[i] * x[i]
+            return Math.sqrt(s / (b - a))
+        }
+        // Громко (−17 дБ) — не трогаем.
+        val loud = tone(3.0, 0.2)
+        val l = AutoGain.apply(loud)
+        assertEquals(1f, l.maxGain, 0.01f)
+        assertEquals(rms(loud), rms(l.pcm), 1e-4)
+        // Тихо (−51 дБ, человек далеко) — поднято к −20 дБ, не больше чем в 31,6 раза.
+        val quiet = tone(3.0, 0.004)
+        val q = AutoGain.apply(quiet)
+        assertTrue("усиление ${q.maxGain}", q.maxGain > 20f && q.maxGain <= 31.7f)
+        assertTrue("громкость ${rms(q.pcm)}", rms(q.pcm) > 0.05)
+        // В одной фразе: сначала громко (рядом), потом тихо (далеко) — громкое как было, тихое поднято.
+        val mix = loud + quiet
+        val m = AutoGain.apply(mix)
+        val half = loud.size
+        assertEquals(rms(loud, 0, half - 8000), rms(m.pcm, 0, half - 8000), 1e-3)
+        assertTrue(rms(m.pcm, half + 8000, mix.size) > 0.05)
+        // Пики не выше полной шкалы.
+        val peaks = AutoGain.apply(tone(1.0, 0.95))
+        assertTrue(peaks.pcm.all { kotlin.math.abs(it) <= 1f })
+        assertEquals(0, AutoGain.apply(FloatArray(100)).pcm.count { it != 0f })
+    }
+
+    @Test
+    fun liveGainKeepsOrderAndLiftsQuiet() {
+        val g = LiveGain()
+        val got = ArrayList<Pair<Long, Float>>()
+        val f = VoiceActivity.FRAME
+        fun feed(amp: Float, frames: Int, start: Long): Long {
+            var pos = start
+            repeat(frames) {
+                val x = FloatArray(f) { i -> (amp * Math.sin(2 * Math.PI * 220 * (pos + i) / 16_000.0)).toFloat() }
+                g.push(x, f, pos) { y, n, at ->
+                    var sq = 0.0
+                    for (i in 0 until n) sq += y[i] * y[i]
+                    got += at to Math.sqrt(sq / n).toFloat()
+                }
+                pos += f
+            }
+            return pos
+        }
+        val end = feed(0.003f, 60, feed(0.3f, 40, 0))
+        g.flush { y, n, at ->
+            var sq = 0.0
+            for (i in 0 until n) sq += y[i] * y[i]
+            got += at to Math.sqrt(sq / n).toFloat()
+        }
+        assertEquals("все кадры по порядку", (0 until 100).map { it * f.toLong() }, got.map { it.first })
+        assertEquals(end, got.last().first + f)
+        // Громкое (0,21 rms) — как было; тихое (0,002) к концу поднято примерно в 30 раз.
+        assertEquals(0.212f, got[10].second, 0.01f)
+        assertTrue("${got[90].second}", got[90].second > 0.05f)
+    }
+
+    @Test
+    fun quietFarSpeechStillBecomesPhrases() {
+        // −74 дБ (человек далеко): без усиления Silero теряет вторую фразу целиком и часть первой («полоска шевелится, а букв нет»).
+        val quiet = wav("voice/two_phrases.wav").let { pcm -> ShortArray(pcm.size) { (pcm[it] * 0.002f).toInt().toShort() } }
+        val vad = SileroVad.fromAssets(ctx)
+        val raw = ArrayList<Pair<Long, Long>>()
+        val s = Segmenter { a, b -> raw += a to b }
+        val fr = FloatArray(VoiceActivity.FRAME)
+        var pos = 0
+        while (pos + fr.size <= quiet.size) {
+            for (i in fr.indices) fr[i] = quiet[pos + i] / 32768f
+            s.feed(pos.toLong(), vad.prob(fr))
+            pos += fr.size
+        }
+        s.flush(pos.toLong())
+        vad.close()
+        val rawSec = raw.sumOf { it.second - it.first } / 16_000.0
+        println("без усиления: фраз ${raw.size}, речи $rawSec с")
+        assertTrue("без усиления находится не вся речь: $raw", raw.size <= 1 && rawSec < 4.0)
+        // Запись целиком (с усилением перед детектором) — фразы есть и уходят на распознавание.
+        val fake = FakeRecognizer { "Фраза." }
+        VoiceEngine.testRecognizer = fake
+        VoiceSession.testSource = { WavSource(quiet) }
+        var stopped = false
+        val got = ArrayList<String>()
+        VoiceSession(ctx, object : VoiceSession.Listener {
+            override fun onVoiceState(state: VoiceSession.State) {}
+            override fun onVoiceLevel(level: Float) {}
+            override fun onVoiceText(chunk: Int, text: String, replace: Boolean) { got += text }
+            override fun onVoiceError(message: String) { throw AssertionError(message) }
+            override fun onVoiceStopped(silence: Boolean) { stopped = true }
+        }).start()
+        val until = System.currentTimeMillis() + 30_000
+        while (!stopped && System.currentTimeMillis() < until) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(20)
+        }
+        assertTrue(stopped)
+        println("с усилением: распознаваний ${fake.calls}")
+        assertTrue("распознаваний: ${fake.calls}", fake.calls.isNotEmpty())
+        // С усилением — обе фразы, как на обычной громкости (вторая уточняет первую одним куском).
+        assertEquals("${fake.calls}", 2, fake.calls.size)
+        assertTrue("с усилением речи больше: ${fake.calls}", fake.calls.max() > rawSec + 2.0)
+        assertTrue(got.isNotEmpty())
+    }
+
+    @Test
     fun ringKeepsLastSeconds() {
         val r = PcmRing(1)
         val chunk = ShortArray(4000) { 1000 }
