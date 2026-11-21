@@ -448,12 +448,14 @@ class HomeActivity : Activity() {
             setOnClickListener { open(n.id) }
             setOnLongClickListener { noteMenu(n); true }
         }
-        row.addView(Ui.text(this, n.title.ifBlank { "Новая заметка" }, 17f, Ui.INK, bold = true).apply {
+        // Без названия (например, продиктовали сразу текст) — как на айфоне: первая строка текста вместо названия.
+        val untitled = n.title.isBlank() && n.preview.isNotBlank()
+        row.addView(Ui.text(this, n.title.ifBlank { n.preview.ifBlank { "Новая заметка" } }, 17f, Ui.INK, bold = true).apply {
             isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END; tag = "row_title"
         })
         val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(2f), 0, 0) }
         line.addView(Ui.text(this, NotesList.rowTime(NotesList.edited(n), now), 14f, Ui.ACCENT, bold = true).apply { setPadding(0, 0, dp(8f), 0) })
-        line.addView(Ui.text(this, n.preview.ifEmpty { "Нет дополнительного текста" }, 14f, Ui.MUTED).apply {
+        line.addView(Ui.text(this, (if (untitled) "" else n.preview).ifEmpty { "Нет дополнительного текста" }, 14f, Ui.MUTED).apply {
             isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         row.addView(line)

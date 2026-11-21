@@ -1142,6 +1142,18 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         val e = caretEdit()
         pushUndo()
         burstEdit = null
+        if (e.first && e.paraAt(min(e.selectionStart, e.selectionEnd).coerceAtLeast(0)) == 0) {
+            // В название голос не пишет (0.32.1, Владимир: в новой заметке весь продиктованный текст стал крупным и
+            // жирным): диктовка — с новой строки под названием, обычным текстом; название остаётся как было.
+            val pe = e.paraEnd(0)
+            voiceEditing = true
+            try {
+                quietEdit(e) { e.text.insert(pe, "\n") }
+                e.setSelection(e.rawOffset(1, 0).coerceIn(0, e.text.length))
+            } finally {
+                voiceEditing = false
+            }
+        }
         val a = min(e.selectionStart, e.selectionEnd).coerceAtLeast(0)
         val b = max(e.selectionStart, e.selectionEnd).coerceAtLeast(0)
         val (before, after, _) = caretContext(e)

@@ -135,6 +135,36 @@ class NoteVoiceTest {
     }
 
     @Test
+    fun newNoteDictationGoesBelowTitleAndLinesStayEven() {
+        // Новая заметка открывается с курсором в названии — голос пишет не туда, а обычным текстом строкой ниже (0.32.1).
+        VoiceModel.testReady = true
+        val long = "Хм. Короче, все четыре схемы, они как бы нарисованы. Ты в курсе? Кто? Бобурышев. Дак, с Бобрышевым я и " +
+            "общаюсь по этому поводу. Он же тогда мне написал письмо, якобы жду ИГС от геодезистов. ГС я направил. Я с ним вот " +
+            "вчера разговаривал. Он говорит, что этот должны уже типа, там на финальной стадии, грубо говоря, согласования."
+        VoiceEngine.testRecognizer = VoiceTest.FakeRecognizer { s -> if (s < 6) "Хм. Короче, все четыре схемы, они как бы нарисованы." else long }
+        VoiceSession.testSource = { VoiceTest.WavSource(VoiceTest.wav("voice/two_phrases.wav"), sleepMs = 1) }
+        val a = open(Note.create("").apply { paper = NotePaper.NONE }, keys = true)
+        assertEquals("курсор в названии", 0, a.caretEditor().paraAt(a.caretEditor().selectionStart))
+        click(a, "keys_mic")
+        waitFor("запись закончилась") { !a.voiceActive() }
+        val n = a.model()
+        assertEquals("название не тронуто", "", n.title)
+        assertEquals(long, (n.blocks[0] as Block.Para).text)
+        assertEquals("обычный текст", "", (n.blocks[0] as Block.Para).style)
+        val e = a.caretEditor()
+        assertEquals("курсор — в тексте под названием", 1, e.paraAt(e.selectionStart))
+        // Строки длинного абзаца — одной высоты.
+        val l = e.layout
+        val first = l.getLineForOffset(e.rawOffset(1, 0))
+        val hs = (first until l.lineCount).map { l.getLineBottom(it) - l.getLineTop(it) }
+        assertTrue("$hs", hs.size >= 4 && hs.all { it == hs[0] })
+        shot(a.window.decorView, "note-voice-long.png")
+        // «Отменить» — заметка снова пустая.
+        click(a, "note_undo")
+        assertTrue(a.isEmptyNote())
+    }
+
+    @Test
     fun typingDuringDictationKeepsPhrasesSeparate() {
         VoiceModel.testReady = true
         val rec = VoiceTest.FakeRecognizer { s -> if (s < 3) "Проверить армирование плиты." else if (s < 6) first else joined }
