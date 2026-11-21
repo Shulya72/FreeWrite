@@ -45,12 +45,16 @@ object VoiceModel {
     const val TAG = "voice-model-1"
     private const val BASE = "https://github.com/Shulya72/FreeWrite/releases/download/$TAG/"
 
+    /** Откуда качать (в проверках — свой сервер на компьютере). */
+    @Volatile internal var base = BASE
+
     class VFile(val name: String, val bytes: Long, val sha256: String)
 
     val MODEL = VFile("gigaam-v3-e2e-ctc-int8.onnx", 320_540_869L, "6ac381a8e293583ea70885329f4f2dd98bc12e20c77e04635f09a5e14fec6733")
     val TOKENS = VFile("tokens.txt", 1_992L, "1950ad9e44e0c7a790fc1c58c8005e32cc1d9482ec05955f5b4cb0b1b7c3837d")
-    val FILES = listOf(MODEL, TOKENS)
-    val totalBytes: Long = FILES.sumOf { it.bytes }
+    /** Файлы модели (в проверках — свои). */
+    @Volatile internal var FILES = listOf(MODEL, TOKENS)
+    val totalBytes: Long get() = FILES.sumOf { it.bytes }
     val totalMb: Int get() = ((totalBytes + 999_999) / 1_000_000).toInt()
 
     /** Для проверок на компьютере: считать модель скачанной (или нет). */
@@ -143,6 +147,8 @@ object VoiceModel {
             fin.delete()
             val part = File(d, f.name + ".part")
             fetch(f, part) { publish(State.Running(haveBytes(), totalBytes)) }
+            // Связь оборвалась, а сервер не сказал — скачанное остаётся, в следующий раз докачается.
+            if (part.length() < f.bytes) throw java.io.IOException("скачано ${part.length()} из ${f.bytes}")
             if (sha256(part) != f.sha256) {
                 part.delete()
                 throw ShaMismatch("Файл «${f.name}» скачался с ошибкой — нажмите ещё раз")
@@ -155,7 +161,7 @@ object VoiceModel {
     private fun fetch(f: VFile, part: File, progress: () -> Unit) {
         if (part.length() > f.bytes) part.delete()
         if (part.length() == f.bytes) return
-        var url = URL(BASE + f.name)
+        var url = URL(base + f.name)
         var hops = 0
         var conn: HttpURLConnection? = null
         val from = part.length()

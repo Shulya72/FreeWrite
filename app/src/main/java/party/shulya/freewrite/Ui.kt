@@ -113,6 +113,17 @@ object Ui {
                 icon.imageTintList = ColorStateList.valueOf(c)
                 caption.setTextColor(c)
                 background = if (value) rounded(context, ACCENT_SOFT, null, 10f) else null
+                if (alert) alert = true
+            }
+        /** Идёт запись (микрофон) — красным, поверх «выбрано». */
+        var alert = false
+            set(value) {
+                field = value
+                if (value) {
+                    icon.imageTintList = ColorStateList.valueOf(BAD)
+                    caption.setTextColor(BAD)
+                    background = rounded(context, BAD_SOFT, null, 10f)
+                } else selectedTool = selectedTool
             }
 
         init {

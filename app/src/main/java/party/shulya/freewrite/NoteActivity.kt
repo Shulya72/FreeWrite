@@ -1,5 +1,6 @@
 package party.shulya.freewrite
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
@@ -7,6 +8,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -26,6 +28,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.CheckBox
 import android.widget.EditText
@@ -177,12 +180,17 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
     }
 
     override fun onPause() {
+        // Ушли с экрана — запись заканчивается (недоговорённое ещё распознается и встанет в текст).
+        voice?.stop()
         current?.let { commit(it) }
         saveNow(wait = true)
         super.onPause()
     }
 
     override fun onDestroy() {
+        voice?.cancel()
+        voice = null
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         handler.removeCallbacksAndMessages(null)
         engine.close()
         io.shutdown()
@@ -376,6 +384,7 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             topMargin = dp(64f)
         })
+        buildVoiceBar(area)
         rootView.addView(area, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
         // Нижняя панель — под листом (не поверх): строка с курсором над клавиатурой не прячется под панелью.
         val bottom = FrameLayout(this).apply {
@@ -465,6 +474,7 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         keysRow.addView(aaButton("fmt_open"))
         keysRow.addView(barIcon(R.drawable.ic_checklist, "Чек-лист", "keys_task") { toggleTaskLines() })
         keysRow.addView(barIcon(R.drawable.ic_attach, "Вложить", "keys_image") { attachMenu(it) })
+        keysRow.addView(barIcon(R.drawable.ic_mic, "Голосовой ввод", "keys_mic") { micTap() }.also { micButtons += it })
         keysRow.addView(barIcon(R.drawable.ic_markup, "Перо", "keys_pen") { setTool(Tool.WRITE) })
         keysRow.addView(Ui.separator(this))
         formatStart = barLetter("B", "Жирный", "bar_b") { applyInline(Rich.B) }.apply { typeface = Typeface.DEFAULT_BOLD }
@@ -523,6 +533,7 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         penRow.addView(barIcon(R.drawable.ic_edit, "Исправить строку", "mini_edit") { runAfterCommit { editCaretDialog() } })
         penRow.addView(Ui.separator(this))
         penRow.addView(barIcon(R.drawable.ic_attach, "Вложить", "note_image") { attachMenu(it) })
+        penRow.addView(barIcon(R.drawable.ic_mic, "Голосовой ввод", "pen_mic") { micTap() }.also { micButtons += it })
         addTool(penRow, Tool.KEYS, R.drawable.ic_keyboard, "Клавиатура")
         penBar = capsule(penRow, "pen_bar").first
 
@@ -883,7 +894,11 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
 
     override fun afterEdit(e: NoteEdit) {
         endShift(e)
-        if (programmatic == 0) lastEditAt = SystemClock.uptimeMillis()
+        if (programmatic == 0) {
+            lastEditAt = SystemClock.uptimeMillis()
+            // Текст правят руками — следующая фраза голосом встаёт отдельно, не уточняет прежнюю.
+            if (dictation != null) { dictation = null; voice?.breakChunk() }
+        }
         cur = e
         changed()
         updateBars()
@@ -915,6 +930,7 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
     override fun newStep() { burstEdit = null }
 
     override fun onSelection(e: NoteEdit, start: Int, end: Int) {
+        if (!voiceEditing) dictation?.let { d -> if (e !== d.e || start != end || start != e.text.getSpanEnd(d.mark)) { dictation = null; voice?.breakChunk() } }
         cur = e
         if (selectedImage != null && start != end) selectImage(null)
         updateBars()
@@ -974,6 +990,211 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         val dy = contentH(e) - h0
         if (dy != 0 && note.drawings.isNotEmpty()) shiftDrawings(y0 - 1f, dy.toFloat())
     }
+
+    // ---------------------------------------------------------------- голосовой ввод (0.32)
+
+    /*
+     * Микрофон на нижней панели: речь распознаётся на планшете (модель GigaAM от Сбера, `Voice.kt`) и встаёт текстом у
+     * курсора — фраза за фразой, после каждой паузы. Фразы с короткими паузами распознаются заново одним куском, и текст
+     * кусочка заменяется уточнённым (знаки по всему предложению). Кусочек — один шаг «Отменить».
+     */
+    private var voice: VoiceSession? = null
+    private var voiceStopping = false
+    private var voiceEditing = false
+    private val micButtons = ArrayList<Ui.ToolButton>()
+
+    /** Вставленный голосом кусочек: в каком поле, где (метка двигается вместе с правками текста) и что в нём. */
+    private class Dictation(val e: NoteEdit, val chunk: Int, var text: String, val mark: Any)
+    private var dictation: Dictation? = null
+
+    private lateinit var voiceBar: LinearLayout
+    private lateinit var voiceText: TextView
+    private lateinit var voiceLevel: VoiceLevelView
+
+    private fun buildVoiceBar(area: FrameLayout) {
+        voiceText = Ui.text(this, "Говорите…", 14f, Ui.INK).apply { tag = "voice_status" }
+        voiceLevel = VoiceLevelView(this)
+        voiceBar = LinearLayout(this).apply {
+            tag = "voice_bar"
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ui.rounded(this@NoteActivity, Ui.BAR, Ui.BAR_LINE, 26f)
+            elevation = dp(8f).toFloat()
+            setPadding(dp(14f), dp(6f), dp(6f), dp(6f))
+            visibility = View.GONE
+            addView(ImageView(this@NoteActivity).apply {
+                setImageResource(R.drawable.ic_mic)
+                imageTintList = ColorStateList.valueOf(Ui.BAD)
+            }, LinearLayout.LayoutParams(dp(22f), dp(22f)))
+            addView(voiceLevel, LinearLayout.LayoutParams(dp(42f), dp(22f)).apply { setMargins(dp(8f), 0, dp(10f), 0) })
+            addView(voiceText, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { marginEnd = dp(12f) })
+            addView(Ui.pill(this@NoteActivity, "Готово", Color.WHITE, Ui.BAD).apply {
+                tag = "voice_stop"
+                setOnClickListener { stopVoice() }
+            })
+        }
+        area.addView(voiceBar, FrameLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(12f)
+        })
+    }
+
+    private fun micTap(): Unit = runAfterCommit {
+        if (voice != null) { stopVoice(); return@runAfterCommit }
+        if (!VoiceModel.ready(this)) {
+            VoiceUi.offerModel(this) { micTap() }
+            return@runAfterCommit
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
+            return@runAfterCommit
+        }
+        startVoice()
+    }
+
+    @Deprecated("Activity.onRequestPermissionsResult")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_MIC) return
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startVoice()
+        else hint("Без доступа к микрофону голосовой ввод не работает — разрешите его в настройках приложения", 4500)
+    }
+
+    private fun startVoice() {
+        if (voice != null) return
+        dictation = null
+        voiceStopping = false
+        // Курсора нет на листе — в конец текста.
+        if (cur?.parent !== sheet) { val e = lastEdit(); setCaretIn(e, e.text.length) }
+        val s = VoiceSession(this, voiceListener)
+        voice = s
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        voiceLevel.active = true
+        voiceText.text = "Говорите…"
+        voiceBar.visibility = View.VISIBLE
+        updateMicButtons()
+        s.start()
+    }
+
+    /** Закончить запись: недоговорённое распознаётся и встаёт в текст, потом полоска уходит. */
+    private fun stopVoice() {
+        val s = voice ?: return
+        voiceStopping = true
+        voiceLevel.active = false
+        voiceText.text = "Дописываю…"
+        s.stop()
+    }
+
+    private fun updateMicButtons() {
+        for (b in micButtons) b.alert = voice != null
+    }
+
+    private val voiceListener = object : VoiceSession.Listener {
+        override fun onVoiceState(state: VoiceSession.State) {
+            if (voiceStopping) return
+            voiceText.text = when (state) {
+                VoiceSession.State.LOADING -> "Готовлю распознавание…"
+                VoiceSession.State.LISTENING -> "Говорите…"
+                VoiceSession.State.SPEECH -> "Слушаю…"
+                VoiceSession.State.RECOGNIZING -> "Распознаю…"
+            }
+        }
+
+        override fun onVoiceLevel(level: Float) { if (!voiceStopping) voiceLevel.level = level }
+
+        override fun onVoiceText(chunk: Int, text: String, replace: Boolean) = putVoiceText(chunk, text, replace)
+
+        override fun onVoiceError(message: String) { hint(message, 4500) }
+
+        override fun onVoiceStopped(silence: Boolean) {
+            voice = null
+            dictation = null
+            voiceStopping = false
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            voiceBar.visibility = View.GONE
+            updateMicButtons()
+            if (silence) hint("Микрофон выключился — долго было тихо")
+        }
+    }
+
+    /** Текст кусочка речи: новый — у курсора; уточнённый — вместо прежнего текста этого кусочка. */
+    private fun putVoiceText(chunk: Int, text: String, replace: Boolean) {
+        if (current != null || commitQueue.isNotEmpty()) { runAfterCommit { putVoiceText(chunk, text, replace) }; return }
+        val d = dictation
+        if (replace && d != null && d.chunk == chunk && replaceDictation(d, text)) return
+        var add = text
+        if (replace) {
+            // Кусочек уже правили или курсор ушёл: дописываем у курсора только новые слова.
+            val had = d?.takeIf { it.chunk == chunk }?.text ?: lastVoiceText[chunk].orEmpty()
+            add = text.split(' ').filter { it.isNotBlank() }.drop(had.split(' ').count { it.isNotBlank() }).joinToString(" ")
+            voice?.breakChunk()
+            if (add.isBlank()) return
+            insertDictation(-1, add)
+            return
+        }
+        insertDictation(chunk, add)
+    }
+
+    /** Что было вставлено по каждому кусочку (на случай, когда метки уже нет). */
+    private val lastVoiceText = HashMap<Int, String>()
+
+    private fun insertDictation(chunk: Int, text: String) {
+        val e = caretEdit()
+        pushUndo()
+        burstEdit = null
+        val a = min(e.selectionStart, e.selectionEnd).coerceAtLeast(0)
+        val b = max(e.selectionStart, e.selectionEnd).coerceAtLeast(0)
+        val (before, after, _) = caretContext(e)
+        val lead = before.isNotEmpty() && !before.last().isWhitespace() && text.first() !in ".,!?;:)»…"
+        val trail = after.isNotEmpty() && !after.first().isWhitespace() && after.first() !in ".,!?;:)»…"
+        val ins = (if (lead) " " else "") + text + (if (trail) " " else "")
+        val from = a + if (lead) 1 else 0
+        val mark = Any()
+        voiceEditing = true
+        try {
+            quietEdit(e) {
+                e.text.replace(a, b, ins)
+                e.text.setSpan(mark, from, from + text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            e.setSelection((from + text.length).coerceAtMost(e.text.length))
+        } finally {
+            voiceEditing = false
+        }
+        cur = e
+        dictation = if (chunk >= 0) Dictation(e, chunk, text, mark) else null
+        if (chunk >= 0) lastVoiceText[chunk] = text
+        revealCaret()
+    }
+
+    /** Заменить текст кусочка уточнённым. false — нельзя (текст правили, курсор ушёл, кусочка нет на листе). */
+    private fun replaceDictation(d: Dictation, text: String): Boolean {
+        val e = d.e
+        if (e.parent !== sheet || cur !== e) return false
+        val t = e.text
+        val s = t.getSpanStart(d.mark)
+        val en = t.getSpanEnd(d.mark)
+        if (s < 0 || en < s || t.subSequence(s, en).toString() != d.text) return false
+        if (e.selectionStart != en || e.selectionEnd != en) return false
+        if (text == d.text) return true
+        voiceEditing = true
+        try {
+            quietEdit(e) {
+                t.replace(s, en, text)
+                t.setSpan(d.mark, s, s + text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            e.setSelection((s + text.length).coerceAtMost(t.length))
+        } finally {
+            voiceEditing = false
+        }
+        d.text = text
+        lastVoiceText[d.chunk] = text
+        changed()
+        revealCaret()
+        return true
+    }
+
+    /** Для проверок: идёт ли запись. */
+    internal fun voiceActive(): Boolean = voice != null
 
     // ---------------------------------------------------------------- правка текста (перо, мини-панель)
 
@@ -2473,6 +2694,7 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
         )
         private const val REQ_IMAGE = 41
         private const val REQ_CAMERA = 42
+        private const val REQ_MIC = 43
 
         /** Для проверок: распознавание выделенного без ML Kit (в Robolectric его нет). */
         internal var testRecognizer: ((List<InkStroke>) -> String?)? = null

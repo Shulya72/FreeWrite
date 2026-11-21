@@ -141,6 +141,8 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
     }
 
     override fun onDestroy() {
+        voiceSession?.cancel()
+        voiceSession = null
         handler.removeCallbacksAndMessages(null)
         netCallback?.let {
             try {
@@ -441,6 +443,79 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
         if (attempts.size > 200) attempts.removeAt(0)
     }
 
+    // ---------------------------------------------------------------- голос
+
+    private lateinit var voiceState: TextView
+    private lateinit var voiceResult: TextView
+    private lateinit var voiceTestButton: Button
+    private var voiceSession: VoiceSession? = null
+    private val voiceLines = ArrayList<String>()
+
+    private fun updateVoiceState() {
+        if (!::voiceState.isInitialized) return
+        val ready = VoiceModel.ready(this)
+        voiceState.text = if (ready) {
+            "Модель скачана" + (if (VoiceEngine.lastLoadMs > 0) " · загрузка в память — ${VoiceEngine.lastLoadMs} мс" else "") +
+                " · потоков: ${VoiceEngine.threads()}"
+        } else "Модель не скачана — «Проверить» предложит скачать"
+        voiceTestButton.text = if (voiceSession != null) "Стоп" else "Проверить: скажите фразу"
+    }
+
+    private fun voiceTest() {
+        voiceSession?.let { it.stop(); return }
+        if (!VoiceModel.ready(this)) { VoiceUi.offerModel(this) { updateVoiceState(); voiceTest() }; return }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_MIC)
+            return
+        }
+        lateinit var session: VoiceSession
+        val wasLoaded = VoiceEngine.loaded
+        var heard = false
+        session = VoiceSession(this, object : VoiceSession.Listener {
+            override fun onVoiceState(state: VoiceSession.State) {
+                if (heard) return
+                voiceResult.text = when (state) {
+                    VoiceSession.State.LOADING -> "Загружаю модель в память…"
+                    VoiceSession.State.LISTENING -> "Говорите…"
+                    VoiceSession.State.SPEECH -> "Слушаю…"
+                    VoiceSession.State.RECOGNIZING -> "Распознаю…"
+                }
+            }
+            override fun onVoiceLevel(level: Float) {}
+            override fun onVoiceText(chunk: Int, text: String, replace: Boolean) {
+                val p = session.lastPhrase
+                val ru = Locale("ru")
+                val line = if (p != null) {
+                    val x = p.seconds * 1000 / maxOf(1L, p.ms)
+                    "«$text» — ${String.format(ru, "%.1f", p.seconds)} с речи за ${String.format(ru, "%.2f", p.ms / 1000.0)} с " +
+                        "(в ${String.format(ru, "%.0f", x)} раз быстрее речи)" +
+                        (if (!wasLoaded) "; модель загрузилась за ${String.format(ru, "%.1f", VoiceEngine.lastLoadMs / 1000.0)} с" else "")
+                } else "«$text»"
+                heard = true
+                voiceLines += "${timeNow()} $line"
+                voiceResult.text = line
+                addLog("Голос: $line")
+                session.stop() // одна фраза — проверка закончена
+            }
+            override fun onVoiceError(message: String) { voiceResult.text = message; addLog("Голос: $message") }
+            override fun onVoiceStopped(silence: Boolean) {
+                voiceSession = null
+                if (!heard && !voiceResult.text.startsWith("Модель")) voiceResult.text = "Речь не услышана — скажите погромче"
+                updateVoiceState()
+            }
+        })
+        voiceSession = session
+        session.start()
+        updateVoiceState()
+    }
+
+    @Deprecated("Activity.onRequestPermissionsResult")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_MIC && grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED) voiceTest()
+        else if (requestCode == REQ_MIC) toast("Без доступа к микрофону проверить голос нельзя")
+    }
+
     private fun buildReport(): String {
         val sb = StringBuilder()
         sb.append("ViaDesk ").append(BuildConfig.VERSION_NAME).append(" — отчёт проверки (этап 1)\n")
@@ -460,6 +535,11 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
         sb.append(canvasView.stats.report()).append("\n\n")
         sb.append("== Распознавания (").append(attempts.size).append(") ==\n")
         for (a in attempts.takeLast(40)) sb.append(a).append('\n')
+        sb.append('\n')
+        sb.append("== Голос ==\n")
+        sb.append("Модель: ").append(if (VoiceModel.ready(this)) "скачана (${VoiceModel.TAG})" else "не скачана")
+            .append(", загрузка в память: ").append(VoiceEngine.lastLoadMs).append(" мс, потоков: ").append(VoiceEngine.threads()).append('\n')
+        for (l in voiceLines.takeLast(20)) sb.append(l).append('\n')
         sb.append('\n')
         previousCrash?.let { sb.append("== Ошибка прошлого запуска ==\n").append(it).append("\n\n") }
         sb.append("== Журнал ==\n")
@@ -688,6 +768,35 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
         speedCard.addView(buttonRow(speedButton))
         speedCard.addView(speedState)
 
+        // 7. Голос (0.32)
+        val voiceCard = card(panel, "7. Голосовой ввод")
+        voiceCard.addView(
+            label(
+                "Речь распознаётся на планшете моделью GigaAM (Сбер, ${VoiceModel.totalMb} МБ, скачивается один раз). " +
+                    "«Проверить» — скажите фразу и замолчите: покажет текст и сколько времени ушло. Результат попадёт в отчёт.",
+                12f, color = MUTED,
+            ),
+        )
+        voiceState = label("", 12f).apply { tag = "diag_voice_state" }
+        voiceResult = label("", 13f).apply { tag = "diag_voice_result" }
+        voiceTestButton = smallButton("Проверить: скажите фразу") { voiceTest() }.apply { tag = "diag_voice_test" }
+        voiceCard.addView(voiceState)
+        voiceCard.addView(
+            buttonRow(
+                voiceTestButton,
+                smallButton("Удалить модель") {
+                    if (voiceSession != null) return@smallButton
+                    AlertDialog.Builder(this)
+                        .setMessage("Удалить модель распознавания речи (${VoiceModel.totalMb} МБ)? Её можно будет скачать снова.")
+                        .setPositiveButton("Удалить") { _, _ -> VoiceModel.delete(this); updateVoiceState() }
+                        .setNegativeButton("Отмена", null)
+                        .show()
+                }.apply { tag = "diag_voice_delete" },
+            ),
+        )
+        voiceCard.addView(voiceResult)
+        updateVoiceState()
+
         // Поле для письма
         canvasColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -803,6 +912,7 @@ class DiagnosticsActivity : Activity(), InkCanvasView.Listener {
 
     private companion object {
         const val TAG = "ViaDesk"
+        const val REQ_MIC = 51
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
         val INK = Color.rgb(26, 32, 56)
