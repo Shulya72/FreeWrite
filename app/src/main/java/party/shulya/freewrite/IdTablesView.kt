@@ -91,6 +91,20 @@ class TableDraw {
     private val rect = RectF()
 
     companion object {
+        /**
+         * Вторая кнопка внизу таблицы и заголовок формы (0.32.5): по главному столбцу — «Следующая захватка» (есть захватка; у лестниц
+         * это этаж), иначе «Следующий участок» (сети: ДК1–ДК2 → ДК2–ДК3); у переименованного — «Ещё: Месяц». Нет ни захватки, ни участка
+         * (КПП) — null: только «+ строка».
+         */
+        fun nextTitle(t: BoardTable): String? {
+            val vis = t.visibleCols()
+            vis.firstOrNull { it.k == TableCol.ZAH }?.let { return if (it.name.isEmpty()) "Следующая захватка" else "Ещё: ${it.name}" }
+            vis.firstOrNull { it.k == TableCol.UCH }?.let { return if (it.name.isEmpty()) "Следующий участок" else "Ещё: ${it.name}" }
+            return null
+        }
+
+        fun nextLabel(t: BoardTable): String? = nextTitle(t)?.let { "+ " + it.replaceFirstChar { c -> c.lowercaseChar() } }
+
         const val TITLE_H = 40f
         const val HEAD_H = 26f
         const val ROW_H = 30f
@@ -423,7 +437,7 @@ class TableDraw {
             return TableHit(TableHit.TITLE, null, null)
         }
         if (u >= l.planSplit) return TableHit(TableHit.PLAN_ADD, null, null)
-        return TableHit(if (u < l.addSplit) TableHit.ADD else TableHit.ADD_NEXT, null, col)
+        return TableHit(if (u < l.addSplit || nextLabel(t) == null) TableHit.ADD else TableHit.ADD_NEXT, null, col)
     }
 
     /** Строка rec на доске (null — строки в таблице не видно). */
@@ -610,7 +624,8 @@ class TableDraw {
         text.color = Ui.ACCENT
         val fy = y0 + (l.volTop + l.volH) * k + FOOT_H / 2f * k + text.textSize * 0.36f
         canvas.drawText("+ строка", x0 + PAD * k, fy, text)
-        canvas.drawText("+ следующая захватка", x0 + (l.addSplit + PAD) * k, fy, text)
+        // Место под вторую кнопку — как раньше (ширина таблицы не меняется), надпись — по главному столбцу (0.32.5).
+        nextLabel(t)?.let { canvas.drawText(fit(it, (minOf(l.planSplit, l.w) - l.addSplit - PAD * 2) * k), x0 + (l.addSplit + PAD) * k, fy, text) }
         if (l.planSplit < l.w) canvas.drawText("+ план", x0 + (l.planSplit + PAD) * k, fy, text)
         text.isFakeBoldText = false
         l.plan?.let { drawPlan(canvas, t, l, it, x0, y0, w, k) }

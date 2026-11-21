@@ -53,6 +53,12 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
     var gc = 0
     var gr = 0
 
+    /**
+     * Порядок строк (0.32.5, один для всех — хранится в таблице, JSON `srt`): ключ столбца («uch», «zah», «con», «ns», «na», «work»,
+     * «date», свой «c…»), пусто — как добавляли. Меняет только показ: [BoardRec.o] не трогается.
+     */
+    var sort = ""
+
     /** Раздел (0.26.3): номер рамки, в которой таблица стоит (рамка растёт вместе с таблицами). Пусто — по положению. */
     var sec = ""
 
@@ -439,6 +445,7 @@ object IdTables {
         TablePlan.sheetsJson(sb, t)
         if (t.locked) sb.append(",\"lk\":1")
         if (t.dock.isNotEmpty()) sb.append(",\"dk\":").append(JSONObject.quote(t.dock))
+        if (t.sort.isNotEmpty()) sb.append(",\"srt\":").append(JSONObject.quote(t.sort))
         if (t.block.isNotEmpty()) sb.append(",\"gb\":").append(JSONObject.quote(t.block)).append(",\"gc\":").append(t.gc).append(",\"gr\":").append(t.gr)
         if (t.sec.isNotEmpty()) sb.append(",\"sec\":").append(JSONObject.quote(t.sec))
         sb.append('}')
@@ -499,6 +506,7 @@ object IdTables {
         t.locked = j.optInt("lk") == 1
         t.dock = j.optString("dk")
         t.block = j.optString("gb")
+        t.sort = j.optString("srt")
         if (t.block.isNotEmpty()) { t.gc = j.optInt("gc"); t.gr = j.optInt("gr") }
         t.sec = j.optString("sec")
         return t
@@ -560,7 +568,59 @@ object IdTables {
     fun tableOf(b: Board, r: BoardRec): BoardTable? = b.tables.firstOrNull { it.id == r.t }
 
     /** Все строки таблицы по порядку (без отбора). */
-    fun allRows(b: Board, t: BoardTable): List<BoardRec> = b.recs.filter { it.t == t.id }.sortedWith(compareBy<BoardRec>({ it.o }, { it.id }))
+    fun allRows(b: Board, t: BoardTable): List<BoardRec> {
+        val list = b.recs.filter { it.t == t.id }
+        return list.sortedWith(rowOrder(t) ?: ADDED)
+    }
+
+    /** Строки в порядке добавления. */
+    private val ADDED = compareBy<BoardRec>({ it.o }, { it.id })
+
+    /** Столбцы, по которым можно упорядочить строки таблицы (0.32.5): видимые «адресные», номера, вид работ, дата и свои. */
+    fun sortCols(t: BoardTable): List<TableCol> = t.visibleCols().filter {
+        it.k in SORTABLE || (it.custom && it.type != TableCol.MARK)
+    }
+
+    private val SORTABLE = setOf(TableCol.UCH, TableCol.ZAH, TableCol.CON, TableCol.NSCH, TableCol.AOSR, TableCol.WORK, TableCol.DATE)
+
+    /**
+     * Порядок строк таблицы ([BoardTable.sort]); null — как добавляли. По столбцу «по-человечески» (ДК1, ДК1–ДК2, ДК2…; пустые — в
+     * конце), дальше по участку, захватке, типу конструкции, потом виды работ — в порядке из вида таблицы (разработка, основание,
+     * монтаж…), потом как добавляли.
+     */
+    fun rowOrder(t: BoardTable): Comparator<BoardRec>? {
+        val key = t.sort
+        if (key.isEmpty()) return null
+        val col = t.allCols().firstOrNull { it.k == key }
+        val num = col?.type == TableCol.NUM || col?.isVol == true
+        val works = t.kindDef()?.works.orEmpty().map { it.lowercase() }
+        fun workIdx(w: String) = works.indexOf(w.lowercase()).let { if (it < 0) Int.MAX_VALUE else it }
+        val ties = listOf(TableCol.UCH, TableCol.ZAH, TableCol.CON).filter { it != key }
+        fun cmpVal(a: String, b: String, number: Boolean): Int {
+            val x = a.trim(); val y = b.trim()
+            if (x.isEmpty() != y.isEmpty()) return if (x.isEmpty()) 1 else -1
+            if (number) {
+                val p = x.replace(',', '.').toDoubleOrNull(); val q = y.replace(',', '.').toDoubleOrNull()
+                if (p != null && q != null) return p.compareTo(q)
+            }
+            return naturalCompare(x, y)
+        }
+        return Comparator { p, q ->
+            var c = cmpVal(p.get(key), q.get(key), num)
+            if (c != 0) return@Comparator c
+            for (k in ties) { c = cmpVal(p.get(k), q.get(k), false); if (c != 0) return@Comparator c }
+            if (key != TableCol.WORK) {
+                c = workIdx(p.work).compareTo(workIdx(q.work)); if (c != 0) return@Comparator c
+                c = naturalCompare(p.work, q.work); if (c != 0) return@Comparator c
+            }
+            c = p.o.compareTo(q.o)
+            if (c != 0) c else p.id.compareTo(q.id)
+        }
+    }
+
+    /** Название порядка для подписи: «как добавляли», «по участку»… */
+    fun sortName(t: BoardTable): String =
+        if (t.sort.isEmpty()) "как добавляли" else "по столбцу «" + (t.allCols().firstOrNull { it.k == t.sort }?.title() ?: t.sort) + "»"
 
     /** Строки таблицы, видимые с учётом отбора. */
     fun rowsOf(b: Board, t: BoardTable): List<BoardRec> {
@@ -681,6 +741,19 @@ object IdTables {
     }
 
     /** Следующая захватка: первое число +1 («4.1» → «5», «Захватка№2 (6-7/А-Е)» → «Захватка№3 (6-7/А-Е)»). */
+    /**
+     * Следующий номер (0.32.5): участок между колодцами «ДК1–ДК2» → «ДК2–ДК3» (тире, дефис; нули впереди сохраняются), иначе — как
+     * [nextZah]: первое число +1 («7» → «8», «LM1» → «LM2», «3 этаж» → «4 этаж»).
+     */
+    fun nextAddr(s: String): String {
+        val m = RANGE.matchEntire(s.trim()) ?: return nextZah(s)
+        val (p1, _, sep, p2, n2, rest) = m.destructured
+        val v = n2.toLongOrNull() ?: return nextZah(s)
+        return p1 + n2 + sep + p2 + (v + 1).toString().padStart(n2.length, '0') + rest
+    }
+
+    private val RANGE = Regex("^(\\D*?)(\\d+)(\\s*[-–—]\\s*)(\\D*?)(\\d+)(\\D*)$")
+
     fun nextZah(z: String): String {
         val m = Regex("\\d+").find(z) ?: return z
         val n = m.value.toLongOrNull() ?: return z

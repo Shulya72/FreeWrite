@@ -198,10 +198,16 @@ object Vedoms {
         val recs = HashMap<String, BoardRec>()
         for (r in b.recs) if (r.id in want) recs.putIfAbsent(r.id, r)
         val titles = HashMap<String, String>()
+        // Таблица со своим порядком строк (0.32.5) — схемы в ведомости в том же порядке, что и в таблице.
+        val ranks = HashMap<String, Map<String, Double>>()
+        fun rowPos(t: BoardTable, r: BoardRec): Double {
+            if (t.sort.isEmpty()) return r.o
+            return ranks.getOrPut(t.id) { IdTables.allRows(b, t).withIndex().associate { it.value.id to it.index.toDouble() } }[r.id] ?: r.o
+        }
         val keys = list.map { i ->
             val r = recs[i.r]
             val t = r?.let { tabs[it.t] }
-            if (r != null && t != null) ItemKey(i, titles.getOrPut(t.id) { IdTables.fullTitle(b, t).trim() }, true, t.id, r.o, r.uch, r.zah)
+            if (r != null && t != null) ItemKey(i, titles.getOrPut(t.id) { IdTables.fullTitle(b, t).trim() }, true, t.id, rowPos(t, r), r.uch, r.zah)
             else ItemKey(i, i.lt.trim(), false, "", 0.0, i.lu, i.lz)
         }
         return keys.sortedWith(ITEM_ORDER).map { it.i }

@@ -1064,39 +1064,69 @@ class TableUi(private val a: BoardActivity) {
      */
     fun addForm(t: BoardTable, next: Boolean, after: BoardRec? = null) {
         val rows = IdTables.allRows(b, t)
-        val last = after ?: rows.lastOrNull()
+        // Прошлая строка — последняя добавленная (а не последняя по порядку строк, 0.32.5).
+        val last = after ?: rows.maxWithOrNull(compareBy<BoardRec>({ it.o }, { it.id }))
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20f), dp(4f), dp(20f), 0) }
         fun label(s: String) = Ui.text(a, s, 13f, Ui.MUTED, bold = true).apply { setPadding(0, dp(10f), 0, dp(2f)) }
-        val uchOn = t.visibleCols().any { it.k == TableCol.UCH } || rows.any { it.uch.isNotBlank() }
-        val uch = EditText(a).apply { setText(last?.uch.orEmpty()); setSelection(text.length); isSingleLine = true; hint = "например: LM1"; tag = "add_uch" }
+        // В форме — только отмеченные в таблице столбцы (0.32.5, Владимир: «таблица собирается из параметров — нет захватки,
+        // значит, и не спрашивать»). Обязательных полей нет: у КПП нет ни участка, ни захватки.
+        val vis = t.visibleCols().map { it.k }.toSet()
+        val uchOn = TableCol.UCH in vis
+        val zahOn = TableCol.ZAH in vis
+        val conOn = TableCol.CON in vis
+        // «Следующая»: растёт захватка (этаж у лестниц); нет захватки — участок (ДК1–ДК2 → ДК2–ДК3).
+        val uch = EditText(a).apply {
+            setText(if (next && !zahOn && last != null && last.uch.isNotBlank()) IdTables.nextAddr(last.uch) else last?.uch.orEmpty())
+            setSelection(text.length); isSingleLine = true; hint = "например: LM1 или ДК1–ДК2"; tag = "add_uch"
+        }
         val zah = EditText(a).apply {
-            setText(if (next && last != null) IdTables.nextZah(last.zah) else ""); setSelection(text.length); isSingleLine = true
+            setText(if (next && last != null) IdTables.nextAddr(last.zah) else ""); setSelection(text.length); isSingleLine = true
             hint = "например: 7 или Лоток №2"; tag = "add_zah"
         }
-        val con = EditText(a).apply { setText(last?.con.orEmpty()); isSingleLine = true; hint = "например: Стены, Марш, Площадка"; tag = "add_con" }
+        val con = EditText(a).apply { setText(last?.con.orEmpty()); isSingleLine = true; hint = "например: LM1, МП2"; tag = "add_con" }
         val who = EditText(a).apply { setText(last?.who.orEmpty()); isSingleLine = true; hint = "подрядчик"; tag = "add_who" }
         val other = EditText(a).apply { isSingleLine = true; hint = "другой вид работ"; tag = "add_work_other" }
+        // Виды работ — ничего не отмечено (0.32.5, Владимир: «колодец сам прилипает к участку»); «Как в прошлой строке» — одним касанием.
         val works = LinkedHashSet<String>()
-        if (last != null) rows.filter { it.zkey() == last.zkey() && it.work.isNotEmpty() }.forEach { works += it.work }
-        if (works.isEmpty()) { works.addAll(t.kindDef()?.works ?: listOf("Опалубка", "Бетон")) }
+        val lastWorks = LinkedHashSet<String>()
+        if (last != null) {
+            val addr = last.uch.isNotBlank() || last.zah.isNotBlank() || last.con.isNotBlank()
+            if (addr) rows.filter { it.uch == last.uch && it.zah == last.zah && it.con == last.con && it.work.isNotEmpty() }.forEach { lastWorks += it.work }
+            else if (last.work.isNotEmpty()) lastWorks += last.work
+        }
         var date = ""
         if (uchOn) { box.addView(label(t.colName(TableCol.UCH))); box.addView(uch) }
-        box.addView(label(t.colName(TableCol.ZAH))); box.addView(zah)
-        // «Тип конструкции» у видов скрыт (0.24) — в форме тоже не спрашиваем, пока столбец не показан.
-        if (t.visibleCols().any { it.k == TableCol.CON } || rows.any { it.con.isNotBlank() }) { box.addView(label(t.colName(TableCol.CON))); box.addView(con) }
-        box.addView(label(t.colName(TableCol.WORK) + " — можно несколько, по строке на каждый"))
+        if (zahOn) { box.addView(label(t.colName(TableCol.ZAH))); box.addView(zah) }
+        if (conOn) { box.addView(label(t.colName(TableCol.CON))); box.addView(con) }
+        box.addView(label(t.colName(TableCol.WORK) + " — отметьте нужные, по строке на каждый"))
         val flow = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(6f) }
         // Свой вид (0.30.1): виды работ — свои (сети: разработка, песчаное основание, монтаж трубопровода…), у встроенных — общий список.
         val kindWorks = t.kindDef()?.works.orEmpty()
         val allWorks = (if (TableKinds.isUser(t.kind) && kindWorks.isNotEmpty()) kindWorks + IdTables.suggestions(b, TableCol.WORK)
             else IdTables.WORKS + kindWorks + IdTables.suggestions(b, TableCol.WORK)).distinct()
         fun paint(p: TextView, on: Boolean) { p.background = Ui.rounded(a, if (on) Ui.ACCENT else Ui.DESK, null, 999f); p.setTextColor(if (on) Color.WHITE else Ui.INK) }
+        val pills = ArrayList<Pair<String, TextView>>()
         for ((i, w) in allWorks.withIndex()) {
             val p = Ui.pill(a, w, Ui.INK, Ui.DESK).apply { tag = "add_work_$i" }
             paint(p, w in works)
             p.setOnClickListener { if (!works.remove(w)) works += w; paint(p, w in works) }
             flow.addView(p)
+            pills += w to p
         }
+        // Быстрый выбор: «Как в прошлой строке» (монолит — опалубка и бетон одним касанием) и «Все работы таблицы» (первая строка).
+        val quick = Ui.FlowRow(a).apply { hGap = dp(6f); vGap = dp(6f); setPadding(0, 0, 0, dp(8f)) }
+        fun quickChip(text: String, tag: String, set: Collection<String>) = quick.addView(Ui.chip(a, text, Ui.ACCENT, Ui.ACCENT_SOFT).apply {
+            this.tag = tag
+            setOnClickListener {
+                works.clear(); works.addAll(set.filter { it in allWorks })
+                for ((w, p) in pills) paint(p, w in works)
+            }
+        })
+        if (lastWorks.any { it in allWorks }) quickChip("Как в прошлой строке: " + lastWorks.joinToString(", "), "add_works_last", lastWorks)
+        // У таблицы без вида («Пустая таблица») — прежний набор по умолчанию: опалубка и бетон.
+        val tableWorks = t.kindDef()?.works ?: listOf("Опалубка", "Бетон")
+        if (tableWorks.isNotEmpty() && tableWorks.toSet() != lastWorks) quickChip("Все работы таблицы", "add_works_kind", tableWorks)
+        if (quick.childCount > 0) box.addView(quick)
         box.addView(flow)
         box.addView(other)
         box.addView(label(t.colName(TableCol.DATE)))
@@ -1114,21 +1144,24 @@ class TableUi(private val a: BoardActivity) {
             for (s in whoSugg) addView(Ui.chip(a, s, Ui.INK, Ui.DESK).apply { setOnClickListener { who.setText(s) } })
         })
         fun create(): Int {
-            val z = zah.text.toString().trim()
+            val z = if (zahOn) zah.text.toString().trim() else ""
             val u = if (uchOn) uch.text.toString().trim() else ""
-            if (z.isEmpty() && u.isEmpty()) { a.hint("Впишите захватку"); return -1 }
+            val cn = if (conOn) con.text.toString().trim() else ""
             val list = ArrayList<String>(works.filter { it in allWorks })
             other.text.toString().trim().takeIf { it.isNotEmpty() }?.let { if (it !in list) list += it }
-            if (list.isEmpty()) list += ""
+            if (list.isEmpty()) {
+                if (z.isEmpty() && u.isEmpty() && cn.isEmpty()) { a.hint("Отметьте вид работ"); return -1 }
+                list += ""
+            }
             a.pushUndo()
             var o = after?.let { IdTables.orderAfter(b, it) } ?: IdTables.endOrder(b, t)
             val step = after?.let { (IdTables.orderAfter(b, it) - it.o) / (list.size + 1) }
             if (after != null && step != null) o = after.o + step
             var n = 0
             for (w in list) {
-                if (b.recs.any { it.t == t.id && it.key() == IdTables.key(u, z, con.text.toString(), w) }) continue
+                if (b.recs.any { it.t == t.id && it.key() == IdTables.key(u, z, cn, w) }) continue
                 b.recs += BoardRec(t.id, o).apply {
-                    this.uch = u; this.zah = z; this.con = con.text.toString().trim(); this.work = w; this.date = date; this.who = who.text.toString().trim()
+                    this.uch = u; this.zah = z; this.con = cn; this.work = w; this.date = date; this.who = who.text.toString().trim()
                 }
                 o += step ?: 1.0
                 n++
@@ -1140,7 +1173,7 @@ class TableUi(private val a: BoardActivity) {
             return n
         }
         val d = AlertDialog.Builder(a)
-            .setTitle((if (next) "Следующая захватка" else "Новая строка") + " · " + IdTables.fullTitle(b, t).ifEmpty { "таблица" })
+            .setTitle((if (next) TableDraw.nextTitle(t) ?: "Новая строка" else "Новая строка") + " · " + IdTables.fullTitle(b, t).ifEmpty { "таблица" })
             .setView(ScrollView(a).apply { addView(box) })
             .setPositiveButton("Добавить") { _, _ -> create() }
             .setNeutralButton("Добавить и следующую", null)
@@ -1151,6 +1184,39 @@ class TableUi(private val a: BoardActivity) {
                 if (create() >= 0) { d.dismiss(); addForm(t, next = true) }
             }
         }
+        d.show()
+    }
+
+    /**
+     * Порядок строк таблицы (0.32.5): как добавляли или по столбцу — участок (сети по трассе: ДК1, ДК1–ДК2, ДК2…), захватка, тип
+     * конструкции, № схемы… Один для всех (хранится в таблице), сами строки не меняются — можно переключать туда-обратно.
+     */
+    var sortDlg: AlertDialog? = null
+
+    fun sortDialog(t: BoardTable) {
+        val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16f), dp(4f), dp(16f), 0) }
+        box.addView(Ui.text(a, "Один для всех, кто открывает доску, и для выгрузки в Excel. Сами строки не меняются — можно вернуть «как добавляли».",
+            13f, Ui.MUTED).apply { setPadding(dp(4f), 0, dp(4f), dp(8f)) })
+        val opts = ArrayList<Pair<String, String>>()
+        opts += "" to "Как добавляли"
+        for (c in IdTables.sortCols(t)) opts += c.k to "По столбцу «${c.title()}»"
+        if (t.sort.isNotEmpty() && opts.none { it.first == t.sort }) opts += t.sort to IdTables.sortName(t).replaceFirstChar { it.uppercaseChar() }
+        lateinit var d: AlertDialog
+        for ((key, name) in opts) {
+            val on = key == t.sort
+            box.addView(Ui.text(a, (if (on) "●  " else "○  ") + name, 16f, if (on) Ui.ACCENT else Ui.INK, bold = on).apply {
+                setPadding(dp(8f), dp(12f), dp(8f), dp(12f)); tag = if (key.isEmpty()) "sort_none" else "sort_$key"
+                setOnClickListener {
+                    d.dismiss()
+                    if (key == t.sort) return@setOnClickListener
+                    a.pushUndo(); t.sort = key; t.lay = null; a.changed(); a.buildSelectionBar()
+                    a.hint("Порядок строк: " + IdTables.sortName(t), 1800)
+                }
+            }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
+        d = AlertDialog.Builder(a).setTitle("Порядок строк · " + IdTables.fullTitle(b, t).ifEmpty { "таблица" })
+            .setView(ScrollView(a).apply { addView(box) }).setNegativeButton("Отмена", null).create()
+        sortDlg = d
         d.show()
     }
 
@@ -1483,6 +1549,7 @@ class TableUi(private val a: BoardActivity) {
             if (t.visibleCols().any { it.isVol }) out += pill("Проект", "sel_proj") { projectDialog(t, null) }
             out += pill("+ строка", "sel_add") { addForm(t, next = true) }
             out += pill("Столбцы", "sel_cols") { columnsDialog(t) }
+            out += pill(if (t.sort.isEmpty()) "Порядок" else "Порядок ✓", "sel_sort") { sortDialog(t) }
             out += pill(if (TableKinds.isUser(t.kind)) "Вид таблицы ✎" else "Сохранить как свою", "sel_tsave") { saveAsTemplate(t) }
             out += pill(if (t.sheets.isEmpty()) "+ план" else "План", "sel_plan") { if (t.sheets.isEmpty()) a.planUi.addSheet(t) else a.planUi.sheetMenu(t) }
             // Блок таблиц (0.26.3, 0.32.3): вынуть таблицу из блока — дальше двигается сама по себе.
