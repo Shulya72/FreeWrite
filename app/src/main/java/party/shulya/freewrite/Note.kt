@@ -303,7 +303,9 @@ class Note(
     companion object {
         fun create(title: String): Note {
             val now = System.currentTimeMillis()
+            // Новая заметка — чистый лист (0.31: разлиновки больше нет). Файлы без поля «paper» — старые, в линейку.
             return Note(UUID.randomUUID().toString(), title, now, now, mutableListOf(Block.Para("")), mutableListOf(), 0)
+                .apply { paper = NotePaper.NONE }
         }
 
         fun fromJson(o: JSONObject): Note {
