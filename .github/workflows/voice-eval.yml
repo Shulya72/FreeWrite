@@ -27,6 +27,7 @@ jobs:
           base=https://github.com/Shulya72/FreeWrite/releases/download/voice-model-1
           curl -fsSL --retry 3 -o model.onnx $base/gigaam-v3-e2e-ctc-int8.onnx
           curl -fsSL --retry 3 -o tokens.txt $base/tokens.txt
+          curl -fsSL --retry 3 -o silero_vad.onnx https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx
           echo "6ac381a8e293583ea70885329f4f2dd98bc12e20c77e04635f09a5e14fec6733  model.onnx" | sha256sum -c
           # Образцы речи Сбера (только для проверки; у сервера просрочен сертификат — сверяем отпечатки).
           CDN=https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM
@@ -37,4 +38,4 @@ jobs:
           sudo apt-get install -y -q ffmpeg >/dev/null
           for f in example long_example; do ffmpeg -loglevel error -y -i $f.wav -ac 1 -ar 16000 ${f}16.wav; done
       - name: Eval
-        run: python tools/voice/eval_agc.py model.onnx tokens.txt example16.wav long_example16.wav
+        run: python tools/voice/eval_agc.py model.onnx tokens.txt silero_vad.onnx example16.wav long_example16.wav

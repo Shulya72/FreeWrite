@@ -110,11 +110,24 @@ def room(y, gain_db, noise_db, rt60, rng):
     return (z + pink).astype(np.float32)
 
 
+def vad_probs(sess, y):
+    st = np.zeros((2, 1, 128), np.float32)
+    ctx = np.zeros((1, 64), np.float32)
+    out = []
+    for i in range(0, len(y) - F + 1, F):
+        inp = np.concatenate([ctx, y[i:i + F][None]], 1).astype(np.float32)
+        o, st = sess.run(None, {"input": inp, "state": st, "sr": np.array(SR, np.int64)})
+        ctx = inp[:, -64:]
+        out.append(float(o[0, 0]))
+    return np.array(out)
+
+
 def main():
-    model, tokens = sys.argv[1], sys.argv[2]
+    model, tokens, vad_path = sys.argv[1], sys.argv[2], sys.argv[3]
     rec = recognizer(model, tokens)
+    vad = session(vad_path)
     pieces = []
-    for p in sys.argv[3:]:
+    for p in sys.argv[4:]:
         x = load(p)
         step = 9 * SR
         for i in range(0, len(x) - 4 * SR, step):
@@ -138,7 +151,28 @@ def main():
         ("5 м", -32, -58, 0.6),
         ("5 м, шумно", -32, -50, 0.6),
         ("далеко", -40, -60, 0.6),
+        ("очень далеко", -48, -62, 0.8),
     ]
+    # Детектор речи (Silero): какая доля кадров речи (по чистому звуку) находится в «далёком» голосе при порогах 0,5 / 0,35 / 0,25
+    truth = [vad_probs(vad, p) > 0.5 for p in pieces]
+    print("Детектор речи — найдено кадров речи (порог 0,5 / 0,35 / 0,25), как есть → с усилением:")
+    for name, g, nz, rt in conds:
+        rng2 = np.random.default_rng(11)
+        ys = [room(p, g, nz, rt, rng2) for p in pieces]
+        res = []
+        for f in (lambda y: y, lambda y: auto_gain(y)):
+            hits = {0.5: 0, 0.35: 0, 0.25: 0}
+            false = 0
+            total = 0
+            for t, y in zip(truth, ys):
+                pr = vad_probs(vad, f(y))
+                m = min(len(pr), len(t))
+                for th in hits:
+                    hits[th] += int(((pr[:m] > th) & t[:m]).sum())
+                false += int(((pr[:m] > 0.35) & ~t[:m]).sum())
+                total += int(t[:m].sum())
+            res.append(" / ".join(f"{hits[th] / max(1, total):.2f}" for th in (0.5, 0.35, 0.25)) + f" (лишних {false})")
+        print(f"  {name:14s} {res[0]}  →  {res[1]}", flush=True)
     table = {}
     for name, g, nz, rt in conds:
         ys = [room(p, g, nz, rt, rng) for p in pieces]
