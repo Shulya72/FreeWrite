@@ -28,7 +28,7 @@ jobs:
     env:
       MODEL_TAG: voice-model-1
       # Код GigaAM, по которому готовится модель (чтобы результат не менялся сам).
-      GIGAAM_REF: main
+      GIGAAM_REF: 7447938d791c4f3e643386ee22c33777004293a5
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -48,11 +48,20 @@ jobs:
           pip install -q -e ./gigaam-src
           pip list 2>/dev/null | grep -i -E "^(torch|torchaudio|onnx|onnxruntime|numpy|sentencepiece) "
 
-      - name: Samples
+      - name: Model files
+        # У сервера Сбера (cdn.chatwm.opensmodel.sberdevices.ru) 21.11.2026 просрочен сертификат, поэтому файлы
+        # скачиваются без проверки сертификата, а модель сверяется с контрольной суммой из кода GigaAM на GitHub
+        # (load_model сам проверяет MD5 и останавливается, если файл другой).
         run: |
-          curl -fsSL --retry 3 -o example.wav https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/example.wav
-          curl -fsSL --retry 3 -o long_example.wav https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM/long_example.wav
-          ls -l *.wav
+          CDN=https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM
+          mkdir -p ~/.cache/gigaam
+          for f in v3_e2e_ctc.ckpt v3_e2e_ctc_tokenizer.model example.wav long_example.wav; do
+            curl -fsSL --retry 3 --insecure -o "$f.part" "$CDN/$f" && mv "$f.part" "$f"
+          done
+          mv v3_e2e_ctc.ckpt v3_e2e_ctc_tokenizer.model ~/.cache/gigaam/
+          sha256sum ~/.cache/gigaam/* *.wav
+          grep -o '"v3_e2e_ctc": "[0-9a-f]*"' gigaam-src/gigaam/__init__.py
+          md5sum ~/.cache/gigaam/v3_e2e_ctc.ckpt
 
       - name: Export
         run: python tools/voice/export_gigaam.py --out out --audio example.wav long_example.wav
