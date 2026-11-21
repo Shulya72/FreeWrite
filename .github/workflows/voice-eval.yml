@@ -1,0 +1,40 @@
+name: Voice eval
+
+# Проверка распознавания речи на «далёком» голосе (усиление, эхо, шум) — модель из выпуска voice-model-1, образцы речи
+# Сбера. Ничего не выкладывает, только печатает таблицу в журнал.
+on:
+  push:
+    paths:
+      - 'tools/voice/eval_agc.py'
+      - '.github/workflows/voice-eval.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Files
+        run: |
+          pip install -q onnxruntime==1.23.2 numpy soundfile
+          base=https://github.com/Shulya72/FreeWrite/releases/download/voice-model-1
+          curl -fsSL --retry 3 -o model.onnx $base/gigaam-v3-e2e-ctc-int8.onnx
+          curl -fsSL --retry 3 -o tokens.txt $base/tokens.txt
+          echo "6ac381a8e293583ea70885329f4f2dd98bc12e20c77e04635f09a5e14fec6733  model.onnx" | sha256sum -c
+          # Образцы речи Сбера (только для проверки; у сервера просрочен сертификат — сверяем отпечатки).
+          CDN=https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM
+          curl -fsSL --retry 3 --insecure -o example.wav $CDN/example.wav
+          curl -fsSL --retry 3 --insecure -o long_example.wav $CDN/long_example.wav
+          echo "d8aaaa18a5098d7c6de0595ae7ac1e64cacd0d4022af3595213bdaf23be77e69  example.wav" | sha256sum -c
+          echo "1868ece0195dfa9fc2394be24865d1133c8452a8292a397db45ba8c3ed9e01e3  long_example.wav" | sha256sum -c
+          sudo apt-get install -y -q ffmpeg >/dev/null
+          for f in example long_example; do ffmpeg -loglevel error -y -i $f.wav -ac 1 -ar 16000 ${f}16.wav; done
+      - name: Eval
+        run: python tools/voice/eval_agc.py model.onnx tokens.txt example16.wav long_example16.wav
