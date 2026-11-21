@@ -1906,11 +1906,15 @@ class BoardActivity : Activity(), BoardView.Host {
 
     override fun onDragStart() { pushUndo() }
     override fun onDragEnd() {
-        // Таблицу отпустили у правого края другой — приклеилась; оттащили — отклеилась (0.26.3).
+        // Таблицу (или блок) отпустили у стороны другой — приклеилась с этой стороны (0.26.3 — справа, 0.32.3 — со всех сторон).
         (view.selection.singleOrNull() as? BoardTable)?.takeIf { !it.locked }?.let { t ->
-            val was = t.dock
-            TableDock.afterMove(board, view.tableDraw, t, view.origScale(t), Ui.dpf(this, 40f) / board.camZ)
-            if (t.dock != was) hint(if (t.dock.isNotEmpty()) "Таблицы склеены: один масштаб, двигаются вместе" else "Таблица отклеена", 2200)
+            val side = TableDock.afterMove(board, view.tableDraw, t, view.origScale(t), Ui.dpf(this, 40f) / board.camZ)
+            if (side != null) {
+                changed()
+                val (cols, rows) = TableDock.size(board, t)
+                hint("Приклеена ${side.word} · блок: $cols в ширину × $rows в высоту. Один масштаб, блок двигается целиком", 3000)
+                return
+            }
         }
         changed()
     }

@@ -39,8 +39,19 @@ class BoardTable(var x: Float, var y: Float, var scale: Float, var title: String
     /** Закреплена булавкой (0.23.1): не двигается и не меняет размер — рисунки поверх плана остаются на месте. */
     var locked = false
 
-    /** Склейка (0.26.3): номер таблицы слева, к которой эта приклеена (вплотную справа, тот же верх и масштаб). */
+    /**
+     * Склейка 0.26.3: номер таблицы слева (JSON `dk`). С 0.32.3 только читается — при первой своей правке такая цепочка
+     * переходит в блок ([TableDock], справа от той таблицы).
+     */
     var dock = ""
+
+    /**
+     * Блок таблиц (0.32.3, [TableDock]): номер первой таблицы блока (у неё самой — свой номер), пусто — не в блоке. JSON `gb`.
+     * Клетка в блоке — столбец [gc] (секции: вправо +1, влево −1) и строка [gr] (этажи: вниз +1, вверх −1), JSON `gc`/`gr`.
+     */
+    var block = ""
+    var gc = 0
+    var gr = 0
 
     /** Раздел (0.26.3): номер рамки, в которой таблица стоит (рамка растёт вместе с таблицами). Пусто — по положению. */
     var sec = ""
@@ -428,6 +439,7 @@ object IdTables {
         TablePlan.sheetsJson(sb, t)
         if (t.locked) sb.append(",\"lk\":1")
         if (t.dock.isNotEmpty()) sb.append(",\"dk\":").append(JSONObject.quote(t.dock))
+        if (t.block.isNotEmpty()) sb.append(",\"gb\":").append(JSONObject.quote(t.block)).append(",\"gc\":").append(t.gc).append(",\"gr\":").append(t.gr)
         if (t.sec.isNotEmpty()) sb.append(",\"sec\":").append(JSONObject.quote(t.sec))
         sb.append('}')
         return sb.toString()
@@ -486,6 +498,8 @@ object IdTables {
         TablePlan.parseSheets(j, t)
         t.locked = j.optInt("lk") == 1
         t.dock = j.optString("dk")
+        t.block = j.optString("gb")
+        if (t.block.isNotEmpty()) { t.gc = j.optInt("gc"); t.gr = j.optInt("gr") }
         t.sec = j.optString("sec")
         return t
     }

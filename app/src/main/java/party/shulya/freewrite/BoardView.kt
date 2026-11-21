@@ -1053,8 +1053,8 @@ class BoardView(context: Context, private val host: Host) : View(context) {
             for (t in selection.filterIsInstance<BoardTable>()) {
                 if (t.locked) continue
                 for (o in planContents(t)) if (seen.add(o)) objs += o
-                // Приклеенные справа (0.26.3) едут и масштабируются вместе, со своими рисунками на плане.
-                for (f in TableDock.followers(b, t)) {
+                // Весь блок таблиц (0.32.3; до этого — приклеенные справа) едет и масштабируется вместе, со своими рисунками на плане.
+                for (f in TableDock.mates(b, t)) {
                     if (f.locked || !seen.add(f)) continue
                     objs += f
                     for (o in planContents(f)) if (seen.add(o)) objs += o
@@ -2753,16 +2753,32 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     }
 
     /** Рамка выделения и уголки, за которые меняют размер; при нескольких объектах — тонкие рамки каждого. */
-    /** Тянут таблицу у правого края другой — полоса «приклеится сюда» (0.26.3). */
+    /**
+     * Выделена таблица блока — пунктир вокруг всего блока (он двигается целиком). Тянут таблицу у стороны другой — полоса
+     * «приклеится сюда» с этой стороны (0.26.3 — справа; 0.32.3 — со всех сторон).
+     */
     private fun drawDockHint(canvas: Canvas, z: Float) {
-        if (mode != Mode.MOVE_SEL || !editStarted) return
         val t = selection.singleOrNull() as? BoardTable ?: return
-        val a = TableDock.candidate(b, tableDraw, t, Ui.dpf(context, 40f) / z) ?: return
-        tableDraw.bounds(b, a, rect2)
-        val x = rect2.right + TableDock.GAP / 2f * a.scale
+        if (TableDock.inBlock(t)) {
+            TableDock.blockBounds(b, tableDraw, t, rect2)
+            val pad = Ui.dpf(context, 10f) / z
+            dashPaint.color = Ui.ACCENT
+            dashPaint.strokeWidth = Ui.dpf(context, 1.5f) / z
+            dashPaint.pathEffect = DashPathEffect(floatArrayOf(Ui.dpf(context, 8f) / z, Ui.dpf(context, 5f) / z), 0f)
+            canvas.drawRect(rect2.left - pad, rect2.top - pad, rect2.right + pad, rect2.bottom + pad, dashPaint)
+        }
+        if (mode != Mode.MOVE_SEL || !editStarted) return
+        val s = TableDock.candidate(b, tableDraw, t, Ui.dpf(context, 40f) / z) ?: return
+        TableDock.cellRect(b, tableDraw, s.anchor, rect2)
+        val g = TableDock.GAP / 2f * TableDock.rootOf(b, s.anchor).scale
         linePaint.color = Ui.ACCENT; linePaint.alpha = 220
         linePaint.strokeWidth = Ui.dpf(context, 5f) / z
-        canvas.drawLine(x, rect2.top, x, rect2.bottom, linePaint)
+        when (s.side) {
+            TableDock.Side.RIGHT -> canvas.drawLine(rect2.right + g, rect2.top, rect2.right + g, rect2.bottom, linePaint)
+            TableDock.Side.LEFT -> canvas.drawLine(rect2.left - g, rect2.top, rect2.left - g, rect2.bottom, linePaint)
+            TableDock.Side.BELOW -> canvas.drawLine(rect2.left, rect2.bottom + g, rect2.right, rect2.bottom + g, linePaint)
+            TableDock.Side.ABOVE -> canvas.drawLine(rect2.left, rect2.top - g, rect2.right, rect2.top - g, linePaint)
+        }
         linePaint.alpha = 255
     }
 
