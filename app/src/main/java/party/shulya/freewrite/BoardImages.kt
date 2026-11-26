@@ -32,7 +32,7 @@ class BoardImages(context: Context, private val onReady: () -> Unit) {
 
     private val dir = File(context.filesDir, "note_images").apply { mkdirs() }
     private val main = Handler(Looper.getMainLooper())
-    private val exec = Executors.newFixedThreadPool(2)
+    private val exec = Executors.newFixedThreadPool(2) { r -> Thread(r, "board-images") }
     private val budget = min(Runtime.getRuntime().maxMemory() / 4, 160L shl 20).toInt()
     private val cache = object : LruCache<String, Bitmap>(budget) {
         override fun sizeOf(key: String, value: Bitmap) = value.allocationByteCount
@@ -164,6 +164,14 @@ class BoardImages(context: Context, private val onReady: () -> Unit) {
         exec.shutdownNow()
         cache.evictAll()
         details.evictAll()
+    }
+
+    /** Система просит память, доска не на экране (0.32.6): выгрузить картинки — понадобятся, загрузятся снова. Байт отпущено. */
+    fun trim(): Long {
+        val bytes = cache.size().toLong() + details.size().toLong()
+        cache.evictAll()
+        details.evictAll()
+        return bytes
     }
 
     companion object {

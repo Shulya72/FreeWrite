@@ -31,7 +31,7 @@ object Updater {
 
     class Release(val version: String, val apkUrl: String, val size: Long)
 
-    private val exec = Executors.newSingleThreadExecutor()
+    private val exec = Executors.newSingleThreadExecutor { Thread(it, "update") }
     private val main = Handler(Looper.getMainLooper())
     private val versionRe = Regex("""\d+(?:\.\d+)*""")
 

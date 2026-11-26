@@ -21,6 +21,8 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         fun canApply(): Boolean
         /** Сохранить доску с отметками правок — сразу. */
         fun saveBoard()
+        /** Отметить и сохранить свои правки, если они были (перед отправкой; 0.32.6 — иначе каждые 20 с доска переписывалась целиком). */
+        fun saveIfEdited() = saveBoard()
         /** Пришли правки коллег: сколько предметов изменилось и от кого (имя → сколько). */
         fun onRemoteApplied(changed: Int, authors: Map<String, Int>)
         fun onImagesArrived()
@@ -30,8 +32,8 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
     class State(val text: String, val error: Boolean = false, val busy: Boolean = false)
 
     private val main = Handler(Looper.getMainLooper())
-    private val net = Executors.newSingleThreadExecutor()
-    private val img = Executors.newSingleThreadExecutor()
+    private val net = Executors.newSingleThreadExecutor { Thread(it, "sync-net") }
+    private val img = Executors.newSingleThreadExecutor { Thread(it, "sync-img") }
     private val imageDir = File(context.filesDir, "note_images").apply { mkdirs() }
     private val device = BoardSync.device(context)
     private val appContext = context.applicationContext
@@ -77,7 +79,8 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
 
     /** Доска изменилась — отправить через несколько секунд (серия правок уйдёт одним разом). */
     fun kick(delayMs: Long = KICK_MS) {
-        if (!host.board().sync.isShared) return
+        // Экран доски ушёл (stop) — не запускать обмен заново в фоне: оставшееся уйдёт при следующем открытии (0.32.6).
+        if (!started || closed || !host.board().sync.isShared) return
         main.removeCallbacks(kickRunnable)
         main.postDelayed(kickRunnable, delayMs)
     }
@@ -89,7 +92,7 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         if (!b.sync.isShared) return
         if (running) { again = true; return }
         running = true
-        host.saveBoard()
+        host.saveIfEdited()
         val board = host.board()
         val s = board.sync
         // Первая синхронизация после обновления приложения: сначала перечитать доску целиком (старая версия
@@ -121,7 +124,7 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         main.removeCallbacks(kickRunnable)
         if (!host.board().sync.isShared || closed) return
         val b = host.board()
-        if (Remote.pending(b).isNotEmpty() || running) syncNow()
+        if (running || b.sync.hasPending()) syncNow() // быстрая проверка, без строк предметов (0.32.6)
     }
 
     private fun finish(boardId: String, pushedTo: String?, pulled: Remote.Pulled?, error: Throwable?, refresh: Boolean = false) {
@@ -129,10 +132,14 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         val b = host.board()
         if (b.id != boardId) { running = false; return }
         val s = b.sync
-        if (pushedTo != null && pushedTo > s.pushedRev) s.pushedRev = pushedTo
+        val pushed = pushedTo != null && pushedTo > s.pushedRev
+        if (pushed) {
+            s.pushedRev = pushedTo!!
+            s.pruneTombs() // удаления дошли до сервера — отметки не нужны (0.32.6)
+        }
         if (error != null) {
             running = false
-            host.saveBoard()
+            if (pushed) host.saveBoard()
             host.onSyncState(errorState(error))
             return
         }
@@ -159,12 +166,14 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
         val s = b.sync
         val authors = HashMap<String, Int>()
         val n = if (pulled.rows.isEmpty()) 0 else Remote.apply(b, pulled.rows, authors, refresh)
+        val seqBefore = s.remoteSeq
         s.remoteSeq = maxOf(s.remoteSeq, pulled.next)
         if (refresh) {
             s.readBy = Remote.appVersion
             again = true // своё — следующим кругом
         }
-        host.saveBoard()
+        // Переписать файл — только если что-то пришло или сдвинулся учёт (0.32.6: раньше — при каждом опросе раз в 20 с).
+        if (pulled.rows.isNotEmpty() || refresh || s.remoteSeq != seqBefore) host.saveBoard()
         if (n > 0) host.onRemoteApplied(n, authors)
         lastOk = System.currentTimeMillis()
         host.onSyncState(State("✓ " + Ui.time(lastOk)))
@@ -238,7 +247,7 @@ class RemoteSync(context: Context, private val transport: SyncTransport, private
                 imagesRunning = false
                 if (closed) return@post
                 val cur = host.board()
-                if (cur.id == boardId) {
+                if (cur.id == boardId && uploaded.any { it !in cur.sync.uploadedImages || it !in cur.sync.peerImages }) {
                     cur.sync.uploadedImages += uploaded
                     cur.sync.peerImages += uploaded
                     host.saveBoard()

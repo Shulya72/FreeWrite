@@ -111,55 +111,100 @@ class BoardSync {
 
     fun rev(id: String): String? = objs[id]?.rev ?: tomb[id]
 
-    fun json(sb: StringBuilder) {
-        sb.append("{\"ms\":").append(clockMs).append(",\"n\":").append(clockN).append(",\"o\":{")
-        var first = true
-        for ((id, e) in objs) {
-            if (!first) sb.append(',')
-            first = false
-            JsonNum.quote(sb, id); sb.append(":[").append(e.hash).append(','); JsonNum.quote(sb, e.rev); sb.append(']')
-        }
-        sb.append("},\"t\":{")
-        first = true
-        for ((id, r) in tomb) {
-            if (!first) sb.append(',')
-            first = false
-            JsonNum.quote(sb, id); sb.append(':'); JsonNum.quote(sb, r)
-        }
-        sb.append("},\"pi\":[")
-        first = true
-        for (f in peerImages) {
-            if (!first) sb.append(',')
-            first = false
-            sb.append(JSONObject.quote(f))
-        }
-        sb.append(']')
-        if (members.isNotEmpty()) {
-            sb.append(",\"mb\":{")
-            first = true
-            for ((d, n) in members) {
-                if (!first) sb.append(',')
-                first = false
-                sb.append(JSONObject.quote(d)).append(':').append(JSONObject.quote(n))
+    fun json(sb: StringBuilder) = snap().json(sb)
+
+    /**
+     * Снимок учёта правок для записи в файл (0.32.6). Снимается в главном потоке за миллисекунды (только ссылки), а в текст
+     * переводится уже в потоке записи: у общей доски записей тысячи, и раньше перевод в текст держал экран при каждом
+     * сохранении и уходе с доски (отчёт 26.11: 1–1,3 с).
+     */
+    fun snap(): Snap {
+        val oIds = arrayOfNulls<String>(objs.size); val oEnt = arrayOfNulls<Entry>(objs.size)
+        var i = 0
+        for ((id, e) in objs) { if (i >= oIds.size) break; oIds[i] = id; oEnt[i] = e; i++ }
+        val tIds = arrayOfNulls<String>(tomb.size); val tRev = arrayOfNulls<String>(tomb.size)
+        var j = 0
+        for ((id, r) in tomb) { if (j >= tIds.size) break; tIds[j] = id; tRev[j] = r; j++ }
+        return Snap(clockMs, clockN, oIds, oEnt, i, tIds, tRev, j, peerImages.toTypedArray(), members.entries.map { it.key to it.value },
+            isShared, remoteKey, remoteInvite, remoteSeq, pushedRev, readBy, uploadedImages.toTypedArray())
+    }
+
+    /** Снимок [snap]: неизменяемый, переводится в текст в любом потоке. */
+    class Snap internal constructor(
+        private val ms: Long, private val n: Int,
+        private val oIds: Array<String?>, private val oEnt: Array<Entry?>, private val oN: Int,
+        private val tIds: Array<String?>, private val tRev: Array<String?>, private val tN: Int,
+        private val peer: Array<String>, private val mb: List<Pair<String, String>>,
+        private val shared: Boolean, private val key: String, private val invite: String, private val seq: Long,
+        private val pushed: String, private val readBy: Int, private val uploaded: Array<String>,
+    ) {
+        /** Сколько символов примерно займёт (для запаса буфера). */
+        val sizeHint: Int get() = oN * 48 + tN * 44 + 256
+
+        fun json(sb: StringBuilder) {
+            sb.append("{\"ms\":").append(ms).append(",\"n\":").append(n).append(",\"o\":{")
+            for (i in 0 until oN) {
+                if (i > 0) sb.append(',')
+                val e = oEnt[i]!!
+                JsonNum.quote(sb, oIds[i]!!); sb.append(":[").append(e.hash).append(','); JsonNum.quote(sb, e.rev); sb.append(']')
+            }
+            sb.append("},\"t\":{")
+            for (i in 0 until tN) {
+                if (i > 0) sb.append(',')
+                JsonNum.quote(sb, tIds[i]!!); sb.append(':'); JsonNum.quote(sb, tRev[i]!!)
+            }
+            sb.append("},\"pi\":[")
+            for ((i, f) in peer.withIndex()) {
+                if (i > 0) sb.append(',')
+                sb.append(JSONObject.quote(f))
+            }
+            sb.append(']')
+            if (mb.isNotEmpty()) {
+                sb.append(",\"mb\":{")
+                for ((i, p) in mb.withIndex()) {
+                    if (i > 0) sb.append(',')
+                    sb.append(JSONObject.quote(p.first)).append(':').append(JSONObject.quote(p.second))
+                }
+                sb.append('}')
+            }
+            if (shared) {
+                sb.append(",\"r\":{\"k\":").append(JSONObject.quote(key))
+                sb.append(",\"i\":").append(JSONObject.quote(invite))
+                sb.append(",\"s\":").append(seq)
+                sb.append(",\"p\":").append(JSONObject.quote(pushed))
+                if (readBy > 0) sb.append(",\"v\":").append(readBy)
+                sb.append(",\"u\":[")
+                for ((i, f) in uploaded.withIndex()) {
+                    if (i > 0) sb.append(',')
+                    sb.append(JSONObject.quote(f))
+                }
+                sb.append("]}")
             }
             sb.append('}')
         }
-        if (isShared) {
-            sb.append(",\"r\":{\"k\":").append(JSONObject.quote(remoteKey))
-            sb.append(",\"i\":").append(JSONObject.quote(remoteInvite))
-            sb.append(",\"s\":").append(remoteSeq)
-            sb.append(",\"p\":").append(JSONObject.quote(pushedRev))
-            if (readBy > 0) sb.append(",\"v\":").append(readBy)
-            sb.append(",\"u\":[")
-            first = true
-            for (f in uploadedImages) {
-                if (!first) sb.append(',')
-                first = false
-                sb.append(JSONObject.quote(f))
-            }
-            sb.append("]}")
-        }
-        sb.append('}')
+    }
+
+    /**
+     * Убрать отметки удалений, которые уже не нужны (0.32.6). Отметка удаления нужна, пока удаление не дошло до сервера: иначе
+     * коллега «воскресил» бы предмет. У общей доски сервер сам хранит, что предмет удалён (принимает только более поздние
+     * правки), — дошедшие до него отметки (не позже [pushedRev]) лишние. Раньше они копились без конца (и ещё раз — со всеми
+     * удалениями с сервера при каждом обновлении приложения), а доска с каждым сохранением переписывала их в файл.
+     * Ничего на доске от этого не меняется. Возвращает, сколько убрано.
+     */
+    fun pruneTombs(): Int {
+        if (!isShared || pushedRev.isEmpty() || tomb.isEmpty()) return 0
+        val before = tomb.size
+        val it = tomb.entries.iterator()
+        while (it.hasNext()) if (it.next().value <= pushedRev) it.remove()
+        return before - tomb.size
+    }
+
+    /** Есть ли свои правки, которых ещё нет на сервере (быстро, без строк предметов). */
+    fun hasPending(): Boolean {
+        val after = pushedRev
+        for ((id, e) in objs) if (e.rev.isNotEmpty() && e.rev > after && seenRemote[id] != e.rev) return true
+        for ((id, r) in tomb) if (r.isNotEmpty() && r > after && seenRemote[id] != r) return true
+        return false
     }
 
     companion object {

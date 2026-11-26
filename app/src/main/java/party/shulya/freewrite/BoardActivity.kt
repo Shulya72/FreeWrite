@@ -42,7 +42,7 @@ class BoardActivity : Activity(), BoardView.Host {
     internal lateinit var board: Board
     private lateinit var engine: HandwritingEngine
     private val handler = Handler(Looper.getMainLooper())
-    private val io = Executors.newSingleThreadExecutor()
+    private val io = Executors.newSingleThreadExecutor { Thread(it, "board-io") }
     private lateinit var pdf: PdfInsert
 
     private lateinit var root: LinearLayout
@@ -74,7 +74,7 @@ class BoardActivity : Activity(), BoardView.Host {
     private var fingerBox: CheckBox? = null
     private var bottomTools: LinearLayout? = null
     private lateinit var images: BoardImages
-    private val saver = Executors.newSingleThreadExecutor()
+    private val saver = Executors.newSingleThreadExecutor { Thread(it, "board-save") }
     private val undoStack = ArrayDeque<BoardSnapshot>()
     private val redoStack = ArrayDeque<BoardSnapshot>()
     private var showFrameMs = false
@@ -108,6 +108,14 @@ class BoardActivity : Activity(), BoardView.Host {
     private val interimRunnable = Runnable { current?.let { recognize(it) } }
     private val commitRunnable = Runnable { current?.let { commit(it) } }
     private val saveRunnable = Runnable { saveNow() }
+
+    /** С прошлого сохранения доску правили здесь (штрихи, таблицы, камера…) — 0.32.6. */
+    private var touched = false
+    /** Камера, название и учёт общей доски на момент последней записи файла: не изменились — файл не переписываем. */
+    private var savedSig = ""
+    /** Строки штрихов уже приготовлены в фоне ([warmJson]) — сверка правок дешёвая. */
+    private var jsonWarm = false
+    private var warmGen = 0
     private val bannerTicker = object : Runnable {
         override fun run() {
             updateBanner()
@@ -167,6 +175,10 @@ class BoardActivity : Activity(), BoardView.Host {
     private fun open(b: Board, t0: Long, size: Long) {
         val read = SystemClock.uptimeMillis() - t0
         board = b
+        savedSig = stateSig()
+        val tombs = b.sync.tomb.size
+        val pruned = b.sync.pruneTombs()
+        warmJson()
         loadedImports = BoardStore.importCount(board.id)
         buildUi()
         setContentView(root)
@@ -190,7 +202,8 @@ class BoardActivity : Activity(), BoardView.Host {
         Trail.add("Открыта доска (${size / 1024} КБ, чтение $read мс, всего ${SystemClock.uptimeMillis() - t0} мс): " +
             "штрихов ${board.strokes.size}, надписей ${board.texts.size}, картинок ${board.images.size}, " +
             "таблиц ${board.tables.size}, строк ${board.recs.size}, листов плана ${board.tables.sumOf { it.sheets.size }}, " +
-            "областей ${board.zones.size}, ведомостей ${board.vedoms.size}" + if (board.sync.isShared) ", общая" else "")
+            "областей ${board.zones.size}, ведомостей ${board.vedoms.size}" + (if (board.sync.isShared) ", общая" else "") +
+            ", отметок удалений $tombs" + (if (pruned > 0) " (лишних $pruned — убраны)" else ""))
         if (intent.getBooleanExtra(EXTRA_SHOW_SPEED, false)) {
             showFrameMs = true
             view.post { view.fitAll(); handler.post(frameTicker) }
@@ -246,7 +259,9 @@ class BoardActivity : Activity(), BoardView.Host {
         resumedNow = false
         if (!opened) { super.onPause(); return }
         current?.let { commit(it) }
-        saveNow(sync = true)
+        // Запись файла — в фоне (0.32.6; раньше большая доска при каждом уходе держала экран ~1 с). Файл пишется через
+        // временный и подменяется целиком: оборвётся запись — останется прежний файл.
+        saveNow()
         remote?.flush()
         remote?.stop()
         Trail.stopWatch()
@@ -274,6 +289,8 @@ class BoardActivity : Activity(), BoardView.Host {
         handler.removeCallbacks(saveRunnable)
         b.camX = board.camX; b.camY = board.camY; b.camZ = board.camZ
         board = b
+        savedSig = stateSig()
+        warmJson()
         undoStack.clear(); redoStack.clear()
         titleView.text = b.title
         view.clearSelection()
@@ -287,7 +304,8 @@ class BoardActivity : Activity(), BoardView.Host {
     private val remoteHost = object : RemoteSync.Host {
         override fun board(): Board = board
         override fun canApply(): Boolean = current == null && committing.isEmpty() && view.isIdle && view.cropping == null
-        override fun saveBoard() = saveNow()
+        override fun saveBoard() = saveNow(force = true)
+        override fun saveIfEdited() = saveNow(ifTouched = true)
         override fun onRemoteApplied(changed: Int, authors: Map<String, Int>) {
             // Отмена после чужих правок вернула бы их назад у всех — поэтому её история сбрасывается.
             undoStack.clear(); redoStack.clear()
@@ -393,7 +411,19 @@ class BoardActivity : Activity(), BoardView.Host {
     /** «Поделиться»: доска файлом в Telegram, WhatsApp, почту — коллега откроет его в FreeWrite. */
     private fun shareBoard() {
         current?.let { commit(it) }
-        BoardShare.offer(this, board) { saveNow(sync = true) }
+        BoardShare.offer(this, board) { saveNow(force = true) } // отметки правок — свежие для файла
+    }
+
+    /**
+     * Система просит память (0.32.6; отчёт 26.11: ViaDesk в фоне держал ~480 МБ, система не раз просила освободить и потом
+     * закрыла его). Доска не на экране — отпустить картинки плиток и чертежей: вернутся на экран — дорисуются в фоне.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (!opened || resumedNow || level < android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) return
+        var bytes = view.dropCaches()
+        if (::images.isInitialized) bytes += images.trim()
+        if (bytes > 0) Trail.add("Доска не на экране — отпущено ${bytes shr 20} МБ картинок")
     }
 
     override fun onDestroy() {
@@ -930,31 +960,72 @@ class BoardActivity : Activity(), BoardView.Host {
         pipetteSnap = null
         view.invalidate()
         handler.removeCallbacks(saveRunnable)
+        touched = true
         // Большая доска (тысячи штрихов) — сохраняем, когда правки утихнут, а не после каждого штриха.
         handler.postDelayed(saveRunnable, if (board.objectCount() > 3000) 1500 else 500)
         remote?.kick()
     }
 
     /**
-     * Сохранить доску. Строка готовится здесь (быстро: рисунки берутся готовыми строками),
-     * запись в файл — в фоне, чтобы не было рывка. sync — записать сразу (при уходе с экрана).
+     * Сохранить доску. Строки предметов готовы заранее (у штрихов — свои готовые строки), здесь только сверка правок;
+     * учёт общей доски переводится в текст и файл пишется в фоне.
+     *
+     * 0.32.6 (отчёт 26.11: большая общая доска держала экран 1–2 с при каждом уходе и сразу после открытия):
+     * - ничего не изменилось (ни предметы, ни камера, ни учёт общей доски) — файл не переписывается;
+     * - force — переписать обязательно (пришли правки коллег: учёт правок уже обновлён, сверка их не заметит);
+     * - ifTouched — только если доску правили здесь (перед отправкой на сервер — отметить свои правки);
+     * - пока строки штрихов не готовы и правок не было — сверку не делаем вовсе (она и сделала бы строки в главном потоке).
      */
-    private fun saveNow(sync: Boolean = false) {
+    private fun saveNow(force: Boolean = false, ifTouched: Boolean = false) {
         handler.removeCallbacks(saveRunnable)
-        board.updated = System.currentTimeMillis()
+        if (!force && !touched && (ifTouched || !jsonWarm)) return
+        val now = System.currentTimeMillis()
         val seq = BoardStore.nextSeq()
         val id = board.id
-        // С отметками правок — для обмена с коллегами. Части склеиваются уже при записи, в фоне.
-        val parts = board.toJsonParts(stampDevice = store.device)
+        val parts = board.saveParts(stampDevice = store.device, now = now, touchUpdated = true)
+        touched = false
+        val sig = stateSig()
+        if (!force && parts.changed == 0 && sig == savedSig) return
+        savedSig = sig
         val meta = board.metaJson()
         val write = Runnable {
             try {
                 store.write(id, seq, parts, meta)
             } catch (t: Throwable) {
+                Trail.add("Доска не сохранилась: $t")
                 handler.post { Toast.makeText(this, "Не удалось сохранить: ${t.message}", Toast.LENGTH_LONG).show() }
             }
         }
-        if (sync) write.run() else try { saver.execute(write) } catch (_: Throwable) { write.run() }
+        if (inlineIo) write.run() else try { saver.execute(write) } catch (_: Throwable) { write.run() }
+    }
+
+    /** Что, кроме предметов, лежит в файле доски: камера, название и учёт общей доски. */
+    private fun stateSig(): String {
+        val b = board
+        val s = b.sync
+        return "${b.camX}|${b.camY}|${b.camZ}|${b.title}|${s.remoteKey}|${s.remoteInvite}|${s.remoteSeq}|${s.pushedRev}|${s.readBy}|" +
+            "${s.objs.size}|${s.tomb.size}|${s.peerImages.size}|${s.uploadedImages.size}|${s.members.size}"
+    }
+
+    /**
+     * Приготовить строки штрихов в фоне (0.32.6): первое сохранение после открытия иначе делало их все в главном потоке
+     * (у доски из 7 тыс. штрихов экран стоял ~2 с). Пока готовятся — сверка правок без своих правок не запускается.
+     */
+    private fun warmJson() {
+        jsonWarm = false
+        val gen = ++warmGen
+        val list = ArrayList(board.strokes)
+        if (inlineIo) { for (d in list) d.warmJson(); jsonWarm = true; return }
+        val t = Thread({
+            val t0 = SystemClock.uptimeMillis()
+            for (d in list) { if (gen != warmGen) return@Thread; d.warmJson() }
+            val ms = SystemClock.uptimeMillis() - t0
+            handler.post { if (gen == warmGen) jsonWarm = true }
+            if (ms > 500) Trail.add("Строки штрихов готовы за $ms мс (${list.size})")
+        }, "board-warm")
+        t.priority = Thread.MIN_PRIORITY
+        t.isDaemon = true
+        t.start()
     }
 
     // ---------------------------------------------------------------- картинки
@@ -2546,6 +2617,7 @@ class BoardActivity : Activity(), BoardView.Host {
     override fun onCameraChanged() {
         pipetteSnap = null
         updateZoom()
+        touched = true
         handler.removeCallbacks(saveRunnable)
         handler.postDelayed(saveRunnable, 800)
     }
@@ -2653,6 +2725,11 @@ class BoardActivity : Activity(), BoardView.Host {
         const val EXTRA_FIT = "fit_all"
         /** Имя присланного файла, как его видит человек. */
         const val EXTRA_INSERT_NAME = "insert_name"
+        /**
+         * Запись файла и подготовка строк — сразу, в этом потоке (в проверках: там главный поток крутят вручную, и проверки
+         * читают файл сразу после ухода с экрана). На планшете — в фоне.
+         */
+        internal var inlineIo = android.os.Build.FINGERPRINT == "robolectric"
         private const val REQ_IMAGE = 42
         private const val REQ_PDF = 43
         private const val REQ_SHEET_PDF = 44

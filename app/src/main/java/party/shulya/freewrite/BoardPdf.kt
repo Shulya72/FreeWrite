@@ -197,7 +197,7 @@ class PdfInsert(
     /** Листы — под таблицу (0.26): сохранить сам PDF рядом, чтобы искать элементы по его линиям. */
     var keepPdf = false
 
-    private val exec = Executors.newSingleThreadExecutor()
+    private val exec = Executors.newSingleThreadExecutor { Thread(it, "pdf") }
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var closed = false
     /** Идёт работа с PDF (второй не начинаем). */

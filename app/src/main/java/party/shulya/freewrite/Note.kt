@@ -84,31 +84,52 @@ class Drawing(val kind: String, var color: Int, var width: Float, val pts: Float
         return bb
     }
 
-    private var jsonSum = 0L
-    private var jsonCache: String? = null
+    /** Готовая строка и контрольная сумма чисел, из которых она сделана (одним объектом: читается из любого потока). */
+    private class JsonCache(val sum: Long, val json: String)
+    @Volatile private var jsonCache: JsonCache? = null
 
-    /**
-     * Запись рисунка в JSON доски. Готовая строка переиспользуется, пока рисунок не менялся
-     * (проверка по контрольной сумме всех чисел — без риска сохранить старое).
-     */
-    fun json(): String {
+    private fun jsonSum(): Long {
         var h = 1125899906842597L
         h = 31 * h + color
         h = 31 * h + width.toRawBits()
         h = 31 * h + kind.hashCode()
         h = 31 * h + id.hashCode()
         for (v in pts) h = 31 * h + v.toRawBits()
-        jsonCache?.let { if (h == jsonSum) return it }
+        return h
+    }
+
+    private fun build(): String {
         val sb = StringBuilder(pts.size * 6 + 80)
         sb.append("{\"id\":").append(JSONObject.quote(id))
         sb.append(",\"kind\":").append(JSONObject.quote(kind)).append(",\"color\":").append(color)
         sb.append(",\"w\":").append(width.toDouble()).append(",\"pts\":")
         JsonNum.array(sb, pts)
         sb.append('}')
-        val j = sb.toString()
-        jsonCache = j
-        jsonSum = h
+        return sb.toString()
+    }
+
+    /**
+     * Запись рисунка в JSON доски. Готовая строка переиспользуется, пока рисунок не менялся
+     * (проверка по контрольной сумме всех чисел — без риска сохранить старое).
+     */
+    fun json(): String {
+        val h = jsonSum()
+        jsonCache?.let { if (it.sum == h) return it.json }
+        val j = build()
+        jsonCache = JsonCache(h, j)
         return j
+    }
+
+    /**
+     * Приготовить строку заранее, в фоне (0.32.6: первое сохранение большой доски после открытия держало экран ~2 с — строки
+     * всех штрихов делались заново). Если рисунок меняют прямо сейчас (сумма до и после разная) — ничего не кладём:
+     * строка сделается при сохранении, как раньше.
+     */
+    fun warmJson() {
+        val h = jsonSum()
+        if (jsonCache?.sum == h) return
+        val j = build()
+        if (jsonSum() == h) jsonCache = JsonCache(h, j)
     }
 }
 

@@ -391,7 +391,18 @@ class Board(
      * большой доски (мегабайты) идут в фоне, здесь — только готовые строки предметов и отметки правок.
      */
     fun toJsonParts(withCamera: Boolean = true, stampDevice: String? = null, now: Long = System.currentTimeMillis()): List<String> {
-        // stampDevice — заодно отметить правки ([stamp]) тем же проходом: строки предметов уже готовы.
+        val sp = saveParts(withCamera, stampDevice, now)
+        return sp.parts + sp.tail()
+    }
+
+    /**
+     * Части файла доски (0.32.6): строки предметов готовы (их же сверяют отметки правок), учёт правок — снимком, в текст он
+     * переводится уже при записи, в фоне ([SaveParts.writeTo]). stampDevice — заодно отметить правки ([stamp]) тем же
+     * проходом; [SaveParts.changed] — сколько предметов изменилось или удалено с прошлой отметки. touchUpdated — если что-то
+     * изменилось, время правки доски — now (просто открыть и закрыть доску — не правка).
+     */
+    fun saveParts(withCamera: Boolean = true, stampDevice: String? = null, now: Long = System.currentTimeMillis(),
+                  touchUpdated: Boolean = false): SaveParts {
         val st = stampDevice?.let { Stamper(it, now) }
         if (st != null) {
             st.check(TITLE_ID, fingerprint(title))
@@ -399,16 +410,7 @@ class Board(
             for (s in statuses) st.check(s.id, statusPrint(s))
         }
         val out = ArrayList<String>(objectCount() * 2 + 32)
-        val sb = StringBuilder(1024)
-        sb.append("{\"v\":2,\"kind\":\"board\",\"id\":").append(JSONObject.quote(id))
-        sb.append(",\"title\":").append(JSONObject.quote(title))
-        sb.append(",\"created\":").append(created).append(",\"updated\":").append(updated)
-        if (withCamera) {
-            sb.append(",\"camX\":").append(camX.toDouble()).append(",\"camY\":").append(camY.toDouble())
-            sb.append(",\"camZ\":").append(camZ.toDouble())
-        }
-        sb.append(",\"statuses\":").append(statusesJson())
-        out += sb.toString()
+        out += "" // шапка — в конце: время правки известно после сверки
         fun <T> list(name: String, items: List<T>, id: (T) -> String, f: (T) -> String) {
             out += ",\"$name\":["
             for ((i, it) in items.withIndex()) {
@@ -434,13 +436,36 @@ class Board(
         if (events.isNotEmpty()) list("events", events, { it.id }) { it.json() }
         if (zones.isNotEmpty()) list("zones", zones, { it.id }) { TablePlan.zoneJson(it) }
         if (kinds.isNotEmpty()) list("tkinds", kinds, { it.id }) { BoardKind.json(it) }
-        st?.finish()
-        val tail = StringBuilder(sync.objs.size * 48 + 64)
-        tail.append(",\"sync\":")
-        sync.json(tail)
-        tail.append('}')
-        out += tail.toString()
-        return out
+        val changed = st?.finish() ?: 0
+        if (touchUpdated && changed > 0) updated = now
+        val sb = StringBuilder(1024)
+        sb.append("{\"v\":2,\"kind\":\"board\",\"id\":").append(JSONObject.quote(id))
+        sb.append(",\"title\":").append(JSONObject.quote(title))
+        sb.append(",\"created\":").append(created).append(",\"updated\":").append(updated)
+        if (withCamera) {
+            sb.append(",\"camX\":").append(camX.toDouble()).append(",\"camY\":").append(camY.toDouble())
+            sb.append(",\"camZ\":").append(camZ.toDouble())
+        }
+        sb.append(",\"statuses\":").append(statusesJson())
+        out[0] = sb.toString()
+        return SaveParts(out, sync.snap(), changed)
+    }
+
+    /** Части файла доски для записи в фоне: строки и снимок учёта правок (в текст — в потоке записи). */
+    class SaveParts(val parts: List<String>, val sync: BoardSync.Snap, val changed: Int) {
+        /** Хвост файла: учёт правок и закрывающая скобка. */
+        fun tail(): String {
+            val sb = StringBuilder(sync.sizeHint + 16)
+            sb.append(",\"sync\":")
+            sync.json(sb)
+            sb.append('}')
+            return sb.toString()
+        }
+
+        fun writeTo(w: java.io.Writer) {
+            for (p in parts) w.write(p)
+            w.write(tail())
+        }
     }
 
     /**
@@ -914,11 +939,16 @@ class BoardStore(context: Context) {
     fun write(id: String, seq: Long, json: String, meta: String) = write(id, seq, listOf(json), meta)
 
     /** То же по частям ([Board.toJsonParts]): склеиваются прямо в файл, без строки в мегабайты. */
-    fun write(id: String, seq: Long, parts: List<String>, meta: String) {
+    fun write(id: String, seq: Long, parts: List<String>, meta: String) = write(id, seq, meta) { w -> for (p in parts) w.write(p) }
+
+    /** То же из [Board.SaveParts] (0.32.6): учёт правок переводится в текст здесь, в потоке записи. */
+    fun write(id: String, seq: Long, parts: Board.SaveParts, meta: String) = write(id, seq, meta) { w -> parts.writeTo(w) }
+
+    private fun write(id: String, seq: Long, meta: String, body: (java.io.Writer) -> Unit) {
         synchronized(lock) {
             if (seq < (written[id] ?: Long.MIN_VALUE)) return
             val tmp = File(dir, "$id.json.tmp")
-            tmp.bufferedWriter(Charsets.UTF_8, 1 shl 16).use { w -> for (p in parts) w.write(p) }
+            tmp.bufferedWriter(Charsets.UTF_8, 1 shl 16).use { w -> body(w) }
             val target = File(dir, "$id.json")
             if (!tmp.renameTo(target)) {
                 target.writeText(tmp.readText())

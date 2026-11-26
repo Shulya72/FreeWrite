@@ -2027,6 +2027,15 @@ class BoardView(context: Context, private val host: Host) : View(context) {
     /** Экран доски закрывается — остановить фоновую отрисовку плиток. */
     fun release() = tiles.close()
 
+    /** Отпустить память, пока доска не на экране (0.32.6): плитки штрихов и снимок кадра. Байт отпущено. */
+    fun dropCaches(): Long {
+        var bytes = tiles.dropBitmaps()
+        scene?.let { bytes += it.allocationByteCount }
+        scene = null
+        sceneValid = false
+        return bytes
+    }
+
     /** Плитки ещё рисуются (для проверок — дождаться). */
     val tilesBusy: Boolean get() = tiles.busy
 
