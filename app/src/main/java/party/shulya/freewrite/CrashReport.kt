@@ -124,12 +124,117 @@ object Trail {
     }
 
     /** Где сейчас главный поток: до 8 строк нашего кода (без системных), сверху вниз. */
-    private fun mainStack(): String = runCatching {
+    internal fun mainStack(): String = runCatching {
         Looper.getMainLooper().thread.stackTrace
             .filter { it.className.startsWith("party.shulya.freewrite") }
             .take(8)
             .joinToString(" ← ") { it.className.substringAfterLast('.').substringBefore('$') + "." + it.methodName + ":" + it.lineNumber }
     }.getOrDefault("")
+}
+
+/**
+ * Сторож процессора в фоне (0.32.6). Отчёт 26.11: система закрыла ViaDesk «за слишком много ресурсов в фоне» — процессор
+ * 90 с за 5 минут, — а по журналу не было видно, чем приложение было занято. Теперь, пока все экраны ViaDesk свёрнуты, раз в
+ * 2 минуты смотрим, сколько процессора ушло; больше 3 с в минуту — в журнал: какие потоки (по названиям), сколько секунд и где
+ * стоял главный поток. Сам сторож почти ничего не стоит: спит, раз в 2 минуты читает несколько маленьких системных файлов.
+ */
+object BgWatch {
+    private const val PERIOD_MS = 120_000L
+    /** Больше этого в минуту — записать (3 с = 5 % одного ядра). */
+    private const val BUSY_MS_PER_MIN = 3_000L
+    private val robolectric = Build.FINGERPRINT == "robolectric"
+
+    private var started = 0
+    @Volatile private var thread: Thread? = null
+
+    fun register(app: android.app.Application) {
+        app.registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
+            override fun onActivityStarted(a: Activity) { if (++started == 1) stop() }
+            override fun onActivityStopped(a: Activity) { if (started > 0 && --started == 0) start() }
+            override fun onActivityCreated(a: Activity, b: android.os.Bundle?) {}
+            override fun onActivityResumed(a: Activity) {}
+            override fun onActivityPaused(a: Activity) {}
+            override fun onActivitySaveInstanceState(a: Activity, b: android.os.Bundle) {}
+            override fun onActivityDestroyed(a: Activity) {}
+        })
+    }
+
+    private fun start() {
+        if (robolectric || thread != null) return
+        thread = Thread({ watch() }, "freewrite-bgwatch").apply { isDaemon = true; priority = Thread.MIN_PRIORITY; start() }
+    }
+
+    private fun stop() {
+        thread?.interrupt()
+        thread = null
+    }
+
+    private fun watch() {
+        val me = Thread.currentThread()
+        var prevCpu = android.os.Process.getElapsedCpuTime()
+        var prevT = SystemClock.uptimeMillis()
+        var prev = threads()
+        while (thread === me) {
+            try { Thread.sleep(PERIOD_MS) } catch (_: InterruptedException) { break }
+            if (thread !== me) break
+            val cpu = android.os.Process.getElapsedCpuTime()
+            val t = SystemClock.uptimeMillis()
+            val cur = threads()
+            val used = cpu - prevCpu
+            val dt = (t - prevT).coerceAtLeast(1)
+            if (used * 60_000 / dt > BUSY_MS_PER_MIN) {
+                val top = busiest(prev, cur, 5)
+                val stack = Trail.mainStack()
+                Trail.add("В фоне процессор занят: ${sec(used)} с за ${dt / 1000} с" +
+                    (if (top.isNotEmpty()) " — потоки: $top" else "") +
+                    " · натив ${android.os.Debug.getNativeHeapAllocatedSize() shr 20} МБ" +
+                    (if (stack.isNotEmpty()) " — главный в: $stack" else ""))
+                Trail.flush()
+            }
+            prevCpu = cpu; prevT = t; prev = cur
+        }
+    }
+
+    private fun sec(ms: Long) = String.format(Locale.ROOT, "%.1f", ms / 1000.0).replace('.', ',')
+
+    /** Потоки процесса: номер → (название, процессорное время в мс). */
+    private fun threads(): Map<Int, Pair<String, Long>> {
+        val out = HashMap<Int, Pair<String, Long>>()
+        val tick = runCatching { android.system.Os.sysconf(android.system.OsConstants._SC_CLK_TCK) }.getOrDefault(100L).coerceAtLeast(1L)
+        val dir = File("/proc/self/task")
+        for (f in dir.listFiles() ?: return out) {
+            val tid = f.name.toIntOrNull() ?: continue
+            val line = runCatching { File(f, "stat").readText() }.getOrNull() ?: continue
+            val (name, ticks) = parseStat(line) ?: continue
+            out[tid] = name to ticks * 1000 / tick
+        }
+        return out
+    }
+
+    /** Строка /proc/…/stat → (название потока, utime + stime в тиках). */
+    internal fun parseStat(line: String): Pair<String, Long>? {
+        val open = line.indexOf('(')
+        val close = line.lastIndexOf(')')
+        if (open < 0 || close < open) return null
+        val name = line.substring(open + 1, close)
+        val f = line.substring(close + 1).trim().split(' ')
+        // После названия: состояние (3-е поле) … utime — 14-е, stime — 15-е.
+        if (f.size < 13) return null
+        val u = f[11].toLongOrNull() ?: return null
+        val s = f[12].toLongOrNull() ?: return null
+        return name to (u + s)
+    }
+
+    /** Самые занятые потоки между двумя замерами: «board-tiles 12,3 с, sync-img 4,0 с». Одинаковые названия — вместе. */
+    internal fun busiest(prev: Map<Int, Pair<String, Long>>, cur: Map<Int, Pair<String, Long>>, n: Int): String {
+        val byName = HashMap<String, Long>()
+        for ((tid, p) in cur) {
+            val d = p.second - (prev[tid]?.second ?: 0L)
+            if (d > 0) byName.merge(p.first, d, Long::plus)
+        }
+        return byName.entries.sortedByDescending { it.value }.take(n).filter { it.value >= 100 }
+            .joinToString(", ") { "${it.key} ${sec(it.value)} с" }
+    }
 }
 
 /**

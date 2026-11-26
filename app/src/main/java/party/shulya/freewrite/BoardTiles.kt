@@ -424,6 +424,26 @@ class BoardTiles(private val onReady: () -> Unit) {
         tiles.clear()
     }
 
+    /**
+     * Система просит память, а доска не на экране (0.32.6): отпустить картинки плиток. Вернутся на экран — плитки нарисуются в
+     * фоне заново, а пока — штрихи напрямую, как у устаревшей плитки (ничего не пропадает с экрана). Возвращает, сколько байт
+     * отпущено.
+     */
+    fun dropBitmaps(): Long {
+        var bytes = 0L
+        for (t in tiles.values) {
+            val b = t.bmp ?: continue
+            bytes += b.allocationByteCount
+            t.gen++ // плитка в работе дорисуется и будет выброшена
+            t.bmp = null
+            t.valid = false
+            t.rendered = true
+            t.holey = false
+        }
+        want.clear()
+        return bytes
+    }
+
     /** Есть ли ещё не готовые видимые плитки (для проверок: дождаться). */
     val busy: Boolean get() = inFlight > 0 || want.isNotEmpty()
 }

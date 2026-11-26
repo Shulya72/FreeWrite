@@ -33,6 +33,7 @@ class FreeWriteApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Trail.init(this) // журнал работы для отчёта о вылете (0.26.2)
+        BgWatch.register(this) // сторож процессора, пока приложение в фоне (0.32.6)
     }
 
     /** Система просит освободить память — в журнал (так видно, что вылет из-за памяти). */

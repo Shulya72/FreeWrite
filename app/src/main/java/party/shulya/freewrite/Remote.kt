@@ -187,7 +187,10 @@ object Remote {
             val who = r.author.ifBlank { "коллега" }
             if (r.data == null) {
                 s.objs.remove(r.id)
-                s.tomb[r.id] = r.rev
+                // Удаление пришло с сервера — сервер его и помнит (принимает только более поздние правки), своя отметка не
+                // нужна (0.32.6). Раньше отметка ставилась на каждое удаление, а при каждом обновлении приложения доска
+                // перечитывалась целиком — и все удаления за всю жизнь доски копились отметками у каждого участника.
+                s.tomb.remove(r.id)
                 if (before[r.id] != null && after[r.id] == null) { n++; authors?.merge(who, 1, Int::plus) }
             } else {
                 val h = after[r.id] ?: continue

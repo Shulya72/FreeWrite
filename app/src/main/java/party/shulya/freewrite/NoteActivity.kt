@@ -66,7 +66,7 @@ class NoteActivity : Activity(), NoteInkView.Host, NoteEdit.Host {
     private lateinit var note: Note
     private lateinit var engine: HandwritingEngine
     private val handler = Handler(Looper.getMainLooper())
-    private val io = Executors.newSingleThreadExecutor()
+    private val io = Executors.newSingleThreadExecutor { Thread(it, "note-io") }
 
     private lateinit var rootView: LinearLayout
     private lateinit var scroll: ScrollView

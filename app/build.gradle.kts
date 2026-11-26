@@ -12,8 +12,8 @@ android {
         // HarmonyOS 4.x даёт приложениям Android 12 (API 31); 26 — запас для других планшетов.
         minSdk = 26
         targetSdk = 34
-        versionCode = 72
-        versionName = "0.32.5"
+        versionCode = 73
+        versionName = "0.32.6"
         // Адрес сервера общей доски (функция в Яндекс Облаке). Подставляется при сборке в GitHub
         // Actions из облака (в репозитории его нет); пусто — синхронизация недоступна в этой сборке.
         val syncUrl = System.getenv("FREEWRITE_SYNC_URL").orEmpty().trim()
@@ -41,6 +41,9 @@ android {
     buildTypes {
         getByName("debug") {
             isMinifyEnabled = false
+            // Без режима отладки (0.32.6): «отладочное» приложение Android выполняет заметно медленнее (не готовит код заранее
+            // и не оптимизирует его полностью). Подпись та же — обновление ставится поверх.
+            isDebuggable = false
         }
         getByName("release") {
             isMinifyEnabled = false
